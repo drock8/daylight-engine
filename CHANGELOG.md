@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.1.6] - 2026-04-27
 
 - Added bounded evidence pack visibility to `/bob-status` so operators can see whether final reportable findings have valid, missing/invalid, skipped, or unknown evidence readiness.
 - Documented the `VERIFY -> GRADE` evidence-pack gate without adding a new FSM phase: final reportable findings need valid evidence packs after final verification and before grading or reporting.
