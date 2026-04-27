@@ -5,6 +5,7 @@ const { TOOL_MODULES } = require("./tools/index.js");
 const VALID_ROLE_BUNDLES = Object.freeze([
   "auth",
   "chain",
+  "evidence",
   "grader",
   "hunter",
   "orchestrator",

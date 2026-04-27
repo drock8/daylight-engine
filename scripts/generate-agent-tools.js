@@ -28,6 +28,10 @@ const AGENT_TOOL_SPECS = Object.freeze({
     roleBundles: ["verifier"],
     extras: ["Bash"],
   },
+  "evidence-agent.md": {
+    roleBundles: ["evidence"],
+    extras: [],
+  },
   "grader.md": {
     roleBundles: ["grader"],
     extras: [],

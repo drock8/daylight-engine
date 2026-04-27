@@ -20,6 +20,9 @@ const {
   readFindingsFromJsonl,
 } = require("./findings.js");
 const {
+  requireValidEvidencePacksForFinalReportableFindings,
+} = require("./evidence.js");
+const {
   readChainAttemptsFromJsonl,
   summarizeChainAttempts,
 } = require("./chain-attempts.js");
@@ -253,6 +256,35 @@ function computeChainToVerifyGate(domain) {
   };
 }
 
+function computeVerifyToGradeGate(domain) {
+  const blockers = [];
+  let evidence = null;
+
+  try {
+    const validation = requireValidEvidencePacksForFinalReportableFindings(domain);
+    evidence = {
+      valid: true,
+      skipped: validation.skipped,
+      packs_count: validation.packs_count,
+      representative_samples_count: validation.representative_samples_count,
+      final_reportable_count: validation.final_reportable_count,
+      reportable_findings_covered: validation.reportable_findings_covered,
+      missing_finding_ids: validation.missing_finding_ids,
+    };
+  } catch (error) {
+    blockers.push(blocker(
+      "evidence_packs_invalid",
+      "evidence packs are missing or invalid for final reportable findings",
+      { error: compactErrorMessage(error) },
+    ));
+  }
+
+  return {
+    evidence,
+    transition_blockers: blockers,
+  };
+}
+
 function formatTransitionBlockers(blockers) {
   return blockers.map((item) => {
     if (Array.isArray(item.surface_ids) && item.surface_ids.length > 0) {
@@ -275,6 +307,7 @@ module.exports = {
   computeChainRequirement,
   computeChainToVerifyGate,
   computeHuntToChainGate,
+  computeVerifyToGradeGate,
   formatTransitionBlockers,
   readStructuredHandoffChainNotes,
 };

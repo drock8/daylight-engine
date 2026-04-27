@@ -125,6 +125,14 @@ function gradeArtifactPaths(domain) {
   };
 }
 
+function evidencePackPaths(domain) {
+  const dir = sessionDir(domain);
+  return {
+    json: path.join(dir, "evidence-packs.json"),
+    markdown: path.join(dir, "evidence-packs.md"),
+  };
+}
+
 function reportMarkdownPath(domain) {
   return path.join(sessionDir(domain), "report.md");
 }
@@ -135,6 +143,7 @@ module.exports = {
   attackSurfacePath,
   chainAttemptsJsonlPath,
   coverageJsonlPath,
+  evidencePackPaths,
   findingsJsonlPath,
   findingsMarkdownPath,
   gradeArtifactPaths,

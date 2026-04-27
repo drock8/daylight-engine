@@ -11,6 +11,7 @@ allowed-tools:
   - mcp__bountyagent__bounty_list_findings
   - mcp__bountyagent__bounty_read_chain_attempts
   - mcp__bountyagent__bounty_read_verification_round
+  - mcp__bountyagent__bounty_read_evidence_packs
   - mcp__bountyagent__bounty_read_grade_verdict
   - mcp__bountyagent__bounty_init_session
   - mcp__bountyagent__bounty_read_session_state
@@ -77,6 +78,7 @@ MCP-owned session artifacts:
 - `bounty_import_static_artifact` writes redacted token contract source under `static-imports/` and metadata to `static-artifacts.jsonl`.
 - `bounty_static_scan` scans imported artifacts only and writes results to `static-scan-results.jsonl`.
 - `bounty_write_chain_attempt` writes CHAIN-phase evidence to `chain-attempts.jsonl`; `bounty_read_chain_attempts` is the only machine-readable chain source.
+- `bounty_write_evidence_packs` writes formal pre-grade evidence to `evidence-packs.json`; `bounty_read_evidence_packs` validates final-reportable coverage.
 - `bounty_read_hunter_brief` returns traffic, audit, circuit-breaker, runtime ranking, intel, static scan, assignment, coverage, and scope summaries.
 - `bounty_read_pipeline_analytics` is the metadata-only dashboard for debugging stuck sessions and recent cross-session pipeline health.
 
@@ -207,19 +209,23 @@ Round 3:
 ```
 Agent(subagent_type: "final-verifier", name: "final-verify", prompt: "Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings for [domain], call bounty_read_verification_round(round='balanced'), call bounty_list_auth_profiles before authenticated replays, re-run only reportable survivors with fresh requests, then write only through bounty_write_verification_round(round='final').")
 ```
-Read `bounty_read_verification_round(round='final').data`. If no result has `reportable: true`, report `No reportable vulnerabilities` with a short summary and stop. Otherwise call `bounty_transition_phase({ target_domain, to_phase: "GRADE" })`.
+Read `bounty_read_verification_round(round='final').data`. If no result has `reportable: true`, report `No reportable vulnerabilities` with a short summary and stop. Otherwise spawn evidence before GRADE:
+```
+Agent(subagent_type: "evidence-agent", name: "evidence", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings, bounty_read_verification_round(round='final'), bounty_read_http_audit, and bounty_list_auth_profiles; collect bounded redacted samples for every final reportable finding using bounty_http_scan with target_domain; write only through bounty_write_evidence_packs.")
+```
+After the evidence agent completes, validate the artifact with `bounty_read_evidence_packs({ target_domain: "[domain]" })` and inspect `.data`. Retry once if missing/invalid, then call `bounty_transition_phase({ target_domain, to_phase: "GRADE" })`.
 
 ## PHASE 6: GRADE
 Spawn:
 ```
-Agent(subagent_type: "grader", name: "grader", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings, bounty_read_chain_attempts, and bounty_read_verification_round(round='final'), score survivors, then write only through bounty_write_grade_verdict.")
+Agent(subagent_type: "grader", name: "grader", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings, bounty_read_chain_attempts, bounty_read_verification_round(round='final'), and bounty_read_evidence_packs, score survivors, then write only through bounty_write_grade_verdict.")
 ```
 Read `bounty_read_grade_verdict.data`. On `SUBMIT`, transition to REPORT. On `HOLD`, transition to HUNT, include feedback in a targeted wave, and re-run CHAIN before VERIFY; escalate if `hold_count >= 2`. On `SKIP`, report no reportable vulnerabilities and stop.
 
 ## PHASE 7: REPORT
 Spawn:
 ```
-Agent(subagent_type: "report-writer", name: "reporter", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings, bounty_read_chain_attempts, bounty_read_verification_round(round='final'), and bounty_read_grade_verdict, then write prose report.md with only confirmed chain evidence.")
+Agent(subagent_type: "report-writer", name: "reporter", prompt: "Domain: [domain]. Session: ~/bounty-agent-sessions/[domain]. Call bounty_read_findings, bounty_read_chain_attempts, bounty_read_verification_round(round='final'), bounty_read_evidence_packs, and bounty_read_grade_verdict, then write prose report.md with only confirmed chain evidence.")
 ```
 Present the report. If the user wants more hunting, transition to EXPLORE; otherwise stop.
 
@@ -231,8 +237,4 @@ Post-REPORT user intent stays flexible:
 ## PHASE 8: EXPLORE
 On user request after REPORT, call `bounty_transition_phase({ target_domain, to_phase: "EXPLORE" })`, read `attack_surface.json` and `bounty_read_state_summary.data`, run the same wave system and launch barrier as HUNT, then transition to CHAIN and run CHAIN → VERIFY → GRADE → REPORT on all findings.
 
-## Final Reminders
-- Recon, hunt, chain, verify, grade, and report are agent-driven; the orchestrator coordinates MCP state and phase transitions.
-- If you need target testing outside AUTH, spawn an agent; do not call `bounty_http_scan` or `curl` yourself.
-- All findings must flow through VERIFY → GRADE → REPORT before being presented as validated.
-- After REPORT, answer from known artifacts, use post-report evidence mode for explicit evidence amplification, or use EXPLORE for more hunting; do not perform ad-hoc target testing in the root orchestrator.
+Final reminder: agents own recon, hunt, chain, verify, evidence, grade, and report work; the root orchestrator coordinates MCP state and never performs ad-hoc target testing outside AUTH.

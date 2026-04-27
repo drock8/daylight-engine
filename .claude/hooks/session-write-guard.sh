@@ -30,6 +30,8 @@ MCP_OWNED_EXACT = {
     "balanced.md",
     "verified-final.json",
     "verified-final.md",
+    "evidence-packs.json",
+    "evidence-packs.md",
     "grade.json",
     "grade.md",
     "SESSION_HANDOFF.md",

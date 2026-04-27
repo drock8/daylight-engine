@@ -21,6 +21,7 @@ const {
   attackSurfacePath,
   chainAttemptsJsonlPath,
   coverageJsonlPath,
+  evidencePackPaths,
   findingsJsonlPath,
   gradeArtifactPaths,
   pipelineEventsJsonlPath,
@@ -43,6 +44,9 @@ const {
   readToolTelemetryEvents,
   summarizeToolTelemetryEvents,
 } = require("./tool-telemetry.js");
+const {
+  requireValidEvidencePacksForFinalReportableFindings,
+} = require("./evidence.js");
 
 const PIPELINE_ANALYTICS_VERSION = 1;
 const PIPELINE_EVENT_VERSION = 1;
@@ -64,6 +68,7 @@ const PIPELINE_EVENT_TYPES = Object.freeze([
   "coverage_logged",
   "finding_recorded",
   "verification_written",
+  "evidence_written",
   "grade_written",
 ]);
 
@@ -80,6 +85,10 @@ function capString(value, maxChars = 200) {
   const text = String(value).replace(/[\r\n\t]+/g, " ").trim();
   if (!text) return null;
   return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
+function compactErrorMessage(error) {
+  return error && error.message ? error.message : String(error);
 }
 
 function normalizeIsoTimestamp(value, fallback = new Date()) {
@@ -533,6 +542,7 @@ function summarizeVerificationArtifacts(targetDomain) {
   const rounds = {};
   let latestMtime = null;
   const errors = [];
+  let finalReportableIds = [];
   for (const round of VERIFICATION_ROUND_VALUES) {
     const paths = verificationRoundPaths(targetDomain, round);
     const read = readJsonSafe(paths.json, `${round} verification round JSON`);
@@ -552,6 +562,11 @@ function summarizeVerificationArtifacts(targetDomain) {
       summary.results_count = read.document.results.length;
       summary.reportable_count = read.document.results.filter((result) => result && result.reportable === true).length;
       summary.confirmed_count = read.document.results.filter((result) => result && result.disposition === "confirmed").length;
+      if (round === "final") {
+        finalReportableIds = read.document.results
+          .filter((result) => result && result.reportable === true && typeof result.finding_id === "string")
+          .map((result) => result.finding_id);
+      }
       if (!summary.valid) {
         summary.error = `${round} verification artifact metadata mismatch`;
         errors.push(summary.error);
@@ -563,9 +578,87 @@ function summarizeVerificationArtifacts(targetDomain) {
     rounds,
     final_results_count: rounds.final.results_count,
     final_reportable_count: rounds.final.reportable_count,
+    final_reportable_ids: finalReportableIds,
     errors,
     latest_mtime: latestMtime,
   };
+}
+
+function summarizeEvidenceArtifacts(targetDomain, finalReportableIds) {
+  const paths = evidencePackPaths(targetDomain);
+  const read = readJsonSafe(paths.json, "evidence packs JSON");
+  const finalReportableSet = new Set(finalReportableIds);
+  const summary = {
+    exists: read.exists,
+    valid: false,
+    skipped: finalReportableIds.length === 0 && !read.exists,
+    packs_count: 0,
+    representative_samples_count: 0,
+    reportable_findings_covered: 0,
+    final_reportable_count: finalReportableIds.length,
+    missing_finding_ids: finalReportableIds.slice(),
+    duplicate_finding_ids: [],
+    extra_finding_ids: [],
+    error: read.error,
+    mtime: read.mtime,
+  };
+
+  if (finalReportableIds.length === 0 && !read.exists) {
+    summary.valid = true;
+    return summary;
+  }
+
+  if (isPlainObject(read.document) && Array.isArray(read.document.packs)) {
+    if (read.document.version !== 1 || read.document.target_domain !== targetDomain) {
+      summary.error = "evidence packs artifact metadata mismatch";
+    }
+
+    const seen = new Set();
+    const duplicateIds = new Set();
+    for (const pack of read.document.packs) {
+      if (!isPlainObject(pack) || typeof pack.finding_id !== "string") {
+        summary.error = summary.error || "evidence packs artifact has malformed pack entries";
+        continue;
+      }
+      summary.packs_count += 1;
+      if (seen.has(pack.finding_id)) {
+        duplicateIds.add(pack.finding_id);
+      }
+      seen.add(pack.finding_id);
+      if (Array.isArray(pack.representative_samples)) {
+        summary.representative_samples_count += pack.representative_samples.length;
+      }
+    }
+
+    summary.duplicate_finding_ids = Array.from(duplicateIds).sort();
+    summary.missing_finding_ids = finalReportableIds.filter((id) => !seen.has(id));
+    summary.extra_finding_ids = Array.from(seen).filter((id) => !finalReportableSet.has(id)).sort();
+    summary.reportable_findings_covered = finalReportableIds.filter((id) => seen.has(id)).length;
+  } else if (read.exists && !read.error) {
+    summary.error = "evidence packs artifact metadata mismatch";
+  }
+
+  try {
+    const validation = requireValidEvidencePacksForFinalReportableFindings(targetDomain);
+    summary.exists = validation.exists;
+    summary.valid = true;
+    summary.skipped = validation.skipped;
+    summary.packs_count = validation.packs_count;
+    summary.representative_samples_count = validation.representative_samples_count;
+    summary.reportable_findings_covered = validation.reportable_findings_covered;
+    summary.final_reportable_count = validation.final_reportable_count;
+    summary.missing_finding_ids = [];
+    summary.duplicate_finding_ids = [];
+    summary.extra_finding_ids = [];
+    summary.error = null;
+  } catch (error) {
+    summary.valid = false;
+    summary.error = compactErrorMessage(error);
+    if (summary.missing_finding_ids.length === 0 && finalReportableIds.length > 0 && summary.reportable_findings_covered < finalReportableIds.length) {
+      summary.missing_finding_ids = finalReportableIds.slice();
+    }
+  }
+  return summary;
 }
 
 function summarizeGradeArtifact(targetDomain) {
@@ -641,6 +734,7 @@ function readSessionArtifactSummary(targetDomain) {
   const chainHandoffs = summarizeStructuredHandoffChainNotes(targetDomain);
   const attackSurfaceCoverage = summarizeAttackSurfaceCoverage(targetDomain, state);
   const verification = summarizeVerificationArtifacts(targetDomain);
+  const evidence = summarizeEvidenceArtifacts(targetDomain, verification.final_reportable_ids);
   const grade = summarizeGradeArtifact(targetDomain);
   const reportPath = reportMarkdownPath(targetDomain);
   const reportMtime = fileMtimeIso(reportPath);
@@ -653,6 +747,7 @@ function readSessionArtifactSummary(targetDomain) {
     chainAttempts.mtime,
     attackSurfaceCoverage.mtime,
     verification.latest_mtime,
+    evidence.mtime,
     grade.mtime,
     reportMtime,
   ]) {
@@ -673,6 +768,7 @@ function readSessionArtifactSummary(targetDomain) {
     if (wave.error) artifactErrors.push(`Wave ${wave.wave_number}: ${wave.error}`);
   }
   artifactErrors.push(...verification.errors);
+  if (evidence.error) artifactErrors.push(evidence.error);
   if (grade.error) artifactErrors.push(grade.error);
 
   return {
@@ -696,6 +792,7 @@ function readSessionArtifactSummary(targetDomain) {
     chain_handoffs: chainHandoffs,
     attack_surface_coverage: attackSurfaceCoverage,
     verification,
+    evidence,
     grade,
     report: {
       present: fs.existsSync(reportPath),
@@ -782,6 +879,18 @@ function buildBackfillEvents(targetDomain, artifacts) {
       ts: summary.mtime || ts,
       status: round,
       counts: { results: summary.results_count, reportable: summary.reportable_count },
+      source,
+    }));
+  }
+  if (artifacts.evidence.exists) {
+    events.push(normalizePipelineEvent(targetDomain, "evidence_written", {
+      ts: artifacts.evidence.mtime || ts,
+      status: artifacts.evidence.valid ? "valid" : "invalid",
+      counts: {
+        packs: artifacts.evidence.packs_count,
+        representative_samples: artifacts.evidence.representative_samples_count,
+        reportable_findings_covered: artifacts.evidence.reportable_findings_covered,
+      },
       source,
     }));
   }
@@ -1014,6 +1123,19 @@ function analyzeSession(targetDomain, { cutoffMs = null, limit = DEFAULT_LIMIT, 
     }));
   }
 
+  if (
+    phaseAtLeast(artifacts.state.phase, "GRADE") &&
+    artifacts.verification.final_reportable_count > 0 &&
+    !artifacts.evidence.valid
+  ) {
+    issues.push(issue("missing_evidence", "blocked", "Session reached GRADE or later without valid evidence packs for final reportable findings.", {
+      phase: artifacts.state.phase,
+      final_reportable: artifacts.verification.final_reportable_count,
+      covered: artifacts.evidence.reportable_findings_covered,
+      missing_finding_ids: artifacts.evidence.missing_finding_ids,
+    }));
+  }
+
   if (phaseAtLeast(artifacts.state.phase, "REPORT") && !artifacts.grade.valid) {
     issues.push(issue("missing_grade", "blocked", "Session reached REPORT without a valid grade artifact.", {
       phase: artifacts.state.phase,
@@ -1128,6 +1250,14 @@ function analyzeSession(targetDomain, { cutoffMs = null, limit = DEFAULT_LIMIT, 
     chain_phase_duration_ms: computeChainPhaseDurationMs(allEvents),
     final_verification_count: artifacts.verification.final_results_count,
     final_reportable_count: artifacts.verification.final_reportable_count,
+    evidence: {
+      exists: artifacts.evidence.exists,
+      valid: artifacts.evidence.valid,
+      packs_count: artifacts.evidence.packs_count,
+      representative_samples_count: artifacts.evidence.representative_samples_count,
+      reportable_findings_covered: artifacts.evidence.reportable_findings_covered,
+      missing_finding_ids: artifacts.evidence.missing_finding_ids,
+    },
     grade_verdict: artifacts.grade.verdict,
     report_present: artifacts.report.present,
     latest_event: compactEvent(latest),
@@ -1242,6 +1372,7 @@ function actionForBottleneck(bottleneck) {
     verification_dropoff: "Review final verification inputs because recorded findings are not surviving as reportable.",
     grade_hold_skip: "Use grader feedback to decide whether to return to HUNT or stop before report writing.",
     missing_verification: "Write a valid final verification round before grading or reporting.",
+    missing_evidence: "Run the evidence agent and validate evidence packs before grading or reporting.",
     missing_grade: "Write a valid grade verdict before report completion.",
     missing_report: "Write report.md or move the session out of REPORT if report writing is still pending.",
     stale_pending_wave: "Re-enter resume flow for the stale pending wave and reconcile handoffs.",

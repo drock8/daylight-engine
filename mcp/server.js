@@ -17,6 +17,7 @@
 //           bounty_import_static_artifact, bounty_static_scan,
 //           bounty_list_auth_profiles, bounty_read_wave_handoffs,
 //           bounty_write_chain_attempt, bounty_read_chain_attempts,
+//           bounty_write_evidence_packs, bounty_read_evidence_packs,
 //           bounty_read_tool_telemetry, bounty_read_pipeline_analytics
 
 const { redactUrlSensitiveValues } = require("./redaction.js");
@@ -52,6 +53,7 @@ const {
   attackSurfacePath,
   chainAttemptsJsonlPath,
   coverageJsonlPath,
+  evidencePackPaths,
   findingsJsonlPath,
   findingsMarkdownPath,
   gradeArtifactPaths,
@@ -120,6 +122,12 @@ const {
   writeVerificationRound,
 } = require("./lib/findings.js");
 const {
+  normalizeEvidencePacksDocument,
+  readEvidencePacks,
+  renderEvidencePacksMarkdown,
+  writeEvidencePacks,
+} = require("./lib/evidence.js");
+const {
   readChainAttempts,
   readChainAttemptsFromJsonl,
   writeChainAttempt,
@@ -186,6 +194,7 @@ module.exports = {
   computeCoverageRequeueSurfaceIds,
   chainAttemptsJsonlPath,
   coverageJsonlPath,
+  evidencePackPaths,
   gradeArtifactPaths,
   httpAuditJsonlPath,
   importStaticArtifact,
@@ -197,6 +206,7 @@ module.exports = {
   mergeWaveHandoffs,
   migrateAuthJson,
   normalizeCoverageRecord,
+  normalizeEvidencePacksDocument,
   normalizeFindingRecord,
   normalizeGradeVerdictDocument,
   normalizeHttpAuditRecord,
@@ -208,6 +218,7 @@ module.exports = {
   readAuthJson,
   readChainAttempts,
   readChainAttemptsFromJsonl,
+  readEvidencePacks,
   resolveAuthJsonPath,
   reportMarkdownPath,
   sessionDir,
@@ -247,6 +258,7 @@ module.exports = {
   compactSessionState,
   readVerificationRound,
   recordFinding,
+  renderEvidencePacksMarkdown,
   renderFindingMarkdownEntry,
   renderGradeVerdictMarkdown,
   renderVerificationRoundMarkdown,
@@ -258,6 +270,7 @@ module.exports = {
   verificationRoundPaths,
   waveHandoffStatus,
   waveStatus,
+  writeEvidencePacks,
   writeGradeVerdict,
   writeHandoff,
   writeVerificationRound,

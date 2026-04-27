@@ -77,6 +77,7 @@ const {
   buildCoverageSummaryForSurface,
   chainAttemptsJsonlPath,
   coverageJsonlPath,
+  evidencePackPaths,
   executeTool,
   findingsJsonlPath,
   findingsMarkdownPath,
@@ -85,9 +86,11 @@ const {
   importHttpTraffic,
   logCoverage,
   migrateAuthJson,
+  normalizeEvidencePacksDocument,
   bountyPublicIntel,
   readChainAttempts,
   readChainAttemptsFromJsonl,
+  readEvidencePacks,
   readScopeExclusions,
   readSessionState,
   readStateSummary,
@@ -132,6 +135,7 @@ const {
   waveHandoffStatus,
   waveStatus,
   writeChainAttempt,
+  writeEvidencePacks,
   writeFileAtomic,
   writeGradeVerdict,
   writeHandoff,
@@ -158,6 +162,8 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_read_chain_attempts",
   "bounty_write_verification_round",
   "bounty_read_verification_round",
+  "bounty_write_evidence_packs",
+  "bounty_read_evidence_packs",
   "bounty_write_grade_verdict",
   "bounty_read_grade_verdict",
   "bounty_init_session",
@@ -363,6 +369,28 @@ function seedVerificationPipeline(domain, results) {
   }
 }
 
+function evidencePack(findingId = "F-1", overrides = {}) {
+  return {
+    finding_id: findingId,
+    sample_type: "cross-account replay",
+    sample_count: 1,
+    aggregate_counts: { affected_objects_sampled: 1 },
+    representative_samples: [{
+      request_ref: "http-audit:1",
+      endpoint: "/api/export",
+      auth_profile: "attacker",
+      status: 200,
+      observed_fields: ["account_id", "email"],
+      redacted_object_id: "acct_...002",
+    }],
+    sensitive_clusters: ["profile metadata"],
+    replay_summary: "Fresh replay returned another account's private metadata.",
+    redaction_notes: "Object IDs and personal values redacted; auth material omitted.",
+    report_snippet: "An attacker can retrieve another account's private metadata by changing the account ID.",
+    ...overrides,
+  };
+}
+
 async function withMockSafeFetch(routes, fn, { dnsRecords = {} } = {}) {
   const originalLookup = dns.lookup;
   const originalHttpRequest = http.request;
@@ -490,6 +518,7 @@ test("mcp server public exports remain stable", () => {
     "compactSessionState",
     "computeCoverageRequeueSurfaceIds",
     "coverageJsonlPath",
+    "evidencePackPaths",
     "executeTool",
     "filterExclusionsByHosts",
     "findingsJsonlPath",
@@ -505,6 +534,7 @@ test("mcp server public exports remain stable", () => {
     "mergeWaveHandoffs",
     "migrateAuthJson",
     "normalizeCoverageRecord",
+    "normalizeEvidencePacksDocument",
     "normalizeFindingRecord",
     "normalizeGradeVerdictDocument",
     "normalizeHttpAuditRecord",
@@ -518,6 +548,7 @@ test("mcp server public exports remain stable", () => {
     "readChainAttempts",
     "readChainAttemptsFromJsonl",
     "readCoverageRecordsFromJsonl",
+    "readEvidencePacks",
     "readFindings",
     "readFindingsFromJsonl",
     "readGradeVerdict",
@@ -537,6 +568,7 @@ test("mcp server public exports remain stable", () => {
     "readWaveHandoffs",
     "recordFinding",
     "redactUrlSensitiveValues",
+    "renderEvidencePacksMarkdown",
     "renderFindingMarkdownEntry",
     "renderGradeVerdictMarkdown",
     "renderVerificationRoundMarkdown",
@@ -565,6 +597,7 @@ test("mcp server public exports remain stable", () => {
     "waveHandoffStatus",
     "waveStatus",
     "writeChainAttempt",
+    "writeEvidencePacks",
     "writeFileAtomic",
     "writeGradeVerdict",
     "writeHandoff",
@@ -630,6 +663,9 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(byName.get("bounty_write_chain_attempt").inputSchema.properties.outcome.enum.includes("inconclusive"), true);
   assert.deepEqual(TOOL_MANIFEST.bounty_write_chain_attempt.role_bundles, ["chain"]);
   assert.deepEqual(TOOL_MANIFEST.bounty_read_chain_attempts.role_bundles, ["chain", "verifier", "grader", "reporter", "orchestrator"]);
+  assert.equal(byName.get("bounty_write_evidence_packs").inputSchema.properties.packs.items.properties.finding_id.pattern, "^F-[1-9][0-9]*$");
+  assert.deepEqual(TOOL_MANIFEST.bounty_write_evidence_packs.role_bundles, ["evidence"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_evidence_packs.role_bundles, ["evidence", "grader", "reporter", "orchestrator"]);
   assert.equal(TOOL_MANIFEST.bounty_start_wave.mutating, true);
   assert.equal(TOOL_MANIFEST.bounty_start_wave.global_preapproval, false);
   assert.equal(TOOL_MANIFEST.bounty_http_scan.network_access, true);
@@ -1188,6 +1224,7 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
     const rawPocSecret = "pipeline-raw-poc-secret";
     const rawHandoffSecret = "pipeline-raw-handoff-secret";
     const rawCoverageSecret = "pipeline-raw-coverage-secret";
+    const rawEvidenceText = "metadata-only analytics must not copy this evidence pack text";
 
     JSON.parse(initSession({ target_domain: domain, target_url: "https://example.com" }));
     seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" }]);
@@ -1260,6 +1297,27 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
     for (const round of ["brutalist", "balanced", "final"]) {
       JSON.parse(writeVerificationRound({ target_domain: domain, round, notes: null, results: verified }));
     }
+    JSON.parse(writeEvidencePacks({
+      target_domain: domain,
+      packs: [{
+        finding_id: "F-1",
+        sample_type: "cross-account export",
+        sample_count: 1,
+        aggregate_counts: { private_exports_sampled: 1 },
+        representative_samples: [{
+          request_ref: "http-audit:1",
+          endpoint: "/api/export",
+          auth_profile: "attacker",
+          status: 200,
+          observed_fields: ["account_id"],
+          redacted_object_id: "acct_...002",
+        }],
+        sensitive_clusters: ["account export metadata"],
+        replay_summary: "Fresh replay returned another account export.",
+        redaction_notes: "Object IDs and personal values redacted; auth material omitted.",
+        report_snippet: rawEvidenceText,
+      }],
+    }));
     JSON.parse(transitionPhase({ target_domain: domain, to_phase: "GRADE" }));
     JSON.parse(writeGradeVerdict({
       target_domain: domain,
@@ -1290,6 +1348,7 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
       "finding_recorded",
       "wave_merged",
       "verification_written",
+      "evidence_written",
       "grade_written",
     ]));
     assert.equal(rows.every((row) => row.target_domain === domain), true);
@@ -1307,12 +1366,14 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
     assert.equal(analytics.sessions[0].chain_attempts_by_outcome.not_applicable, 1);
     assert.equal(typeof analytics.sessions[0].chain_phase_duration_ms, "number");
     assert.equal(analytics.sessions[0].final_verification_count, 1);
+    assert.equal(analytics.sessions[0].evidence.valid, true);
+    assert.equal(analytics.sessions[0].evidence.packs_count, 1);
     assert.equal(analytics.sessions[0].grade_verdict, "SUBMIT");
     assert.equal(analytics.sessions[0].report_present, true);
     assert.equal(analytics.funnel.reached.REPORT, 1);
     assert.equal(analytics.bottlenecks.length, 0);
 
-    for (const forbidden of [rawPocSecret, rawHandoffSecret, rawCoverageSecret, "metadata-only analytics must not copy this evidence"]) {
+    for (const forbidden of [rawPocSecret, rawHandoffSecret, rawCoverageSecret, "metadata-only analytics must not copy this evidence", rawEvidenceText]) {
       assert.equal(analyticsText.includes(forbidden), false, `${forbidden} leaked into pipeline analytics`);
       assert.equal(JSON.stringify(rows).includes(forbidden), false, `${forbidden} leaked into pipeline events`);
     }
@@ -1342,15 +1403,51 @@ test("pipeline analytics backfills legacy sessions from artifacts without an eve
       waf_blocked_endpoints: [],
       lead_surface_ids: [],
     }, null, 2)}\n`);
-    writeFileAtomic(findingsJsonlPath(domain), `${JSON.stringify({ target_domain: domain, severity: "high" })}\n`);
+    writeFileAtomic(findingsJsonlPath(domain), `${JSON.stringify({
+      id: "F-1",
+      target_domain: domain,
+      title: "Legacy IDOR",
+      severity: "high",
+      cwe: "CWE-639",
+      endpoint: "/api/export",
+      description: "Legacy finding migrated from an older run.",
+      proof_of_concept: "curl https://legacy.example/api/export?account_id=2",
+      response_evidence: "200 OK with redacted account metadata",
+      impact: "Cross-account metadata disclosure.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    })}\n`);
     for (const round of ["brutalist", "balanced", "final"]) {
       writeFileAtomic(verificationRoundPaths(domain, round).json, `${JSON.stringify({
         version: 1,
         target_domain: domain,
         round,
-        results: [{ finding_id: "F-1", disposition: "confirmed", severity: "high", reportable: true }],
+        results: [{
+          finding_id: "F-1",
+          disposition: "confirmed",
+          severity: "high",
+          reportable: true,
+          reasoning: "Legacy verification confirmed the finding.",
+        }],
       }, null, 2)}\n`);
     }
+    writeFileAtomic(evidencePackPaths(domain).json, `${JSON.stringify({
+      version: 1,
+      target_domain: domain,
+      packs: [{
+        finding_id: "F-1",
+        sample_type: "legacy sample",
+        sample_count: 1,
+        aggregate_counts: { examples: 1 },
+        representative_samples: [{ request_ref: "legacy:1", status: 200 }],
+        sensitive_clusters: ["redacted private metadata"],
+        replay_summary: "Legacy evidence was collected before grading.",
+        redaction_notes: "Values redacted.",
+        report_snippet: "Legacy evidence pack covers F-1.",
+      }],
+    }, null, 2)}\n`);
     writeFileAtomic(gradeArtifactPaths(domain).json, `${JSON.stringify({
       version: 1,
       target_domain: domain,
@@ -1458,6 +1555,71 @@ test("pipeline analytics reports chain attempts, chain duration, and no-attempt 
     assert.equal(analytics.sessions[0].health.status, "blocked");
     assert.ok(analytics.sessions[0].health.reasons.includes("chain_phase_no_attempts"));
     assert.ok(analytics.bottlenecks.some((bottleneck) => bottleneck.code === "chain_phase_no_attempts"));
+  });
+});
+
+test("pipeline analytics flags missing evidence only for final reportable findings", () => {
+  withTempHome(() => {
+    const domain = "missing-evidence.example.com";
+    seedSessionState(domain, { phase: "GRADE" });
+    seedFinding(domain);
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+
+    const analytics = JSON.parse(readPipelineAnalytics({ target_domain: domain, include_events: true }));
+    assert.equal(analytics.sessions[0].evidence.valid, false);
+    assert.deepEqual(analytics.sessions[0].evidence.missing_finding_ids, ["F-1"]);
+    assert.ok(analytics.sessions[0].health.reasons.includes("missing_evidence"));
+    assert.ok(analytics.bottlenecks.some((bottleneck) => bottleneck.code === "missing_evidence"));
+
+    const noReportableDomain = "no-evidence-needed.example.com";
+    seedSessionState(noReportableDomain, { phase: "GRADE" });
+    seedFinding(noReportableDomain);
+    seedVerificationPipeline(noReportableDomain, [{
+      finding_id: "F-1",
+      disposition: "denied",
+      severity: null,
+      reportable: false,
+      reasoning: "Not reproducible.",
+    }]);
+
+    const noReportable = JSON.parse(readPipelineAnalytics({ target_domain: noReportableDomain, include_events: true }));
+    assert.equal(noReportable.sessions[0].evidence.valid, true);
+    assert.equal(noReportable.sessions[0].evidence.skipped, undefined);
+    assert.ok(!noReportable.sessions[0].health.reasons.includes("missing_evidence"));
+    assert.ok(!noReportable.bottlenecks.some((bottleneck) => bottleneck.code === "missing_evidence"));
+  });
+});
+
+test("pipeline analytics treats malformed evidence packs as invalid metadata", () => {
+  withTempHome(() => {
+    const domain = "malformed-evidence.example.com";
+    seedSessionState(domain, { phase: "GRADE" });
+    seedFinding(domain);
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+    writeFileAtomic(evidencePackPaths(domain).json, `${JSON.stringify({
+      packs: [{ finding_id: "F-1" }],
+    }, null, 2)}\n`);
+
+    const artifactSummary = readSessionArtifactSummary(domain);
+    const analytics = JSON.parse(readPipelineAnalytics({ target_domain: domain, include_events: true }));
+    assert.equal(analytics.sessions[0].evidence.valid, false);
+    assert.equal(analytics.sessions[0].evidence.packs_count, 1);
+    assert.equal(analytics.sessions[0].evidence.reportable_findings_covered, 1);
+    assert.ok(analytics.sessions[0].health.reasons.includes("missing_evidence"));
+    assert.ok(analytics.bottlenecks.some((bottleneck) => bottleneck.code === "missing_evidence"));
+    assert.match(artifactSummary.evidence.error, /Evidence packs.*target_domain|version/);
   });
 });
 
@@ -1824,6 +1986,21 @@ test("bounty_transition_phase allows the configured edges and increments hold_co
         ]);
       }
       seedSessionState(domain, stateOverrides);
+      if (
+        (scenario.from === "VERIFY" && scenario.to === "GRADE") ||
+        (scenario.from === "GRADE" && scenario.to === "REPORT")
+      ) {
+        if (!fs.existsSync(findingsJsonlPath(domain))) {
+          seedFinding(domain);
+        }
+        seedVerificationPipeline(domain, [{
+          finding_id: "F-1",
+          disposition: "denied",
+          severity: null,
+          reportable: false,
+          reasoning: "No reportable findings in the edge smoke fixture.",
+        }]);
+      }
 
       const result = JSON.parse(transitionPhase({
         target_domain: domain,
@@ -2149,6 +2326,86 @@ test("bounty_transition_phase override_reason allows CHAIN -> VERIFY and is pers
     assert.equal(event.override, true);
     assert.equal(event.override_reason, overrideReason);
     assert.equal(event.counts.transition_blockers, 1);
+  });
+});
+
+test("bounty_transition_phase VERIFY -> GRADE requires valid evidence for final reportables", () => {
+  withTempHome(() => {
+    const domain = "verify-grade-evidence.example.com";
+    seedSessionState(domain, { phase: "VERIFY" });
+    seedFinding(domain);
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "GRADE" }),
+      /VERIFY -> GRADE blocked: .*Evidence packs.*Missing evidence packs JSON/i,
+    );
+  });
+});
+
+test("bounty_transition_phase VERIFY -> GRADE succeeds with valid evidence", () => {
+  withTempHome(() => {
+    const domain = "verify-grade-valid-evidence.example.com";
+    seedSessionState(domain, { phase: "VERIFY" });
+    seedFinding(domain);
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+    JSON.parse(writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] }));
+
+    const result = JSON.parse(transitionPhase({ target_domain: domain, to_phase: "GRADE" }));
+    assert.equal(result.transitioned, true);
+    assert.equal(result.from_phase, "VERIFY");
+    assert.equal(result.to_phase, "GRADE");
+  });
+});
+
+test("bounty_transition_phase VERIFY -> GRADE succeeds without evidence when final has no reportables", () => {
+  withTempHome(() => {
+    const domain = "verify-grade-no-reportables.example.com";
+    seedSessionState(domain, { phase: "VERIFY" });
+    seedFinding(domain);
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "denied",
+      severity: null,
+      reportable: false,
+      reasoning: "Not reproducible.",
+    }]);
+
+    const result = JSON.parse(transitionPhase({ target_domain: domain, to_phase: "GRADE" }));
+    assert.equal(result.transitioned, true);
+    assert.equal(result.to_phase, "GRADE");
+  });
+});
+
+test("bounty_transition_phase GRADE -> REPORT requires valid evidence for final reportables", () => {
+  withTempHome(() => {
+    const domain = "grade-report-evidence.example.com";
+    seedSessionState(domain, { phase: "GRADE" });
+    seedFinding(domain);
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "REPORT" }),
+      /GRADE -> REPORT blocked: .*Evidence packs.*Missing evidence packs JSON/i,
+    );
   });
 });
 
@@ -4438,6 +4695,145 @@ test("bounty_read_verification_round rejects JSON that references non-existent f
   });
 });
 
+test("bounty_write_evidence_packs writes JSON and markdown mirror", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedFinding(domain);
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+
+    const result = JSON.parse(writeEvidencePacks({
+      target_domain: domain,
+      packs: [evidencePack("F-1")],
+    }));
+    const paths = evidencePackPaths(domain);
+
+    assert.equal(result.packs_count, 1);
+    assert.equal(result.representative_samples_count, 1);
+    assert.equal(result.reportable_findings_covered, 1);
+    assert.equal(result.written_json, paths.json);
+    assert.equal(result.written_md, paths.markdown);
+    assert.deepEqual(JSON.parse(fs.readFileSync(paths.json, "utf8")), {
+      version: 1,
+      target_domain: domain,
+      packs: [evidencePack("F-1")],
+    });
+    assert.match(fs.readFileSync(paths.markdown, "utf8"), /# Evidence Packs/);
+    assert.deepEqual(JSON.parse(readEvidencePacks({ target_domain: domain })), {
+      version: 1,
+      target_domain: domain,
+      packs: [evidencePack("F-1")],
+    });
+
+    const rows = readJsonl(pipelineEventsJsonlPath(domain));
+    const evidenceEvent = rows.find((row) => row.type === "evidence_written");
+    assert.ok(evidenceEvent);
+    assert.deepEqual(evidenceEvent.counts, {
+      packs: 1,
+      representative_samples: 1,
+      reportable_findings_covered: 1,
+    });
+  });
+});
+
+test("bounty_write_evidence_packs rejects unknown and duplicate finding IDs", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedFinding(domain);
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+
+    assert.throws(() => writeEvidencePacks({
+      target_domain: domain,
+      packs: [evidencePack("F-99")],
+    }), /Unknown finding_id: F-99/);
+
+    assert.throws(() => writeEvidencePacks({
+      target_domain: domain,
+      packs: [evidencePack("F-1"), evidencePack("F-1")],
+    }), /Duplicate finding_id in evidence packs: F-1/);
+  });
+});
+
+test("bounty_write_evidence_packs requires coverage for all final reportable findings", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedFinding(domain);
+    seedFinding(domain, { title: "Second IDOR", endpoint: "/api/second" });
+    seedVerificationPipeline(domain, [
+      {
+        finding_id: "F-1",
+        disposition: "confirmed",
+        severity: "high",
+        reportable: true,
+        reasoning: "Confirmed.",
+      },
+      {
+        finding_id: "F-2",
+        disposition: "confirmed",
+        severity: "medium",
+        reportable: true,
+        reasoning: "Confirmed.",
+      },
+    ]);
+
+    assert.throws(() => writeEvidencePacks({
+      target_domain: domain,
+      packs: [evidencePack("F-1")],
+    }), /Evidence packs missing final reportable finding\(s\): F-2/);
+
+    assert.doesNotThrow(() => writeEvidencePacks({
+      target_domain: domain,
+      packs: [evidencePack("F-1"), evidencePack("F-2")],
+    }));
+  });
+});
+
+test("bounty_read_evidence_packs allows skip only when final verification has no reportable findings", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedFinding(domain);
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "denied",
+      severity: null,
+      reportable: false,
+      reasoning: "Not reproducible.",
+    }]);
+
+    assert.deepEqual(JSON.parse(readEvidencePacks({ target_domain: domain })), {
+      version: 1,
+      target_domain: domain,
+      packs: [],
+      skipped: true,
+    });
+    assert.doesNotThrow(() => writeEvidencePacks({ target_domain: domain, packs: [] }));
+
+    const reportableDomain = "reportable.example.com";
+    seedFinding(reportableDomain);
+    seedVerificationPipeline(reportableDomain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+
+    assert.throws(() => readEvidencePacks({ target_domain: reportableDomain }), /Missing evidence packs JSON/);
+    assert.throws(() => writeEvidencePacks({ target_domain: reportableDomain, packs: [] }), /Evidence packs missing final reportable finding\(s\): F-1/);
+  });
+});
+
 test("bounty_write_grade_verdict writes grade.json and grade.md and accepts empty findings", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -4530,6 +4926,7 @@ test("bounty_write_grade_verdict enforces score totals, thresholds, and final re
       reasoning: "Confirmed.",
     }];
     seedVerificationPipeline(domain, verified);
+    JSON.parse(writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] }));
 
     const gradeFinding = {
       finding_id: "F-1",
@@ -4566,6 +4963,54 @@ test("bounty_write_grade_verdict enforces score totals, thresholds, and final re
       findings: [gradeFinding],
       feedback: null,
     }), /expected SUBMIT/);
+  });
+});
+
+test("bounty_write_grade_verdict requires evidence packs for final reportables before writing", () => {
+  withTempHome(() => {
+    const domain = "grade-evidence-required.example.com";
+    seedFinding(domain, { severity: "high" });
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+
+    assert.throws(() => writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 45,
+      findings: [{
+        finding_id: "F-1",
+        impact: 20,
+        proof_quality: 10,
+        severity_accuracy: 5,
+        chain_potential: 5,
+        report_quality: 5,
+        total_score: 45,
+        feedback: null,
+      }],
+      feedback: null,
+    }), /Evidence packs.*Missing evidence packs JSON/);
+
+    assert.throws(() => writeGradeVerdict({
+      target_domain: domain,
+      verdict: "HOLD",
+      total_score: 25,
+      findings: [{
+        finding_id: "F-1",
+        impact: 10,
+        proof_quality: 5,
+        severity_accuracy: 5,
+        chain_potential: 0,
+        report_quality: 5,
+        total_score: 25,
+        feedback: null,
+      }],
+      feedback: "Evidence collection did not run.",
+    }), /Evidence packs.*Missing evidence packs JSON/);
   });
 });
 

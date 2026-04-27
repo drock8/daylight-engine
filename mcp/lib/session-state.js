@@ -31,6 +31,7 @@ const {
 const {
   computeChainToVerifyGate,
   computeHuntToChainGate,
+  computeVerifyToGradeGate,
   formatTransitionBlockers,
 } = require("./phase-gates.js");
 
@@ -263,6 +264,12 @@ function transitionPhase(args) {
     } else if (fromPhase === "CHAIN" && toPhase === "VERIFY") {
       transitionGate = computeChainToVerifyGate(domain, state);
       transitionGateLabel = "CHAIN -> VERIFY";
+    } else if (fromPhase === "VERIFY" && toPhase === "GRADE") {
+      transitionGate = computeVerifyToGradeGate(domain, state);
+      transitionGateLabel = "VERIFY -> GRADE";
+    } else if (fromPhase === "GRADE" && toPhase === "REPORT") {
+      transitionGate = computeVerifyToGradeGate(domain, state);
+      transitionGateLabel = "GRADE -> REPORT";
     }
     if (transitionGate && transitionGate.transition_blockers.length > 0 && overrideReason == null) {
       throw new ToolError(

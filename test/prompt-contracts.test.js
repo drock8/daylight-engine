@@ -10,6 +10,10 @@ const {
   isOrchestratorOnlyMutator,
   permissionsForRoleBundles,
 } = require("../mcp/lib/claude-config.js");
+const {
+  AGENT_TOOL_SPECS,
+  toolsForSpec,
+} = require("../scripts/generate-agent-tools.js");
 
 const ROOT = path.join(__dirname, "..");
 
@@ -148,6 +152,8 @@ test("manifest, settings, and generated Claude config keep global MCP permission
   assert.deepEqual(TOOL_MANIFEST.bounty_read_pipeline_analytics.role_bundles, ["orchestrator"]);
   assert.equal(TOOL_MANIFEST.bounty_read_pipeline_analytics.global_preapproval, false);
   assert.equal(TOOL_MANIFEST.bounty_read_pipeline_analytics.mutating, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_write_evidence_packs.role_bundles, ["evidence"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_evidence_packs.role_bundles, ["evidence", "grader", "reporter", "orchestrator"]);
   assert.ok(!sourceAllowed.has("bounty_merge_wave_handoffs"));
   assert.ok(!sourceAllowed.has("bounty_read_tool_telemetry"));
   assert.ok(!sourceAllowed.has("bounty_read_pipeline_analytics"));
@@ -155,6 +161,8 @@ test("manifest, settings, and generated Claude config keep global MCP permission
   assert.ok(!generatedAllowed.has("bounty_read_tool_telemetry"));
   assert.ok(!generatedAllowed.has("bounty_read_pipeline_analytics"));
   assert.ok(sourceAllowed.has("bounty_wave_handoff_status"));
+  assert.ok(sourceAllowed.has("bounty_write_evidence_packs"));
+  assert.ok(sourceAllowed.has("bounty_read_evidence_packs"));
 
   const hookMatchers = settingsHookMatchers();
   for (const [toolName, metadata] of Object.entries(TOOL_MANIFEST)) {
@@ -169,6 +177,7 @@ test("MCP-dependent agents declare official mcpServers bountyagent metadata", ()
     "brutalist-verifier",
     "balanced-verifier",
     "final-verifier",
+    "evidence-agent",
     "grader",
     "chain-builder",
     "report-writer",
@@ -232,6 +241,47 @@ test("orchestrator validates brutalist and balanced rounds before proceeding", (
     /bounty_read_verification_round.*round.*balanced/,
     "Missing balanced read-back validation call"
   );
+});
+
+test("evidence-agent exists, is MCP-only, and cannot mutate unrelated artifacts", () => {
+  const document = readFile(".claude/agents/evidence-agent.md");
+  const frontmatter = parseFrontmatter(document, "evidence-agent.md");
+  const tools = frontmatter.tools.split(/\s*,\s*/).filter(Boolean);
+  const generatedTools = toolsForSpec(AGENT_TOOL_SPECS["evidence-agent.md"]);
+  const allowedTools = [
+    "mcp__bountyagent__bounty_http_scan",
+    "mcp__bountyagent__bounty_read_http_audit",
+    "mcp__bountyagent__bounty_read_findings",
+    "mcp__bountyagent__bounty_read_verification_round",
+    "mcp__bountyagent__bounty_write_evidence_packs",
+    "mcp__bountyagent__bounty_read_evidence_packs",
+    "mcp__bountyagent__bounty_list_auth_profiles",
+  ];
+
+  assert.deepEqual(AGENT_TOOL_SPECS["evidence-agent.md"], {
+    roleBundles: ["evidence"],
+    extras: [],
+  });
+  assert.deepEqual(generatedTools.sort(), allowedTools.sort());
+  assert.deepEqual(tools.sort(), allowedTools.sort());
+  assert.match(document, /final reportable findings only/);
+  assert.match(document, /All target requests must go through `bounty_http_scan` with `target_domain`/);
+  assert.match(document, /bounty_write_evidence_packs/);
+  assert.doesNotMatch(frontmatter.tools, /Bash|Write|bounty_record_finding|bounty_write_wave_handoff|bounty_write_grade_verdict/);
+  assert.doesNotMatch(frontmatter.tools, /bounty_write_chain_attempt|bounty_transition_phase/);
+});
+
+test("bob-hunt spawns evidence before grade and validates evidence packs", () => {
+  const orchestrator = readFile(".claude/skills/bob-hunt/SKILL.md");
+  const evidenceIndex = orchestrator.indexOf('subagent_type: "evidence-agent"');
+  const gradeTransitionIndex = orchestrator.indexOf('to_phase: "GRADE"');
+  const graderIndex = orchestrator.indexOf('subagent_type: "grader"');
+
+  assert.ok(evidenceIndex > 0, "missing evidence-agent spawn");
+  assert.ok(gradeTransitionIndex > evidenceIndex, "GRADE transition must happen after evidence-agent");
+  assert.ok(graderIndex > gradeTransitionIndex, "grader must spawn after GRADE transition");
+  assert.match(orchestrator, /bounty_read_evidence_packs\(\{ target_domain: "\[domain\]" \}\)/);
+  assert.match(orchestrator, /write only through bounty_write_evidence_packs/);
 });
 
 test("settings.json registers session-write-guard for Bash and Write", () => {
@@ -355,6 +405,7 @@ test("bob-status skill is compact, read-only, and points to next commands", () =
     "mcp__bountyagent__bounty_write_handoff",
     "mcp__bountyagent__bounty_write_wave_handoff",
     "mcp__bountyagent__bounty_write_verification_round",
+    "mcp__bountyagent__bounty_write_evidence_packs",
     "mcp__bountyagent__bounty_write_grade_verdict",
     "mcp__bountyagent__bounty_record_finding",
     "mcp__bountyagent__bounty_http_scan",
@@ -408,6 +459,8 @@ test("bob-debug skill is telemetry-first and supports latest, explicit, and deep
   assert.match(skill, /pipeline-events\.jsonl[\s\S]*state\.json[\s\S]*grade\.json[\s\S]*report\.md[\s\S]*directory mtime/);
   assert.match(skill, /Artifact fallback mode: telemetry MCP unavailable or incomplete\./);
   assert.match(skill, /Policy replay candidates/);
+  assert.match(skill, /evidence status/);
+  assert.match(skill, /bounty_read_evidence_packs\(\{ target_domain \}\)/);
   assert.match(skill, /refusal or policy-stall turns/);
   assert.match(skill, /Policy Replay Escalation/);
   assert.match(skill, /testing\/policy-replay\/replay\.mjs --case/);
@@ -433,6 +486,7 @@ test("bob-debug skill allowed-tools are read-only and exclude mutators", () => {
     "mcp__bountyagent__bounty_read_wave_handoffs",
     "mcp__bountyagent__bounty_read_findings",
     "mcp__bountyagent__bounty_read_verification_round",
+    "mcp__bountyagent__bounty_read_evidence_packs",
     "mcp__bountyagent__bounty_read_grade_verdict",
   ];
   const forbiddenTools = [
@@ -446,6 +500,7 @@ test("bob-debug skill allowed-tools are read-only and exclude mutators", () => {
     "mcp__bountyagent__bounty_write_handoff",
     "mcp__bountyagent__bounty_write_wave_handoff",
     "mcp__bountyagent__bounty_write_verification_round",
+    "mcp__bountyagent__bounty_write_evidence_packs",
     "mcp__bountyagent__bounty_write_grade_verdict",
     "mcp__bountyagent__bounty_record_finding",
     "mcp__bountyagent__bounty_http_scan",
@@ -655,6 +710,16 @@ test("verifiers, grader, and reporter consume structured chain attempts instead 
   assert.match(reporter, /Include chain evidence only when the chain attempt outcome is `confirmed`/);
 });
 
+test("grader and report-writer consume evidence packs", () => {
+  for (const agent of ["grader", "report-writer"]) {
+    const document = readFile(`.claude/agents/${agent}.md`);
+    const frontmatter = parseFrontmatter(document, `${agent}.md`);
+    assert.match(frontmatter.tools, /mcp__bountyagent__bounty_read_evidence_packs/, `${agent} missing read evidence tool`);
+    assert.match(document, /bounty_read_evidence_packs/, `${agent} missing read evidence instruction`);
+    assert.match(document, /evidence packs/i, `${agent} must use evidence packs`);
+  }
+});
+
 test("orchestrator documents --no-auth flag and skips AUTH when set", () => {
   const orchestrator = readFile(".claude/skills/bob-hunt/SKILL.md");
   assert.match(
@@ -718,6 +783,7 @@ test("production CI runs npm test on supported Node versions without browser ins
 test("bounty_http_scan prompt contracts require target_domain on every call", () => {
   const hunterPrompt = readFile(".claude/agents/hunter-agent.md");
   const orchestratorPrompt = readFile(".claude/skills/bob-hunt/SKILL.md");
+  const evidencePrompt = readFile(".claude/agents/evidence-agent.md");
   const verifierPrompts = [
     readFile(".claude/agents/brutalist-verifier.md"),
     readFile(".claude/agents/balanced-verifier.md"),
@@ -733,6 +799,7 @@ test("bounty_http_scan prompt contracts require target_domain on every call", ()
   assert.match(orchestratorPrompt, /`bounty_http_scan` with `target_domain`/);
   assert.match(orchestratorPrompt, /bounty_http_scan with target_domain/);
   assert.doesNotMatch(orchestratorPrompt, /cross-domain[\s\S]{0,160}target_domain/i);
+  assert.match(evidencePrompt, /All target requests must go through `bounty_http_scan` with `target_domain`/);
 
   for (const verifierPrompt of verifierPrompts) {
     assert.match(verifierPrompt, /`bounty_http_scan` with `target_domain` and the appropriate `auth_profile`/);
