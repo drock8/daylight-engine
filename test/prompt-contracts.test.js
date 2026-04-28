@@ -1491,3 +1491,102 @@ test("hunter and orchestrator prompts keep the structured handoff contract expli
   assert.match(orchestratorPrompt, /bounty_log_coverage/);
   assert.match(orchestratorPrompt, /never write `coverage\.jsonl` through Bash/);
 });
+
+// ----------------------------------------------------------------------
+// Merge integration: SC × main mechanisms (chain attempts, evidence packs)
+// ----------------------------------------------------------------------
+
+test("chain.md instructs bounty_write_chain_attempt for every SC pivot with terminal outcomes", () => {
+  const prompt = readFile("prompts/roles/chain.md");
+  assert.match(prompt, /bounty_write_chain_attempt/, "chain.md must reference bounty_write_chain_attempt");
+  assert.match(prompt, /Terminal chain attempts/i, "chain.md must explain terminal-attempt convention");
+  for (const outcome of ["confirmed", "denied", "blocked", "inconclusive", "not_applicable"]) {
+    assert.match(prompt, new RegExp(`\`${outcome}\``), `chain.md must enumerate ${outcome} outcome`);
+  }
+  assert.match(prompt, /CHAIN -> VERIFY/, "chain.md must reference the gate it satisfies");
+  assert.match(prompt, /No credible chains[\s\S]*not_applicable/, "chain.md must instruct writing not_applicable when no chain exists, to clear the gate");
+  assert.match(prompt, /SC pivots specifically.*proof_reference.*MUST cite/, "chain.md must require sc_evidence-anchored proof_reference for SC pivots");
+});
+
+test("evidence-agent dispatches by surface_type with family runner workflow (SC support)", () => {
+  const document = readFile(".claude/agents/evidence-agent.md");
+  const frontmatter = parseFrontmatter(document, "evidence-agent.md");
+  const tools = frontmatter.tools.split(",").map((tool) => tool.trim());
+  // SC family runners must be in the evidence-agent allowlist for SC findings
+  // to flow through the VERIFY -> GRADE evidence-pack gate.
+  for (const required of [
+    "mcp__bountyagent__bounty_foundry_run",
+    "mcp__bountyagent__bounty_anchor_run",
+    "mcp__bountyagent__bounty_aptos_run",
+    "mcp__bountyagent__bounty_sui_run",
+    "mcp__bountyagent__bounty_substrate_run",
+    "mcp__bountyagent__bounty_cosmwasm_run",
+  ]) {
+    assert.ok(tools.includes(required), `evidence-agent must include ${required}`);
+  }
+  // HTTP path stays available for web findings.
+  assert.ok(tools.includes("mcp__bountyagent__bounty_http_scan"), "evidence-agent must keep bounty_http_scan for web findings");
+
+  // Source body documents the dispatch.
+  const source = readFile("prompts/roles/evidence.md");
+  assert.match(source, /Dispatch by `finding\.surface_type`/i, "evidence source must document surface_type dispatch");
+  assert.match(source, /HTTP findings.*surface_type.*"web"/, "evidence source must describe HTTP path");
+  assert.match(source, /Smart-contract findings.*surface_type.*"smart_contract"/, "evidence source must describe SC path");
+  // Each family branch routes to its canonical runner. EVM/SVM use foundry/anchor;
+  // Move/Substrate/CosmWasm use family-named runners.
+  const familyRunners = {
+    evm: "bounty_foundry_run",
+    svm: "bounty_anchor_run",
+    aptos: "bounty_aptos_run",
+    sui: "bounty_sui_run",
+    substrate: "bounty_substrate_run",
+    cosmwasm: "bounty_cosmwasm_run",
+  };
+  for (const [family, runner] of Object.entries(familyRunners)) {
+    assert.match(source, new RegExp(`\`${family}\`:.*${runner}`), `evidence source must route ${family} to ${runner}`);
+  }
+  // Tooling-blocker fallback ensures the gate clears even when re-run is blocked.
+  assert.match(source, /tooling-blocker reason.*evidence pack still gets written/i, "evidence source must describe tooling-blocker fallback so gate clears");
+});
+
+test("hunter-completion.js exports evidence-mode helpers (post-merge refactor)", () => {
+  const completion = require("../mcp/lib/hunter-completion.js");
+  for (const fn of ["isEvidenceMarker", "evidenceMarkerValidationError", "evaluateEvidenceCompletion", "evidenceTelemetryInput", "EVIDENCE_MODE", "markerMode"]) {
+    assert.ok(completion[fn] !== undefined, `hunter-completion must export ${fn}`);
+  }
+  assert.equal(completion.EVIDENCE_MODE, "evidence");
+  // isEvidenceMarker on a wave-mode marker returns false; on a mode='evidence' marker returns true.
+  assert.equal(completion.isEvidenceMarker({ wave: "w1", agent: "a1", target_domain: "x", surface_id: "s" }), false);
+  assert.equal(completion.isEvidenceMarker({ target_domain: "x", surface_id: "F-1", mode: "evidence" }), true);
+});
+
+test("SC tools register evidence role bundle so evidence-agent can re-run family runners", () => {
+  const expected = [
+    "bounty_foundry_run",
+    "bounty_halmos_run",
+    "bounty_anchor_run",
+    "bounty_aptos_run",
+    "bounty_sui_run",
+    "bounty_substrate_run",
+    "bounty_cosmwasm_run",
+    "bounty_evm_call",
+    "bounty_evm_storage_read",
+    "bounty_evm_fetch_source",
+    "bounty_evm_role_table",
+    "bounty_svm_fetch_account",
+    "bounty_svm_fetch_program",
+    "bounty_aptos_fetch_resource",
+    "bounty_aptos_fetch_module",
+    "bounty_sui_fetch_object",
+    "bounty_sui_fetch_package",
+    "bounty_substrate_fetch_storage",
+    "bounty_substrate_fetch_runtime",
+    "bounty_cosmwasm_fetch_contract",
+    "bounty_cosmwasm_smart_query",
+  ];
+  for (const name of expected) {
+    const meta = TOOL_MANIFEST[name];
+    assert.ok(meta, `${name} is in TOOL_MANIFEST`);
+    assert.ok(meta.role_bundles.includes("evidence"), `${name} must include evidence role bundle`);
+  }
+});
