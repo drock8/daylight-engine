@@ -18,7 +18,38 @@ Bob is an autonomous bug bounty hunting framework for Claude Code. You install i
 
 ## Quickstart
 
-### Before You Run
+### For AI Coding Agents
+
+If a user pastes this repository URL and asks you to install Bob, treat this repo as the **install source**, not automatically as the hunting workspace. Install Bob into the Claude Code project directory the user will run `claude` from.
+
+Use this flow:
+
+```bash
+git clone https://github.com/vmihalis/hacker-bob.git /tmp/hacker-bob
+cd /tmp/hacker-bob
+./install.sh /absolute/path/to/target-project
+cd /absolute/path/to/target-project
+node -e "require('./mcp/server.js'); console.log('MCP ok')"
+claude mcp list
+```
+
+`claude mcp list` should show `bountyagent` connected. That name is expected: it is Bob's internal MCP server namespace. The user-facing commands are `/bob-hunt`, `/bob-status`, `/bob-debug`, `/bob-update`, and `/bob-egress`.
+
+After install, tell the user to fully restart Claude Code from `/absolute/path/to/target-project`, then run:
+
+```
+/bob-hunt target.com
+```
+
+If npm access is available and the user does not specifically need a source checkout, the equivalent install command is:
+
+```bash
+npx -y hacker-bob-cc@latest install /absolute/path/to/target-project
+```
+
+### For Humans
+
+#### Before You Run
 
 Bob is autonomous and can send real requests, use local tools, attempt signup and authentication flows, and interact with third-party, internal, or private hosts when instructed by Bob's agents. Only run Bob when you have explicit authorization for the target, accounts, testing methods, automation, and any third-party systems involved.
 
@@ -37,18 +68,6 @@ Then run:
 ```
 /bob-hunt target.com
 ```
-
-If you are asking another AI coding agent to install Bob from this repository link, give it the target Claude Code project directory and this checklist:
-
-```bash
-git clone https://github.com/vmihalis/hacker-bob.git /tmp/hacker-bob
-cd /tmp/hacker-bob
-./install.sh /absolute/path/to/target-project
-cd /absolute/path/to/target-project
-claude mcp list
-```
-
-`claude mcp list` should show `bountyagent` connected. Then fully restart Claude Code in `/absolute/path/to/target-project` and run `/bob-hunt target.com`.
 
 ## Install
 
@@ -89,19 +108,6 @@ cd hacker-bob
 ```
 
 Do not run `/bob-hunt` from the cloned Hacker Bob source tree unless you intentionally installed Bob into that same directory. The source checkout is normally the installer, while `/path/to/your/project` is the active Claude Code workspace.
-
-### AI Agent Install Notes
-
-When a user pastes only this repository URL into an AI coding agent, the agent should:
-
-1. Ask for or infer the target Claude Code project directory.
-2. Clone this repo to a temporary or tools directory.
-3. Run `./install.sh /absolute/path/to/target-project` from the cloned repo, or use `npx -y hacker-bob-cc@latest install /absolute/path/to/target-project` when npm access is available.
-4. Verify `/absolute/path/to/target-project/.mcp.json` contains an `mcpServers.bountyagent` entry pointing at `/absolute/path/to/target-project/mcp/server.js`.
-5. Run `node -e "require('/absolute/path/to/target-project/mcp/server.js'); console.log('MCP ok')"` to confirm the copied MCP runtime loads.
-6. Start or fully restart Claude Code from `/absolute/path/to/target-project`, then check `claude mcp list`.
-
-The internal MCP server name is still `bountyagent`, so Claude Code tools appear as `mcp__bountyagent__bounty_*`. That is expected. The user-facing commands are `/bob-hunt`, `/bob-status`, `/bob-debug`, `/bob-update`, and `/bob-egress`.
 
 ## Usage
 

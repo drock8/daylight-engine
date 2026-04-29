@@ -5,3 +5,6 @@ testing/**/node_modules/
 .env
 .env.local
 .mcp.json
+.claude/bob/VERSION
+.claude/bob/install.json
+.claude/bob/egress-profiles.json
