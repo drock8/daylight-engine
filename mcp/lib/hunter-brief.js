@@ -256,19 +256,26 @@ function readHunterBrief(args) {
     capabilityPack: routeMetadata.capability_pack,
     maxEntries: Math.min(4, routeMetadata.context_budget.candidate_pack_limit),
   });
-  const selectedTechniquePacks = selectTechniquePacksForSurface(surfaceObj, {
+  const selectedTechniquePackResult = selectTechniquePacksForSurface(surfaceObj, {
     capabilityPack: routeMetadata.capability_pack,
     maxPacks: routeMetadata.context_budget.candidate_pack_limit,
     includeAttempted: true,
-  }).selected.map((pack) => ({
+  });
+  const selectedTechniquePacks = selectedTechniquePackResult.selected.map((pack) => ({
     id: pack.id,
     version: pack.version,
     title: pack.title,
     matched: pack.matched,
     score: pack.score,
     summary: pack.summary,
+    summary_limits: pack.summary_limits,
     estimated_tokens: pack.estimated_tokens,
   }));
+  const selectedTechniquePackLimits = {
+    ...selectedTechniquePackResult.selection_limits,
+    selected_chars: JSON.stringify(selectedTechniquePacks).length,
+    selected_count: selectedTechniquePacks.length,
+  };
   const coverageSummary = buildCoverageSummaryForSurface(
     readCoverageRecordsFromJsonl(domain),
     assignment.surface_id,
@@ -319,6 +326,7 @@ function readHunterBrief(args) {
     knowledge_summary: knowledge.knowledge_summary,
     technique_packs: {
       selected: selectedTechniquePacks,
+      selection_limits: selectedTechniquePackLimits,
       selection_budget: {
         candidate_pack_limit: routeMetadata.context_budget.candidate_pack_limit,
         full_pack_read_limit: routeMetadata.context_budget.full_pack_read_limit,

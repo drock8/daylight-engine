@@ -18,6 +18,10 @@ const {
   getCapabilityPack,
   getCapabilityPackContextBudget,
 } = require("./capability-packs.js");
+const {
+  ERROR_CODES,
+  ToolError,
+} = require("./envelope.js");
 
 function getContextBudget(args) {
   const capabilityPack = assertNonEmptyString(args.capability_pack, "capability_pack");
@@ -29,6 +33,15 @@ function getContextBudget(args) {
   const targetDomain = normalizeOptionalText(args.target_domain, "target_domain");
   const surfaceId = normalizeOptionalText(args.surface_id, "surface_id");
   let briefProfile = normalizeOptionalText(args.brief_profile, "brief_profile") || pack.brief_profile;
+  let capabilityPackVersion = pack.capability_pack_version;
+  let contextBudget = getCapabilityPackContextBudget(capabilityPack);
+
+  if (surfaceId && !targetDomain) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "target_domain is required when surface_id is provided",
+    );
+  }
 
   if (briefProfile !== pack.brief_profile) {
     throw new Error(`brief_profile ${briefProfile} does not match capability_pack ${capabilityPack}`);
@@ -51,6 +64,10 @@ function getContextBudget(args) {
           throw new Error(`surface_id ${surfaceId} is routed to capability_pack ${route.capability_pack}`);
         }
         if (route.brief_profile) briefProfile = route.brief_profile;
+        if (route.capability_pack_version) capabilityPackVersion = route.capability_pack_version;
+        if (route.context_budget && typeof route.context_budget === "object" && !Array.isArray(route.context_budget)) {
+          contextBudget = { ...route.context_budget };
+        }
       }
     }
   }
@@ -58,9 +75,9 @@ function getContextBudget(args) {
   return JSON.stringify({
     version: 1,
     capability_pack: capabilityPack,
-    capability_pack_version: pack.capability_pack_version,
+    capability_pack_version: capabilityPackVersion,
     brief_profile: briefProfile,
-    context_budget: getCapabilityPackContextBudget(capabilityPack),
+    context_budget: contextBudget,
   });
 }
 

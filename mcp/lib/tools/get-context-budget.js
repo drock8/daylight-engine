@@ -4,14 +4,14 @@ const { getContextBudget } = require("../context-budget.js");
 
 module.exports = Object.freeze({
   name: "bounty_get_context_budget",
-  description: "Return the versioned context budget for a capability pack and optional routed surface.",
+  description: "Return the versioned context budget for a capability pack. If surface_id is supplied, target_domain is required so the routed surface can be validated.",
   inputSchema: {
     type: "object",
     properties: {
-      target_domain: { type: "string" },
+      target_domain: { type: "string", description: "Required when surface_id is supplied." },
       capability_pack: { type: "string" },
       brief_profile: { type: "string" },
-      surface_id: { type: "string" },
+      surface_id: { type: "string", description: "Optional routed surface to validate; requires target_domain." },
     },
     required: ["capability_pack"],
   },

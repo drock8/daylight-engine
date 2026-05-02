@@ -72,6 +72,7 @@ const PIPELINE_EVENT_TYPES = Object.freeze([
   "wave_merge_pending",
   "wave_merged",
   "coverage_logged",
+  "technique_attempt_logged",
   "finding_recorded",
   "verification_written",
   "evidence_written",

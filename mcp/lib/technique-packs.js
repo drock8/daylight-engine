@@ -49,6 +49,11 @@ const HUNTER_KNOWLEDGE_MAX_CHARS = 4500;
 const TECHNIQUE_PACK_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 const DEFAULT_SUMMARY_ESTIMATED_TOKENS = 500;
 const DEFAULT_FULL_ESTIMATED_TOKENS = 1500;
+const TECHNIQUE_SUMMARY_ITEMS_PER_KIND = 4;
+const TECHNIQUE_SUMMARY_ITEM_MAX_CHARS = 240;
+const TECHNIQUE_FULL_ITEMS_PER_KIND = 12;
+const TECHNIQUE_FULL_ITEM_MAX_CHARS = 900;
+const TECHNIQUE_SELECTION_MAX_CHARS = 6000;
 
 function hunterKnowledgeCandidatePaths() {
   const candidates = [];
@@ -94,6 +99,41 @@ function stringArray(value) {
   return values
     .filter((item) => item != null)
     .map((item) => String(item));
+}
+
+function capTechniqueString(value, maxChars) {
+  const text = String(value);
+  if (text.length <= maxChars) {
+    return { value: text, truncated: false, total_chars: text.length };
+  }
+  return {
+    value: text.slice(0, maxChars),
+    truncated: true,
+    total_chars: text.length,
+  };
+}
+
+function boundedTechniqueStrings(value, { itemLimit, itemMaxChars }) {
+  const rawValues = stringArray(value)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  let truncatedValues = 0;
+  const values = rawValues.slice(0, itemLimit).map((item) => {
+    const capped = capTechniqueString(item, itemMaxChars);
+    if (capped.truncated) truncatedValues += 1;
+    return capped.value;
+  });
+  return {
+    values,
+    limits: {
+      item_limit: itemLimit,
+      item_max_chars: itemMaxChars,
+      shown: values.length,
+      total: rawValues.length,
+      omitted: Math.max(0, rawValues.length - values.length),
+      truncated_values: truncatedValues,
+    },
+  };
 }
 
 function surfaceFieldText(surface, fields) {
@@ -243,6 +283,14 @@ function loadTechniqueRegistry() {
 }
 
 function techniquePackSummary(pack, { matches = [], score = 0, attempt = null } = {}) {
+  const guidance = boundedTechniqueStrings(pack.techniques, {
+    itemLimit: TECHNIQUE_SUMMARY_ITEMS_PER_KIND,
+    itemMaxChars: TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
+  });
+  const payloadHints = boundedTechniqueStrings(pack.payload_hints, {
+    itemLimit: TECHNIQUE_SUMMARY_ITEMS_PER_KIND,
+    itemMaxChars: TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
+  });
   const summary = {
     id: pack.id,
     version: pack.version,
@@ -251,8 +299,12 @@ function techniquePackSummary(pack, { matches = [], score = 0, attempt = null } 
     matched: matches.slice(0, 8),
     score,
     summary: {
-      guidance: pack.techniques.slice(0, 4),
-      payload_hints: pack.payload_hints.slice(0, 4),
+      guidance: guidance.values,
+      payload_hints: payloadHints.values,
+    },
+    summary_limits: {
+      guidance: guidance.limits,
+      payload_hints: payloadHints.limits,
     },
     estimated_tokens: { ...pack.estimated_tokens },
   };
@@ -275,6 +327,33 @@ function shouldSkipAttemptedPack(attempt, includeAttempted) {
   return !!attempt;
 }
 
+function fitTechniquePackSummaries(summaries, maxChars = TECHNIQUE_SELECTION_MAX_CHARS, {
+  candidateLimit = null,
+} = {}) {
+  const selected = [];
+  for (const summary of summaries) {
+    const candidate = selected.concat(summary);
+    if (JSON.stringify(candidate).length > maxChars) break;
+    selected.push(summary);
+  }
+  const selectionLimits = {
+    max_chars: maxChars,
+    selected_chars: JSON.stringify(selected).length,
+    selected_count: selected.length,
+    candidate_count: summaries.length,
+    omitted_due_to_char_limit: Math.max(0, summaries.length - selected.length),
+    summary_items_per_kind: TECHNIQUE_SUMMARY_ITEMS_PER_KIND,
+    summary_item_max_chars: TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
+  };
+  if (candidateLimit != null) {
+    selectionLimits.candidate_pack_limit = candidateLimit;
+  }
+  return {
+    selected,
+    selection_limits: selectionLimits,
+  };
+}
+
 function selectTechniquePacksForSurface(surface, {
   capabilityPack = "web",
   maxPacks = HUNTER_KNOWLEDGE_MAX_ENTRIES,
@@ -289,6 +368,9 @@ function selectTechniquePacksForSurface(surface, {
       selected: [],
       omitted_attempted: [],
       registry_version: registry.version,
+      selection_limits: fitTechniquePackSummaries([], TECHNIQUE_SELECTION_MAX_CHARS, {
+        candidateLimit: limit,
+      }).selection_limits,
     };
   }
 
@@ -316,7 +398,7 @@ function selectTechniquePacksForSurface(surface, {
     return a.pack.id.localeCompare(b.pack.id);
   });
 
-  const selected = [];
+  const selectedCandidates = [];
   const omittedAttempted = [];
   for (const scored of scoredPacks) {
     const attempt = attemptsByPack.get(scored.pack.id) || null;
@@ -324,19 +406,23 @@ function selectTechniquePacksForSurface(surface, {
       omittedAttempted.push(summarizeTechniqueAttempt(attempt));
       continue;
     }
-    selected.push(techniquePackSummary(scored.pack, {
+    selectedCandidates.push(techniquePackSummary(scored.pack, {
       matches: scored.matches,
       score: scored.score,
       attempt,
     }));
-    if (selected.length >= limit) break;
+    if (selectedCandidates.length >= limit) break;
   }
+  const fitted = fitTechniquePackSummaries(selectedCandidates, TECHNIQUE_SELECTION_MAX_CHARS, {
+    candidateLimit: limit,
+  });
 
   return {
     source: registry.source,
-    selected,
+    selected: fitted.selected,
     omitted_attempted: omittedAttempted,
     registry_version: registry.version,
+    selection_limits: fitted.selection_limits,
   };
 }
 
@@ -355,8 +441,21 @@ function readTechniquePack(packId, { mode = "summary" } = {}) {
       mode: normalizedMode,
       source: registry.source ? path.basename(registry.source) : null,
       technique_pack: summary,
+      summary_limits: summary.summary_limits,
     };
   }
+  const fullTechniques = boundedTechniqueStrings(pack.techniques, {
+    itemLimit: TECHNIQUE_FULL_ITEMS_PER_KIND,
+    itemMaxChars: TECHNIQUE_FULL_ITEM_MAX_CHARS,
+  });
+  const fullPayloadHints = boundedTechniqueStrings(pack.payload_hints, {
+    itemLimit: TECHNIQUE_FULL_ITEMS_PER_KIND,
+    itemMaxChars: TECHNIQUE_FULL_ITEM_MAX_CHARS,
+  });
+  const fullLimits = {
+    techniques: fullTechniques.limits,
+    payload_hints: fullPayloadHints.limits,
+  };
   return {
     version: 1,
     mode: normalizedMode,
@@ -369,10 +468,13 @@ function readTechniquePack(packId, { mode = "summary" } = {}) {
         title: pack.title,
         capability_packs: pack.capability_packs.slice(),
         match: pack.match,
-        techniques: pack.techniques.slice(),
-        payload_hints: pack.payload_hints.slice(),
+        techniques: fullTechniques.values,
+        payload_hints: fullPayloadHints.values,
       },
+      full_limits: fullLimits,
     },
+    summary_limits: summary.summary_limits,
+    full_limits: fullLimits,
   };
 }
 
@@ -448,6 +550,7 @@ function selectTechniquePacks(args) {
     max_packs: maxPacks,
     include_attempted: includeAttempted,
     technique_packs: selected.selected,
+    selection_limits: selected.selection_limits,
     attempts_summary: {
       total_for_surface: attempts.length,
       omitted_attempted: selected.omitted_attempted,
@@ -676,6 +779,11 @@ module.exports = {
   HUNTER_KNOWLEDGE_FILE,
   HUNTER_KNOWLEDGE_MAX_CHARS,
   HUNTER_KNOWLEDGE_MAX_ENTRIES,
+  TECHNIQUE_FULL_ITEM_MAX_CHARS,
+  TECHNIQUE_FULL_ITEMS_PER_KIND,
+  TECHNIQUE_SELECTION_MAX_CHARS,
+  TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
+  TECHNIQUE_SUMMARY_ITEMS_PER_KIND,
   loadHunterKnowledge,
   loadTechniqueRegistry,
   logTechniqueAttempt,

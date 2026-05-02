@@ -133,7 +133,6 @@ test("surface-router-agent is thin and cannot hunt or write directly", () => {
   assert.deepEqual(tools, [
     "Read",
     "mcp__bountyagent__bounty_route_surfaces",
-    "mcp__bountyagent__bounty_get_context_budget",
   ]);
   assert.match(document, /mcpServers:\s*\n\s*-\s*bountyagent/);
   assert.match(document, /bounty_route_surfaces/);

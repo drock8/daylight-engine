@@ -11,6 +11,13 @@ const https = require("https");
 const os = require("os");
 const path = require("path");
 const serverModule = require("../mcp/server.js");
+const {
+  TECHNIQUE_FULL_ITEM_MAX_CHARS,
+  TECHNIQUE_FULL_ITEMS_PER_KIND,
+  TECHNIQUE_SELECTION_MAX_CHARS,
+  TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
+  TECHNIQUE_SUMMARY_ITEMS_PER_KIND,
+} = require("../mcp/lib/technique-packs.js");
 const egressProfiles = require("../mcp/lib/egress-profiles.js");
 const {
   TOOL_HANDLERS,
@@ -278,6 +285,70 @@ function withEnv(overrides, fn) {
     cleanup();
     throw error;
   }
+}
+
+function withTempTechniqueKnowledge(document, fn) {
+  const previousProjectDir = process.env.CLAUDE_PROJECT_DIR;
+  const tempProjectDir = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-techniques-"));
+  const knowledgeDir = path.join(tempProjectDir, ".claude", "knowledge");
+  fs.mkdirSync(knowledgeDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(knowledgeDir, "hunter-techniques.json"),
+    `${JSON.stringify(document, null, 2)}\n`,
+    "utf8",
+  );
+  process.env.CLAUDE_PROJECT_DIR = tempProjectDir;
+
+  const cleanup = () => {
+    if (previousProjectDir === undefined) {
+      delete process.env.CLAUDE_PROJECT_DIR;
+    } else {
+      process.env.CLAUDE_PROJECT_DIR = previousProjectDir;
+    }
+    fs.rmSync(tempProjectDir, { recursive: true, force: true });
+  };
+
+  try {
+    const result = fn(tempProjectDir);
+    if (result && typeof result.then === "function") {
+      return result.finally(cleanup);
+    }
+    cleanup();
+    return result;
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+
+function oversizedTechniqueKnowledge({
+  packCount = 8,
+  itemCount = 20,
+  itemChars = 1500,
+} = {}) {
+  return {
+    version: 99,
+    entries: Array.from({ length: packCount }, (_, packIndex) => ({
+      id: `oversized-${packIndex}`,
+      version: 99,
+      title: `Oversized ${packIndex}`,
+      capability_packs: ["web"],
+      match: {
+        tech: ["OversizedStack"],
+        endpoints: ["/oversized"],
+        params: ["oversized_id"],
+        hints: ["oversized-hint"],
+      },
+      techniques: Array.from(
+        { length: itemCount },
+        (_, itemIndex) => `technique ${packIndex}-${itemIndex} ${"T".repeat(itemChars)}`,
+      ),
+      payload_hints: Array.from(
+        { length: itemCount },
+        (_, itemIndex) => `payload ${packIndex}-${itemIndex} ${"P".repeat(itemChars)}`,
+      ),
+    })),
+  };
 }
 
 function withRepoEgressConfig(document, fn) {
@@ -7994,7 +8065,101 @@ test("bounty_read_hunter_brief includes bounded candidate technique packs and co
     assert.ok(graphql.score > 0);
     assert.ok(graphql.summary.guidance.length > 0);
     assert.ok(graphql.summary.payload_hints.length > 0);
+    assert.equal(graphql.summary_limits.guidance.item_limit, TECHNIQUE_SUMMARY_ITEMS_PER_KIND);
+    assert.equal(graphql.summary_limits.guidance.item_max_chars, TECHNIQUE_SUMMARY_ITEM_MAX_CHARS);
+    assert.ok(brief.technique_packs.selection_limits);
     assert.equal(graphql.full, undefined);
+  });
+});
+
+test("technique pack summary and full reads truncate oversized content with limit metadata", () => {
+  withTempTechniqueKnowledge(oversizedTechniqueKnowledge(), () => {
+    const summary = readTechniquePack("oversized-0", { mode: "summary" });
+    assert.equal(summary.technique_pack.id, "oversized-0");
+    assert.equal(summary.technique_pack.summary.guidance.length, TECHNIQUE_SUMMARY_ITEMS_PER_KIND);
+    assert.equal(summary.technique_pack.summary.payload_hints.length, TECHNIQUE_SUMMARY_ITEMS_PER_KIND);
+    assert.equal(summary.technique_pack.summary.guidance.every((entry) => entry.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS), true);
+    assert.equal(summary.technique_pack.summary.payload_hints.every((entry) => entry.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS), true);
+    assert.equal(summary.technique_pack.summary_limits.guidance.total, 20);
+    assert.equal(summary.technique_pack.summary_limits.guidance.omitted, 16);
+    assert.equal(summary.technique_pack.summary_limits.guidance.truncated_values, TECHNIQUE_SUMMARY_ITEMS_PER_KIND);
+    assert.deepEqual(summary.summary_limits, summary.technique_pack.summary_limits);
+
+    const full = readTechniquePack("oversized-0", { mode: "full" });
+    assert.equal(full.technique_pack.full.techniques.length, TECHNIQUE_FULL_ITEMS_PER_KIND);
+    assert.equal(full.technique_pack.full.payload_hints.length, TECHNIQUE_FULL_ITEMS_PER_KIND);
+    assert.equal(full.technique_pack.full.techniques.every((entry) => entry.length <= TECHNIQUE_FULL_ITEM_MAX_CHARS), true);
+    assert.equal(full.technique_pack.full.payload_hints.every((entry) => entry.length <= TECHNIQUE_FULL_ITEM_MAX_CHARS), true);
+    assert.equal(full.technique_pack.full_limits.techniques.total, 20);
+    assert.equal(full.technique_pack.full_limits.techniques.omitted, 8);
+    assert.equal(full.technique_pack.full_limits.techniques.truncated_values, TECHNIQUE_FULL_ITEMS_PER_KIND);
+    assert.deepEqual(full.full_limits, full.technique_pack.full_limits);
+  });
+});
+
+test("bounty_select_technique_packs keeps oversized selected summaries within the selection limit", () => {
+  withTempHome(() => {
+    withTempTechniqueKnowledge(oversizedTechniqueKnowledge(), () => {
+      const domain = "example.com";
+      seedAttackSurfaces(domain, [{
+        id: "surface-oversized",
+        hosts: [`https://${domain}`],
+        tech_stack: ["OversizedStack"],
+        endpoints: ["/oversized"],
+        interesting_params: ["oversized_id"],
+        evidence: ["oversized-hint"],
+      }]);
+
+      const selected = JSON.parse(selectTechniquePacks({
+        target_domain: domain,
+        surface_id: "surface-oversized",
+        capability_pack: "web",
+        max_packs: 50,
+      }));
+
+      assert.equal(selected.selection_limits.max_chars, TECHNIQUE_SELECTION_MAX_CHARS);
+      assert.equal(JSON.stringify(selected.technique_packs).length, selected.selection_limits.selected_chars);
+      assert.ok(JSON.stringify(selected.technique_packs).length <= TECHNIQUE_SELECTION_MAX_CHARS);
+      assert.ok(selected.selection_limits.omitted_due_to_char_limit > 0);
+      assert.ok(selected.technique_packs.length < selected.max_packs);
+      assert.equal(selected.technique_packs.every((pack) => pack.summary.guidance.length <= TECHNIQUE_SUMMARY_ITEMS_PER_KIND), true);
+      assert.equal(
+        selected.technique_packs.every((pack) => pack.summary.guidance.every((entry) => entry.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS)),
+        true,
+      );
+    });
+  });
+});
+
+test("bounty_read_hunter_brief returns bounded oversized selected technique packs and selection limits", () => {
+  withTempHome(() => {
+    withTempTechniqueKnowledge(oversizedTechniqueKnowledge(), () => {
+      const domain = "example.com";
+      seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+      seedAttackSurfaces(domain, [{
+        id: "surface-oversized",
+        hosts: [`https://${domain}`],
+        tech_stack: ["OversizedStack"],
+        endpoints: ["/oversized"],
+        interesting_params: ["oversized_id"],
+        evidence: ["oversized-hint"],
+      }]);
+      seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-oversized" }]);
+
+      const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+      assert.ok(Array.isArray(brief.techniques));
+      assert.ok(Array.isArray(brief.payload_hints));
+      assert.ok(brief.knowledge_summary);
+      assert.equal(brief.technique_packs.selection_limits.max_chars, TECHNIQUE_SELECTION_MAX_CHARS);
+      assert.equal(JSON.stringify(brief.technique_packs.selected).length, brief.technique_packs.selection_limits.selected_chars);
+      assert.ok(JSON.stringify(brief.technique_packs.selected).length <= TECHNIQUE_SELECTION_MAX_CHARS);
+      assert.ok(brief.technique_packs.selection_limits.omitted_due_to_char_limit > 0);
+      assert.equal(brief.technique_packs.selected.every((pack) => pack.summary_limits), true);
+      assert.equal(
+        brief.technique_packs.selected.every((pack) => pack.summary.guidance.every((entry) => entry.length <= TECHNIQUE_SUMMARY_ITEM_MAX_CHARS)),
+        true,
+      );
+    });
   });
 });
 
@@ -8031,6 +8196,20 @@ test("context budget and technique-pack MCP tools are deterministic and bounded"
     ]);
     JSON.parse(routeSurfaces({ target_domain: domain }));
 
+    const packOnlyBudget = JSON.parse(getContextBudget({ capability_pack: "web" }));
+    assert.deepEqual(packOnlyBudget.context_budget, expectedWebContextBudget());
+
+    assert.throws(
+      () => getContextBudget({ capability_pack: "web", surface_id: "surface-graphql" }),
+      /target_domain is required when surface_id is provided/,
+    );
+    const missingTargetDomain = await executeTool("bounty_get_context_budget", {
+      capability_pack: "web",
+      surface_id: "surface-graphql",
+    });
+    assert.equal(missingTargetDomain.ok, false);
+    assert.equal(missingTargetDomain.error.code, "INVALID_ARGUMENTS");
+
     const budget = JSON.parse(getContextBudget({
       target_domain: domain,
       surface_id: "surface-graphql",
@@ -8040,6 +8219,37 @@ test("context budget and technique-pack MCP tools are deterministic and bounded"
     assert.equal(budget.version, 1);
     assert.equal(budget.capability_pack_version, 1);
     assert.deepEqual(budget.context_budget, expectedWebContextBudget());
+
+    const routeSpecificBudget = {
+      brief_max_tokens: 1234,
+      candidate_pack_limit: 3,
+      full_pack_read_limit: 1,
+      attempt_log_required: false,
+      team_escalation_allowed: true,
+    };
+    writeFileAtomic(surfaceRoutesPath(domain), `${JSON.stringify({
+      version: 1,
+      route_version: 1,
+      routes: [{
+        surface_id: "surface-graphql",
+        surface_type: "graphql",
+        capability_pack: "web",
+        capability_pack_version: 7,
+        hunter_agent: "hunter-agent",
+        brief_profile: "web",
+        context_budget: routeSpecificBudget,
+        confidence: "high",
+        reasons: ["test:custom-route-budget"],
+      }],
+    }, null, 2)}\n`);
+    const routeBudget = JSON.parse(getContextBudget({
+      target_domain: domain,
+      surface_id: "surface-graphql",
+      capability_pack: "web",
+    }));
+    assert.equal(routeBudget.capability_pack_version, 7);
+    assert.deepEqual(routeBudget.context_budget, routeSpecificBudget);
+    JSON.parse(routeSurfaces({ target_domain: domain }));
 
     const graphql = JSON.parse(selectTechniquePacks({
       target_domain: domain,
@@ -8066,6 +8276,10 @@ test("context budget and technique-pack MCP tools are deterministic and bounded"
     const full = readTechniquePack("graphql", { mode: "full" });
     assert.equal(full.technique_pack.id, "graphql");
     assert.ok(full.technique_pack.full.techniques.length > 0);
+    assert.ok(full.technique_pack.full.techniques.length <= TECHNIQUE_FULL_ITEMS_PER_KIND);
+    assert.equal(full.technique_pack.full.techniques.every((entry) => entry.length <= TECHNIQUE_FULL_ITEM_MAX_CHARS), true);
+    assert.equal(full.technique_pack.full.payload_hints.every((entry) => entry.length <= TECHNIQUE_FULL_ITEM_MAX_CHARS), true);
+    assert.ok(full.technique_pack.full_limits);
     assert.doesNotMatch(JSON.stringify(full), /WordPress REST/);
 
     assert.throws(
@@ -8110,6 +8324,19 @@ test("bounty_log_technique_attempt appends valid JSONL and rejects invalid input
     assert.equal(records[0].status, "attempted");
     assert.equal(records[0].outcome, "not_applicable");
     assert.match(records[0].ts, /^\d{4}-\d{2}-\d{2}T/);
+
+    const pipelineEvents = readJsonl(pipelineEventsJsonlPath(domain));
+    const attemptEvent = pipelineEvents.find((event) => event.type === "technique_attempt_logged");
+    assert.ok(attemptEvent);
+    assert.equal(attemptEvent.wave_number, 1);
+    assert.equal(attemptEvent.agent, "a1");
+    assert.equal(attemptEvent.surface_id, "surface-graphql");
+    assert.equal(attemptEvent.status, "attempted");
+    assert.equal(attemptEvent.source, "bounty_log_technique_attempt");
+    assert.deepEqual(attemptEvent.counts, { records: 1 });
+    for (const field of ["evidence", "outcome", "pack_id", "technique_pack", "payload_hints"]) {
+      assert.equal(Object.prototype.hasOwnProperty.call(attemptEvent, field), false);
+    }
 
     const selectedAfterAttempt = JSON.parse(selectTechniquePacks({
       target_domain: domain,
