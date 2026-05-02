@@ -448,8 +448,10 @@ function startWave(args) {
       return {
         ...assignment,
         capability_pack: route.capability_pack,
+        capability_pack_version: route.capability_pack_version,
         hunter_agent: route.hunter_agent,
         brief_profile: route.brief_profile,
+        context_budget: route.context_budget,
         handoff_token_sha256: sha256Hex(token),
         handoff_token: token,
       };
@@ -499,8 +501,10 @@ function startWave(args) {
         agent: assignment.agent,
         surface_id: assignment.surface_id,
         capability_pack: assignment.capability_pack,
+        capability_pack_version: assignment.capability_pack_version,
         hunter_agent: assignment.hunter_agent,
         brief_profile: assignment.brief_profile,
+        context_budget: assignment.context_budget,
         handoff_token: assignment.handoff_token,
       })),
       assignments_path: assignmentsPath,

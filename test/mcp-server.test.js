@@ -84,6 +84,7 @@ const {
   executeTool,
   findingsJsonlPath,
   findingsMarkdownPath,
+  getContextBudget,
   gradeArtifactPaths,
   initSession,
   importHttpTraffic,
@@ -112,7 +113,9 @@ const {
   compactSessionState,
   listFindings,
   listAuthProfiles,
+  loadTechniqueRegistry,
   mergeWaveHandoffs,
+  logTechniqueAttempt,
   httpAuditJsonlPath,
   importStaticArtifact,
   pipelineEventsJsonlPath,
@@ -156,7 +159,11 @@ const {
   readHunterBrief,
   readStaticArtifactRecordsFromJsonl,
   readStaticScanResultsFromJsonl,
+  readTechniqueAttemptRecordsFromJsonl,
+  readTechniquePack,
   promoteSurfaceLeads,
+  selectTechniquePacks,
+  techniqueAttemptsJsonlPath,
 } = serverModule;
 
 const EXPECTED_TOOL_NAMES = [
@@ -201,6 +208,10 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_set_operator_note",
   "bounty_clear_operator_note",
   "bounty_read_hunter_brief",
+  "bounty_get_context_budget",
+  "bounty_select_technique_packs",
+  "bounty_read_technique_pack",
+  "bounty_log_technique_attempt",
   "bounty_read_tool_telemetry",
   "bounty_read_pipeline_analytics",
   "bounty_record_surface_leads",
@@ -349,6 +360,16 @@ function seedAttackSurface(domain, surfaceIds = ["surface-a", "surface-b", "surf
 
 function seedAttackSurfaces(domain, surfaces) {
   writeFileAtomic(attackSurfacePath(domain), `${JSON.stringify({ surfaces }, null, 2)}\n`);
+}
+
+function expectedWebContextBudget() {
+  return {
+    brief_max_tokens: 2500,
+    candidate_pack_limit: 5,
+    full_pack_read_limit: 2,
+    attempt_log_required: true,
+    team_escalation_allowed: false,
+  };
 }
 
 function writeUnexpectedHandoff(domain, wave, agent, payload = {}) {
@@ -573,6 +594,7 @@ test("mcp server public exports remain stable", () => {
     "filterExclusionsByHosts",
     "findingsJsonlPath",
     "findingsMarkdownPath",
+    "getContextBudget",
     "gradeArtifactPaths",
     "httpAuditJsonlPath",
     "importHttpTraffic",
@@ -580,7 +602,9 @@ test("mcp server public exports remain stable", () => {
     "initSession",
     "listAuthProfiles",
     "listFindings",
+    "loadTechniqueRegistry",
     "logCoverage",
+    "logTechniqueAttempt",
     "mergeWaveHandoffs",
     "migrateAuthJson",
     "normalizeCoverageRecord",
@@ -616,6 +640,8 @@ test("mcp server public exports remain stable", () => {
     "readStaticArtifactRecordsFromJsonl",
     "readStaticScanResultsFromJsonl",
     "readSurfaceLeads",
+    "readTechniqueAttemptRecordsFromJsonl",
+    "readTechniquePack",
     "readTrafficRecordsFromJsonl",
     "readVerificationRound",
     "readWaveHandoffs",
@@ -630,6 +656,7 @@ test("mcp server public exports remain stable", () => {
     "resolveAuthJsonPath",
     "resolveHunterKnowledge",
     "routeSurfaces",
+    "selectTechniquePacks",
     "sessionDir",
     "sessionLockPath",
     "sessionsRoot",
@@ -647,6 +674,7 @@ test("mcp server public exports remain stable", () => {
     "summarizeStaticScanHints",
     "surfaceLeadsPath",
     "surfaceRoutesPath",
+    "techniqueAttemptsJsonlPath",
     "tempEmail",
     "trafficJsonlPath",
     "transitionPhase",
@@ -776,6 +804,24 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bounty_promote_surface_leads.sensitive_output, false);
   assert.equal(TOOL_MANIFEST.bounty_promote_surface_leads.hook_required, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_promote_surface_leads.session_artifacts_written, ["surface-leads.json", "attack_surface.json", "state.json"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_get_context_budget.role_bundles, ["hunter", "hunter-web", "orchestrator", "router"]);
+  assert.equal(TOOL_MANIFEST.bounty_get_context_budget.mutating, false);
+  assert.equal(TOOL_MANIFEST.bounty_get_context_budget.network_access, false);
+  assert.equal(TOOL_MANIFEST.bounty_get_context_budget.browser_access, false);
+  assert.equal(TOOL_MANIFEST.bounty_get_context_budget.scope_required, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_get_context_budget.session_artifacts_written, []);
+  assert.deepEqual(TOOL_MANIFEST.bounty_select_technique_packs.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_select_technique_packs.mutating, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_technique_pack.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_read_technique_pack.mutating, false);
+  assert.equal(byName.get("bounty_read_technique_pack").inputSchema.properties.mode.enum.includes("full"), true);
+  assert.deepEqual(TOOL_MANIFEST.bounty_log_technique_attempt.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_log_technique_attempt.mutating, true);
+  assert.equal(TOOL_MANIFEST.bounty_log_technique_attempt.network_access, false);
+  assert.equal(TOOL_MANIFEST.bounty_log_technique_attempt.browser_access, false);
+  assert.equal(TOOL_MANIFEST.bounty_log_technique_attempt.scope_required, false);
+  assert.equal(TOOL_MANIFEST.bounty_log_technique_attempt.sensitive_output, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_log_technique_attempt.session_artifacts_written, ["technique-attempts.jsonl"]);
   assert.equal(TOOL_MANIFEST.bounty_read_session_summary.mutating, false);
   assert.equal(TOOL_MANIFEST.bounty_read_session_summary.global_preapproval, true);
   assert.deepEqual(TOOL_MANIFEST.bounty_read_session_summary.role_bundles, ["orchestrator"]);
@@ -2699,8 +2745,12 @@ test("capability routing maps current web surface types to the web pack", () => 
 
     const routes = JSON.parse(fs.readFileSync(surfaceRoutesPath(domain), "utf8")).routes;
     assert.deepEqual(routes.map((route) => route.capability_pack), Array(6).fill("web"));
+    assert.deepEqual(routes.map((route) => route.capability_pack_version), Array(6).fill(1));
     assert.deepEqual(routes.map((route) => route.hunter_agent), Array(6).fill("hunter-agent"));
     assert.deepEqual(routes.map((route) => route.brief_profile), Array(6).fill("web"));
+    for (const route of routes) {
+      assert.deepEqual(route.context_budget, expectedWebContextBudget());
+    }
     assert.equal(routes.find((route) => route.surface_id === "S-graphql").surface_type, "graphql");
     assert.deepEqual(routes.find((route) => route.surface_id === "S-api").reasons, ["surface_type:api"]);
     assert.deepEqual(routes.find((route) => route.surface_id === "S-missing").reasons, ["surface_type:missing"]);
@@ -2724,7 +2774,9 @@ test("bounty_route_surfaces writes bounded current routes and removes stale rout
     assert.deepEqual(JSON.parse(routeText).routes.map((route) => Object.keys(route).sort()), [[
       "brief_profile",
       "capability_pack",
+      "capability_pack_version",
       "confidence",
+      "context_budget",
       "hunter_agent",
       "reasons",
       "surface_id",
@@ -2804,15 +2856,19 @@ test("bounty_start_wave validates inputs, writes assignments, and updates pendin
           agent: "a1",
           surface_id: "surface-a",
           capability_pack: "web",
+          capability_pack_version: 1,
           hunter_agent: "hunter-agent",
           brief_profile: "web",
+          context_budget: expectedWebContextBudget(),
         },
         {
           agent: "a2",
           surface_id: "surface-b",
           capability_pack: "web",
+          capability_pack_version: 1,
           hunter_agent: "hunter-agent",
           brief_profile: "web",
+          context_budget: expectedWebContextBudget(),
         },
       ],
       assignments_path: path.join(sessionDir(domain), "wave-2-assignments.json"),
@@ -2821,8 +2877,12 @@ test("bounty_start_wave validates inputs, writes assignments, and updates pendin
     const assignmentDoc = JSON.parse(fs.readFileSync(path.join(sessionDir(domain), "wave-2-assignments.json"), "utf8"));
     assert.ok(assignmentDoc.assignments.every((assignment) => /^[a-f0-9]{64}$/.test(assignment.handoff_token_sha256)));
     assert.ok(assignmentDoc.assignments.every((assignment) => assignment.capability_pack === "web"));
+    assert.ok(assignmentDoc.assignments.every((assignment) => assignment.capability_pack_version === 1));
     assert.ok(assignmentDoc.assignments.every((assignment) => assignment.hunter_agent === "hunter-agent"));
     assert.ok(assignmentDoc.assignments.every((assignment) => assignment.brief_profile === "web"));
+    for (const assignment of assignmentDoc.assignments) {
+      assert.deepEqual(assignment.context_budget, expectedWebContextBudget());
+    }
     assert.doesNotMatch(JSON.stringify(assignmentDoc), new RegExp(result.assignments[0].handoff_token));
     assert.deepEqual(
       JSON.parse(fs.readFileSync(surfaceRoutesPath(domain), "utf8")).routes.map((route) => route.surface_id),
@@ -7513,8 +7573,10 @@ test("bounty_read_hunter_brief returns surface, exclusions, and valid IDs", () =
       egress_profile: "operator-eu",
       block_internal_hosts: true,
       capability_pack: "web",
+      capability_pack_version: 1,
       hunter_agent: "hunter-agent",
       brief_profile: "web",
+      context_budget: expectedWebContextBudget(),
     });
     assert.equal(brief.wave, "w1");
     assert.equal(brief.agent, "a1");
@@ -7904,6 +7966,178 @@ test("bounty_read_hunter_brief knowledge remains bounded and excludes full sourc
     assert.ok(brief.knowledge_summary.entries_returned <= 4);
     assert.ok(brief.knowledge_summary.char_count <= brief.knowledge_summary.max_chars);
     assert.doesNotMatch(JSON.stringify(brief), /Complete reference library|Advanced Bug Bounty Hunting Techniques|scripts\/|tools\//);
+  });
+});
+
+test("bounty_read_hunter_brief includes bounded candidate technique packs and context budget", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-graphql",
+      hosts: [`https://${domain}`],
+      tech_stack: ["GraphQL", "Apollo"],
+      endpoints: ["/graphql"],
+      interesting_params: ["query", "variables"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-graphql" }]);
+
+    const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    assert.deepEqual(brief.run_context.context_budget, expectedWebContextBudget());
+    assert.equal(brief.run_context.capability_pack_version, 1);
+    assert.equal(brief.technique_packs.selection_budget.candidate_pack_limit, 5);
+    assert.equal(brief.technique_packs.selection_budget.full_pack_read_limit, 2);
+    assert.ok(brief.technique_packs.selected.length <= 5);
+    const graphql = brief.technique_packs.selected.find((entry) => entry.id === "graphql");
+    assert.ok(graphql);
+    assert.equal(graphql.version, 1);
+    assert.ok(graphql.score > 0);
+    assert.ok(graphql.summary.guidance.length > 0);
+    assert.ok(graphql.summary.payload_hints.length > 0);
+    assert.equal(graphql.full, undefined);
+  });
+});
+
+test("context budget and technique-pack MCP tools are deterministic and bounded", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [
+      {
+        id: "surface-graphql",
+        surface_type: "graphql",
+        hosts: [`https://${domain}`],
+        tech_stack: ["GraphQL", "Apollo"],
+        endpoints: ["/graphql"],
+        interesting_params: ["query", "variables"],
+      },
+      {
+        id: "surface-api",
+        surface_type: "api",
+        hosts: [`https://api.${domain}`],
+        tech_stack: ["JSON API"],
+        endpoints: ["/api/v1/users/123", "/api/v2/admin/export"],
+        interesting_params: ["id", "user_id", "role"],
+        bug_class_hints: ["idor"],
+      },
+      {
+        id: "surface-wp",
+        surface_type: "cms",
+        hosts: [`https://${domain}`],
+        tech_stack: ["WordPress"],
+        endpoints: ["/wp-json/wp/v2/users", "/wp-admin/admin-ajax.php"],
+        interesting_params: ["author", "action"],
+      },
+    ]);
+    JSON.parse(routeSurfaces({ target_domain: domain }));
+
+    const budget = JSON.parse(getContextBudget({
+      target_domain: domain,
+      surface_id: "surface-graphql",
+      capability_pack: "web",
+      brief_profile: "web",
+    }));
+    assert.equal(budget.version, 1);
+    assert.equal(budget.capability_pack_version, 1);
+    assert.deepEqual(budget.context_budget, expectedWebContextBudget());
+
+    const graphql = JSON.parse(selectTechniquePacks({
+      target_domain: domain,
+      surface_id: "surface-graphql",
+      capability_pack: "web",
+      max_packs: 50,
+    }));
+    assert.equal(graphql.max_packs, 5);
+    assert.ok(graphql.technique_packs.length <= 5);
+    assert.equal(graphql.technique_packs[0].id, "graphql");
+    assert.equal(graphql.technique_packs[0].full, undefined);
+    assert.match(JSON.stringify(graphql.technique_packs[0].matched), /tech:graphql|endpoint:\/graphql/);
+
+    const api = JSON.parse(selectTechniquePacks({ target_domain: domain, surface_id: "surface-api", max_packs: 5 }));
+    assert.ok(api.technique_packs.some((entry) => entry.id === "generic-rest-api"));
+
+    const wordpress = JSON.parse(selectTechniquePacks({ target_domain: domain, surface_id: "surface-wp", max_packs: 5 }));
+    assert.equal(wordpress.technique_packs[0].id, "wordpress");
+
+    const summary = readTechniquePack("graphql", { mode: "summary" });
+    assert.equal(summary.technique_pack.id, "graphql");
+    assert.equal(summary.technique_pack.full, undefined);
+
+    const full = readTechniquePack("graphql", { mode: "full" });
+    assert.equal(full.technique_pack.id, "graphql");
+    assert.ok(full.technique_pack.full.techniques.length > 0);
+    assert.doesNotMatch(JSON.stringify(full), /WordPress REST/);
+
+    assert.throws(
+      () => readTechniquePack("unknown-pack", { mode: "summary" }),
+      /Unknown technique pack id/,
+    );
+
+    const envelope = await executeTool("bounty_read_technique_pack", { pack_id: "unknown-pack", mode: "summary" });
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.error.code, "NOT_FOUND");
+  });
+});
+
+test("bounty_log_technique_attempt appends valid JSONL and rejects invalid inputs", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-graphql",
+      hosts: [`https://${domain}`],
+      tech_stack: ["GraphQL"],
+      endpoints: ["/graphql"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-graphql" }]);
+
+    const logged = JSON.parse(logTechniqueAttempt({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-graphql",
+      pack_id: "graphql",
+      status: "attempted",
+      outcome: "not_applicable",
+      evidence: "GraphQL endpoint returned 404 for this assigned surface.",
+    }));
+    assert.equal(logged.appended, 1);
+    assert.equal(logged.log_path, techniqueAttemptsJsonlPath(domain));
+
+    const records = readTechniqueAttemptRecordsFromJsonl(domain);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].pack_id, "graphql");
+    assert.equal(records[0].status, "attempted");
+    assert.equal(records[0].outcome, "not_applicable");
+    assert.match(records[0].ts, /^\d{4}-\d{2}-\d{2}T/);
+
+    const selectedAfterAttempt = JSON.parse(selectTechniquePacks({
+      target_domain: domain,
+      surface_id: "surface-graphql",
+      capability_pack: "web",
+      include_attempted: false,
+    }));
+    assert.ok(selectedAfterAttempt.attempts_summary.omitted_attempted.some((entry) => entry.pack_id === "graphql"));
+
+    assert.throws(
+      () => logTechniqueAttempt({
+        target_domain: domain,
+        surface_id: "missing-surface",
+        pack_id: "graphql",
+        status: "selected",
+        evidence: "Trying to log an invalid surface.",
+      }),
+      /Unknown surface_id/,
+    );
+    const invalidStatus = await executeTool("bounty_log_technique_attempt", {
+      target_domain: domain,
+      surface_id: "surface-graphql",
+      pack_id: "graphql",
+      status: "invalid",
+      evidence: "Bad status.",
+    });
+    assert.equal(invalidStatus.ok, false);
+    assert.equal(invalidStatus.error.code, "INVALID_ARGUMENTS");
   });
 });
 

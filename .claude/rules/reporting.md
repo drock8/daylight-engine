@@ -8,7 +8,7 @@ These global rules keep reports concise. Detailed report structure belongs in `r
 
 Report only in-scope behavior. The affected asset, endpoint, account role, and data type must be inside the program scope and allowed by the policy.
 
-Use MCP-owned artifacts as the source of truth. Findings, verification rounds, grade verdicts, handoffs, coverage, imported traffic, request audit, public intel, static artifacts, and static scan results must be read through Bob MCP tools or their approved agent prompts, not manually rewritten.
+Use MCP-owned artifacts as the source of truth. Findings, verification rounds, grade verdicts, handoffs, coverage, technique attempts, imported traffic, request audit, public intel, static artifacts, and static scan results must be read through Bob MCP tools or their approved agent prompts, not manually rewritten.
 
 Do not write theoretical impact. Use concrete language: "An attacker can [action] by [method]." Avoid "could", "may", "might", and speculative chain language unless the chain was verified.
 

@@ -37,8 +37,10 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null } = {}) {
       surface_id: surfaceId,
       surface_type: classification.surface_type,
       capability_pack: classification.capability_pack,
+      capability_pack_version: classification.capability_pack_version,
       hunter_agent: classification.hunter_agent,
       brief_profile: classification.brief_profile,
+      context_budget: classification.context_budget,
       confidence: classification.confidence,
       reasons: classification.reasons,
     });

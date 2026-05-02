@@ -15,6 +15,7 @@ const {
   toolsForSpec,
 } = require("../scripts/generate-agent-tools.js");
 const {
+  CAPABILITY_PACKS,
   hunterAgentNamesForCapabilityPacks,
 } = require("../mcp/lib/capability-packs.js");
 
@@ -114,6 +115,10 @@ test("hunter frontmatter excludes Write and still exposes wave handoff MCP tools
   assert.ok(tools.includes("mcp__bountyagent__bounty_static_scan"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_record_surface_leads"));
   assert.ok(tools.includes("mcp__bountyagent__bounty_read_surface_leads"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_get_context_budget"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_select_technique_packs"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_read_technique_pack"));
+  assert.ok(tools.includes("mcp__bountyagent__bounty_log_technique_attempt"));
   assert.ok(!tools.includes("mcp__bountyagent__bounty_import_http_traffic"));
   assert.ok(!tools.includes("mcp__bountyagent__bounty_public_intel"));
   assert.ok(!tools.includes("mcp__bountyagent__bounty_auth_manual"));
@@ -125,7 +130,11 @@ test("surface-router-agent is thin and cannot hunt or write directly", () => {
   const frontmatter = parseFrontmatter(document, "surface-router-agent.md");
   const tools = frontmatter.tools.split(/\s*,\s*/).filter(Boolean);
 
-  assert.deepEqual(tools, ["Read", "mcp__bountyagent__bounty_route_surfaces"]);
+  assert.deepEqual(tools, [
+    "Read",
+    "mcp__bountyagent__bounty_route_surfaces",
+    "mcp__bountyagent__bounty_get_context_budget",
+  ]);
   assert.match(document, /mcpServers:\s*\n\s*-\s*bountyagent/);
   assert.match(document, /bounty_route_surfaces/);
   assert.match(document, /surface-routes\.json/);
@@ -187,6 +196,15 @@ test("manifest, settings, and generated Claude config keep global MCP permission
   assert.equal(TOOL_MANIFEST.bounty_read_surface_leads.global_preapproval, true);
   assert.equal(TOOL_MANIFEST.bounty_promote_surface_leads.global_preapproval, false);
   assert.equal(TOOL_MANIFEST.bounty_promote_surface_leads.mutating, true);
+  assert.deepEqual(TOOL_MANIFEST.bounty_get_context_budget.role_bundles, ["hunter", "hunter-web", "orchestrator", "router"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_select_technique_packs.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_technique_pack.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_log_technique_attempt.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_get_context_budget.mutating, false);
+  assert.equal(TOOL_MANIFEST.bounty_select_technique_packs.mutating, false);
+  assert.equal(TOOL_MANIFEST.bounty_read_technique_pack.mutating, false);
+  assert.equal(TOOL_MANIFEST.bounty_log_technique_attempt.mutating, true);
+  assert.deepEqual(TOOL_MANIFEST.bounty_log_technique_attempt.session_artifacts_written, ["technique-attempts.jsonl"]);
   assert.deepEqual(TOOL_MANIFEST.bounty_write_evidence_packs.role_bundles, ["evidence"]);
   assert.deepEqual(TOOL_MANIFEST.bounty_read_evidence_packs.role_bundles, ["evidence", "grader", "reporter", "orchestrator"]);
   assert.ok(!sourceAllowed.has("bounty_merge_wave_handoffs"));
@@ -200,6 +218,10 @@ test("manifest, settings, and generated Claude config keep global MCP permission
   assert.ok(!sourceAllowed.has("bounty_promote_surface_leads"));
   assert.ok(sourceAllowed.has("bounty_record_surface_leads"));
   assert.ok(sourceAllowed.has("bounty_read_surface_leads"));
+  assert.ok(sourceAllowed.has("bounty_get_context_budget"));
+  assert.ok(sourceAllowed.has("bounty_select_technique_packs"));
+  assert.ok(sourceAllowed.has("bounty_read_technique_pack"));
+  assert.ok(sourceAllowed.has("bounty_log_technique_attempt"));
   assert.ok(sourceAllowed.has("bounty_wave_handoff_status"));
   assert.ok(sourceAllowed.has("bounty_write_evidence_packs"));
   assert.ok(sourceAllowed.has("bounty_read_evidence_packs"));
@@ -856,6 +878,21 @@ test("SubagentStop hooks cover every routed capability-pack hunter agent", () =>
   assert.deepEqual(configuredHunters, expectedHunters);
 });
 
+test("capability packs expose versioned context budgets for routed hunters", () => {
+  for (const pack of Object.values(CAPABILITY_PACKS)) {
+    assert.equal(pack.capability_pack_version, 1);
+    assert.ok(pack.hunter_agent);
+    assert.ok(pack.brief_profile);
+    assert.deepEqual(pack.context_budget, {
+      brief_max_tokens: 2500,
+      candidate_pack_limit: 5,
+      full_pack_read_limit: 2,
+      attempt_log_required: true,
+      team_escalation_allowed: false,
+    });
+  }
+});
+
 test("verifier and grader examples use F-N finding IDs", () => {
   for (const agent of ["brutalist-verifier", "balanced-verifier", "final-verifier", "grader"]) {
     const document = readFile(`.claude/agents/${agent}.md`);
@@ -1065,7 +1102,15 @@ test("hunter and orchestrator prompts keep the structured handoff contract expli
   assert.match(orchestratorPrompt, /surface_type[\s\S]*bug_class_hints[\s\S]*high_value_flows/);
   assert.match(hunterPrompt, /traffic_summary[\s\S]*audit_summary[\s\S]*circuit_breaker_summary[\s\S]*ranking_summary[\s\S]*intel_hints[\s\S]*static_scan_hints/);
   assert.match(hunterPrompt, /run_context/);
+  assert.match(hunterPrompt, /run_context\.context_budget/);
+  assert.match(hunterPrompt, /technique_packs\.selected/);
+  assert.match(hunterPrompt, /bounty_read_technique_pack/);
+  assert.match(hunterPrompt, /bounty_log_technique_attempt/);
+  assert.match(hunterPrompt, /never write `technique-attempts\.jsonl` through Bash/);
   assert.match(orchestratorPrompt, /bounty_read_hunter_brief\(\{ target_domain:[\s\S]*egress_profile:[\s\S]*block_internal_hosts/);
+  assert.match(orchestratorPrompt, /Context budget: \[assignment\.context_budget\]/);
+  assert.match(orchestratorPrompt, /technique_packs\.selected/);
+  assert.match(orchestratorPrompt, /bounty_read_technique_pack[\s\S]*bounty_log_technique_attempt/);
   assert.match(hunterPrompt, /Prefer real observed authenticated endpoints from `traffic_summary`/);
   assert.match(hunterPrompt, /Log coverage before switching away from a promising traffic-derived endpoint|log coverage before switching away from promising traffic-derived endpoints/i);
   assert.match(orchestratorPrompt, /traffic_summary[\s\S]*audit_summary[\s\S]*circuit_breaker_summary[\s\S]*ranking_summary[\s\S]*intel_hints[\s\S]*static_scan_hints/);
@@ -1080,7 +1125,7 @@ test("hunter and orchestrator prompts keep the structured handoff contract expli
   assert.match(hunterPrompt, /surface-leads\.json/);
   assert.match(hunterPrompt, /bounty_log_coverage/);
   assert.match(hunterPrompt, /never write `coverage\.jsonl` through Bash/);
-  assert.match(hunterPrompt, /Never create or backfill[\s\S]*http-audit\.jsonl[\s\S]*traffic\.jsonl[\s\S]*public-intel\.json[\s\S]*static-artifacts\.jsonl[\s\S]*static-scan-results\.jsonl/);
+  assert.match(hunterPrompt, /Never create or backfill[\s\S]*technique-attempts\.jsonl[\s\S]*http-audit\.jsonl[\s\S]*traffic\.jsonl[\s\S]*public-intel\.json[\s\S]*static-artifacts\.jsonl[\s\S]*static-scan-results\.jsonl/);
   assert.match(hunterPrompt, /status` \(`tested`, `blocked`, `promising`, `needs_auth`, or `requeue`\)/);
   assert.match(hunterPrompt, /`INTERNAL_ERROR` 3 consecutive times/);
   assert.match(hunterPrompt, /each at most 300 chars; pre-truncate/);
@@ -1110,6 +1155,7 @@ test("bob-hunt routes surfaces after recon and spawns returned hunter agents", (
   assert.match(orchestratorPrompt, /assignments\[\]\.hunter_agent/);
   assert.match(orchestratorPrompt, /subagent_type: "\[assignment\.hunter_agent\]"/);
   assert.match(orchestratorPrompt, /Capability pack: \[assignment\.capability_pack\]\. Brief profile: \[assignment\.brief_profile\]/);
+  assert.match(orchestratorPrompt, /Context budget: \[assignment\.context_budget\]/);
 });
 
 test("generic web prompts do not embed future field-specific hunter workflows", () => {

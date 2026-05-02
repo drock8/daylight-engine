@@ -70,6 +70,10 @@ function coverageJsonlPath(domain) {
   return path.join(sessionDir(domain), "coverage.jsonl");
 }
 
+function techniqueAttemptsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "technique-attempts.jsonl");
+}
+
 function chainAttemptsJsonlPath(domain) {
   return path.join(sessionDir(domain), "chain-attempts.jsonl");
 }
@@ -166,6 +170,7 @@ module.exports = {
   statePath,
   surfaceLeadsPath,
   surfaceRoutesPath,
+  techniqueAttemptsJsonlPath,
   staticArtifactImportDir,
   staticArtifactPath,
   staticArtifactsJsonlPath,

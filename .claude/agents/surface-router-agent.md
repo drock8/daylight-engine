@@ -1,7 +1,7 @@
 ---
 name: surface-router-agent
 description: Calls the MCP surface router after recon and reports the capability-pack summary
-tools: Read, mcp__bountyagent__bounty_route_surfaces
+tools: Read, mcp__bountyagent__bounty_route_surfaces, mcp__bountyagent__bounty_get_context_budget
 model: sonnet
 color: blue
 mcpServers:

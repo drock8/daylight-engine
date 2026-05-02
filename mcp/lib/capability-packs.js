@@ -1,11 +1,21 @@
 "use strict";
 
+const DEFAULT_CONTEXT_BUDGET = Object.freeze({
+  brief_max_tokens: 2500,
+  candidate_pack_limit: 5,
+  full_pack_read_limit: 2,
+  attempt_log_required: true,
+  team_escalation_allowed: false,
+});
+
 const WEB_CAPABILITY_PACK = Object.freeze({
   id: "web",
+  capability_pack_version: 1,
   hunter_agent: "hunter-agent",
   brief_profile: "web",
   role_bundles: Object.freeze(["hunter-web"]),
   completion_gate: "web_wave_handoff",
+  context_budget: DEFAULT_CONTEXT_BUDGET,
 });
 
 const CAPABILITY_PACKS = Object.freeze({
@@ -45,6 +55,22 @@ function getCapabilityPack(packId) {
   return CAPABILITY_PACKS[packId] || null;
 }
 
+function cloneContextBudget(budget) {
+  return {
+    brief_max_tokens: budget.brief_max_tokens,
+    candidate_pack_limit: budget.candidate_pack_limit,
+    full_pack_read_limit: budget.full_pack_read_limit,
+    attempt_log_required: budget.attempt_log_required,
+    team_escalation_allowed: budget.team_escalation_allowed,
+  };
+}
+
+function getCapabilityPackContextBudget(packId) {
+  const pack = getCapabilityPack(packId);
+  if (!pack) return null;
+  return cloneContextBudget(pack.context_budget || DEFAULT_CONTEXT_BUDGET);
+}
+
 function hunterAgentNamesForCapabilityPacks() {
   return Array.from(new Set(
     Object.values(CAPABILITY_PACKS)
@@ -56,8 +82,10 @@ function hunterAgentNamesForCapabilityPacks() {
 function defaultWebRouteMetadata() {
   return {
     capability_pack: WEB_CAPABILITY_PACK.id,
+    capability_pack_version: WEB_CAPABILITY_PACK.capability_pack_version,
     hunter_agent: WEB_CAPABILITY_PACK.hunter_agent,
     brief_profile: WEB_CAPABILITY_PACK.brief_profile,
+    context_budget: cloneContextBudget(WEB_CAPABILITY_PACK.context_budget),
   };
 }
 
@@ -75,8 +103,10 @@ function classifySurfaceCapability(surface) {
   return {
     surface_type: surfaceType,
     capability_pack: WEB_CAPABILITY_PACK.id,
+    capability_pack_version: WEB_CAPABILITY_PACK.capability_pack_version,
     hunter_agent: WEB_CAPABILITY_PACK.hunter_agent,
     brief_profile: WEB_CAPABILITY_PACK.brief_profile,
+    context_budget: cloneContextBudget(WEB_CAPABILITY_PACK.context_budget),
     confidence: knownWebType ? "high" : "medium",
     reasons,
   };
@@ -91,6 +121,43 @@ function assertPackString(value, fieldName) {
     throw new Error(`assignment route metadata has invalid ${fieldName}`);
   }
   return normalized;
+}
+
+function assertPositiveInteger(value, fieldName) {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`assignment route metadata has invalid ${fieldName}`);
+  }
+  return value;
+}
+
+function normalizeBudgetInteger(value, fieldName) {
+  if (!Number.isInteger(value) || value < 1 || value > 100_000) {
+    throw new Error(`assignment route metadata has invalid context_budget.${fieldName}`);
+  }
+  return value;
+}
+
+function normalizeBudgetBoolean(value, fieldName) {
+  if (typeof value !== "boolean") {
+    throw new Error(`assignment route metadata has invalid context_budget.${fieldName}`);
+  }
+  return value;
+}
+
+function normalizeContextBudget(value, pack) {
+  if (value == null) {
+    return cloneContextBudget(pack.context_budget || DEFAULT_CONTEXT_BUDGET);
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("assignment route metadata has invalid context_budget");
+  }
+  return {
+    brief_max_tokens: normalizeBudgetInteger(value.brief_max_tokens, "brief_max_tokens"),
+    candidate_pack_limit: normalizeBudgetInteger(value.candidate_pack_limit, "candidate_pack_limit"),
+    full_pack_read_limit: normalizeBudgetInteger(value.full_pack_read_limit, "full_pack_read_limit"),
+    attempt_log_required: normalizeBudgetBoolean(value.attempt_log_required, "attempt_log_required"),
+    team_escalation_allowed: normalizeBudgetBoolean(value.team_escalation_allowed, "team_escalation_allowed"),
+  };
 }
 
 function normalizeAssignmentRouteMetadata(assignment) {
@@ -116,20 +183,27 @@ function normalizeAssignmentRouteMetadata(assignment) {
   if (briefProfile !== pack.brief_profile) {
     throw new Error(`assignment route metadata brief_profile ${briefProfile} does not match pack ${capabilityPack}`);
   }
+  const capabilityPackVersion = assignment.capability_pack_version == null
+    ? pack.capability_pack_version
+    : assertPositiveInteger(assignment.capability_pack_version, "capability_pack_version");
 
   return {
     capability_pack: capabilityPack,
+    capability_pack_version: capabilityPackVersion,
     hunter_agent: hunterAgent,
     brief_profile: briefProfile,
+    context_budget: normalizeContextBudget(assignment.context_budget, pack),
   };
 }
 
 module.exports = {
   CAPABILITY_PACKS,
+  DEFAULT_CONTEXT_BUDGET,
   WEB_SURFACE_TYPES,
   classifySurfaceCapability,
   defaultWebRouteMetadata,
   getCapabilityPack,
+  getCapabilityPackContextBudget,
   hunterAgentNamesForCapabilityPacks,
   normalizeAssignmentRouteMetadata,
   normalizeSurfaceType,

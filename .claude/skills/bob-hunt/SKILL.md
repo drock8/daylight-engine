@@ -28,6 +28,10 @@ allowed-tools:
   - mcp__bountyagent__bounty_read_session_summary
   - mcp__bountyagent__bounty_set_operator_note
   - mcp__bountyagent__bounty_clear_operator_note
+  - mcp__bountyagent__bounty_get_context_budget
+  - mcp__bountyagent__bounty_select_technique_packs
+  - mcp__bountyagent__bounty_read_technique_pack
+  - mcp__bountyagent__bounty_log_technique_attempt
   - mcp__bountyagent__bounty_read_tool_telemetry
   - mcp__bountyagent__bounty_read_pipeline_analytics
   - mcp__bountyagent__bounty_record_surface_leads
@@ -70,12 +74,11 @@ MCP-owned session artifacts:
 - `bounty_static_scan` scans imported artifacts only and writes results to `static-scan-results.jsonl`.
 - `bounty_write_chain_attempt` writes CHAIN-phase evidence to `chain-attempts.jsonl`; `bounty_read_chain_attempts` is the only machine-readable chain source.
 - `bounty_write_evidence_packs` writes formal pre-grade evidence to `evidence-packs.json`; `bounty_read_evidence_packs` validates final-reportable coverage.
-- `bounty_route_surfaces` writes `surface-routes.json`; `bounty_read_hunter_brief` returns traffic, audit, circuit-breaker, runtime ranking, intel, static scan, assignment, routing, coverage, and scope summaries.
+- `bounty_route_surfaces` writes `surface-routes.json`; `bounty_read_hunter_brief` returns context budget plus bounded technique-pack, traffic, audit, ranking, intel, static scan, routing, coverage, and scope summaries; `bounty_log_technique_attempt` writes `technique-attempts.jsonl`.
 - `bounty_record_surface_leads`, `bounty_read_surface_leads`, and `bounty_promote_surface_leads` own compact `surface-leads.json` and promotion into `attack_surface.json`.
 - `bounty_read_pipeline_analytics` is the metadata-only dashboard for debugging stuck sessions and recent cross-session pipeline health.
 - `bounty_set_operator_note` stores one bounded non-secret operator instruction in state; `bounty_clear_operator_note` removes it.
 Use `bounty_read_state_summary.data` for routine decisions. Use `bounty_read_session_state.data` only when full arrays are needed.
-
 ## Resume
 - `resume [domain]` accepts one optional non-flag token: `force-merge`.
 - First call `bounty_read_state_summary({ target_domain })` and use `result.data.state` for the resume decision; persisted `state.deep_mode` keeps deep behavior even when resume omits `--deep`.
@@ -85,7 +88,6 @@ Use `bounty_read_state_summary.data` for routine decisions. Use `bounty_read_ses
 - If status is `"pending"`, report `Wave N pending: X/Y handoffs received. Resume again later, or run /bob-hunt resume [domain] force-merge to reconcile now.` Then stop.
 - If status is `"merged"`, continue with returned `state`, `readiness`, `merge`, and `findings`.
 - Pending-wave reconciliation happens only on explicit re-entry or after all background hunters complete, never in the same turn that launched hunters.
-
 ## PHASE 1: RECON
 Call `bounty_init_session({ target_domain, target_url, deep_mode })`.
 Spawn exactly one recon agent by resolved `deep_mode`, then wait:
@@ -119,10 +121,8 @@ Otherwise use the existing four-tier signup flow, in order:
 ```
 
 After any successful signup, poll email up to 12 times, extract a code/link, complete verification through `bounty_http_scan` with `target_domain` and `egress_profile`, then repeat the flow for a `victim` profile with a new temp email. Verify auth with `bounty_http_scan` with `target_domain` and `egress_profile` against a protected endpoint and call `bounty_transition_phase({ target_domain, to_phase: "HUNT", auth_status })`.
-
 ## PHASE 3: HUNT
 Read `attack_surface.json` and `bounty_read_state_summary.data` before every wave. Treat MCP ranking from `bounty_wave_status.data` and `bounty_read_hunter_brief.data.ranking_summary` as runtime prioritization, not as a durable `attack_surface.json` rewrite. `explored` means completed surface IDs only; `dead_ends` and `waf_blocked_endpoints` are endpoint/path exclusions only; `lead_surface_ids` and promoted deep leads route later waves.
-
 Wave policy:
 - Wave 1: all `HIGH` and `CRITICAL` surfaces in parallel.
 - Wave 2+: requeues, then `lead_surface_ids`, then remaining `MEDIUM`, then `LOW` if capacity remains.
@@ -131,7 +131,7 @@ Wave policy:
 Before spawning a wave:
 1. If `state.pending_wave` is non-null, stop and require `/bob-hunt resume [domain]`.
 2. Compute assignments from requeue plus wave policy.
-3. Call `bounty_start_wave({ target_domain, wave_number: N, assignments })`; assignment agent IDs must be short `aN`, and MCP returns each assignment's capability routing.
+3. Call `bounty_start_wave({ target_domain, wave_number: N, assignments })`; assignment agent IDs must be short `aN`, and MCP returns each assignment's capability routing and context budget.
 4. Spawn hunters only after `bounty_start_wave` succeeds. Use each returned `result.data.assignments[].hunter_agent` as the subagent type and that assignment's `handoff_token` only in its spawn prompt.
 
 Hunter spawn prompt must be compact and include:
@@ -141,9 +141,9 @@ Domain: [domain]
 Wave: w[wave]
 Agent: a[agent]
 Handoff token: [only this agent's handoff_token from bounty_start_wave.data.assignments]
-Capability pack: [assignment.capability_pack]. Brief profile: [assignment.brief_profile]. Hunter agent: [assignment.hunter_agent].
-First action: call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: false }) and use .data.
-Use run_context, surface_type, bug_class_hints, high_value_flows, evidence, surface_limits, coverage_summary, traffic_summary, audit_summary, circuit_breaker_summary, ranking_summary, intel_hints, and static_scan_hints as prioritization inputs for this one assigned surface.
+Capability pack: [assignment.capability_pack]. Brief profile: [assignment.brief_profile]. Hunter agent: [assignment.hunter_agent]. Context budget: [assignment.context_budget].
+First action: call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: false }) and use .data, including run_context.context_budget and technique_packs.selected.
+Use run_context, surface_type, bug_class_hints, high_value_flows, evidence, surface_limits, coverage_summary, traffic_summary, audit_summary, circuit_breaker_summary, ranking_summary, intel_hints, static_scan_hints, and technique_packs.selected as prioritization inputs; call bounty_read_technique_pack only for relevant summaries and bounty_log_technique_attempt for selections, skips, attempts, and outcomes.
 Egress profile: [egress_profile]. Pass this exact value as egress_profile on every bounty_http_scan call.
 Prefer traffic_summary endpoints, replay through bounty_http_scan with target_domain and egress_profile, log bounty_log_coverage after meaningful tests, and log before switching away from promising traffic-derived endpoints.
 New token-contract scans must use bounty_import_static_artifact then bounty_static_scan; never scan arbitrary paths.
