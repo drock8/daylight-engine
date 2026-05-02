@@ -47,12 +47,24 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish compatibility package
+      - name: Publish Claude wrapper package
         working-directory: packages/hacker-bob-cc
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           if npm view "hacker-bob-cc@$VERSION" version >/dev/null 2>&1; then
             echo "hacker-bob-cc@$VERSION is already published; skipping."
+          else
+            npm publish --provenance --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish Codex wrapper package
+        working-directory: packages/hacker-bob-codex
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "hacker-bob-codex@$VERSION" version >/dev/null 2>&1; then
+            echo "hacker-bob-codex@$VERSION is already published; skipping."
           else
             npm publish --provenance --access public
           fi
