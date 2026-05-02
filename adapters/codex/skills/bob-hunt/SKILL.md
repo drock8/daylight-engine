@@ -140,11 +140,31 @@ Wait for worker completion notifications or `wait_agent` results. Do not merge i
 ```
 
 Chain-specific references (the router pins `assignment.brief_profile` and `surface.chain_family` per pack — `hunter-evm-agent`/`smart_contract_evm`/`chain_family: "evm"`, `hunter-svm-agent`/`smart_contract_svm`/`chain_family: "svm"`, `hunter-move-agent`/`smart_contract_move` covering `chain_family: "aptos"` and `chain_family: "sui"` (the role dispatches `bounty_aptos_*` vs `bounty_sui_*` internally), `hunter-substrate-agent`/`smart_contract_substrate`/`chain_family: "substrate"`, `hunter-cosmwasm-agent`/`smart_contract_cosmwasm`/`chain_family: "cosmwasm"`):
-{{SPAWN_HUNTER_EVM_AGENT}}
-{{SPAWN_HUNTER_SVM_AGENT}}
-{{SPAWN_HUNTER_MOVE_AGENT}}
-{{SPAWN_HUNTER_SUBSTRATE_AGENT}}
-{{SPAWN_HUNTER_COSMWASM_AGENT}}
+```text
+For smart_contract_evm assignments: spawn Codex worker for hunter-evm-agent -> Codex worker.
+- agent_type: "worker"
+- message: include the standard SC run header (Domain, Wave, Agent, Surface, Capability pack, Brief profile, Hunter agent, Handoff token, Checkpoint mode) plus the full `hunter-evm` contract from Codex Worker Role Contracts.
+```
+```text
+For smart_contract_svm assignments: spawn Codex worker for hunter-svm-agent -> Codex worker.
+- agent_type: "worker"
+- message: include the standard SC run header plus the full `hunter-svm` contract from Codex Worker Role Contracts.
+```
+```text
+For smart_contract_aptos and smart_contract_sui assignments: spawn Codex worker for hunter-move-agent -> Codex worker.
+- agent_type: "worker"
+- message: include the standard SC run header plus the full `hunter-move` contract from Codex Worker Role Contracts. The hunter dispatches between bounty_aptos_* and bounty_sui_* internally based on surface.chain_family.
+```
+```text
+For smart_contract_substrate assignments: spawn Codex worker for hunter-substrate-agent -> Codex worker.
+- agent_type: "worker"
+- message: include the standard SC run header plus the full `hunter-substrate` contract from Codex Worker Role Contracts.
+```
+```text
+For smart_contract_cosmwasm assignments: spawn Codex worker for hunter-cosmwasm-agent -> Codex worker.
+- agent_type: "worker"
+- message: include the standard SC run header plus the full `hunter-cosmwasm` contract from Codex Worker Role Contracts.
+```
 
 Geofence triggers for the orchestrator are repeated first-party timeouts, repeated first-party `INTERNAL_ERROR` or connection reset results, multiple tripped target-owned hosts in `circuit_breaker_summary`, `network_unreachable_target` in audit or analytics, or audit summaries showing `default` egress cannot reach high-value first-party surfaces. Treat these as reachability warnings. Do not rotate silently; summarize the blocked context and ask the operator to resume with `$bob-hunt --egress <profile> resume <domain>`.
 
@@ -213,7 +233,12 @@ Use Codex spawn_agent for final-verifier -> Codex worker.
 Wait with `wait_agent`, read the MCP verification artifact, then `close_agent`.
 ```
 Read `bounty_read_verification_round(round='final').data`. If no result has `reportable: true`, do not stop: call `bounty_read_evidence_packs({ target_domain: "[domain]" })` to confirm `skipped: true`, then continue through GRADE and REPORT so the session gets a durable SKIP grade and no-findings report. If final reportables exist, spawn the evidence agent before GRADE:
-{{SPAWN_EVIDENCE_AGENT}}
+```text
+Use Codex spawn_agent for evidence-agent -> Codex worker.
+- agent_type: "worker"
+- message: `Bob role: evidence-agent. Session: ~/bounty-agent-sessions/[domain]. Egress profile: [egress_profile].` Include the full `evidence` contract from Codex Worker Role Contracts.
+Wait with `wait_agent`, read `bounty_read_evidence_packs.data`, then `close_agent`.
+```
 After the evidence agent completes, validate the artifact with `bounty_read_evidence_packs({ target_domain: "[domain]" })` and inspect `.data`. Retry once if missing/invalid, then call `bounty_transition_phase({ target_domain, to_phase: "GRADE" })`.
 
 ## PHASE 6: GRADE
@@ -1214,113 +1239,52 @@ Per finding:
 
 **Graceful fallback.** If the brutalist MCP is not registered or `mcp__brutalist__roast` returns an error, continue with PoC re-run only and append `brutalist roast unavailable` to your `reasoning` for affected findings. Do not block the verification round on the external server.
 
-Per-finding re-run procedure depends on `finding.surface_type`:
+Per-finding re-run procedure: look up the finding's routed capability pack and call its verifier replay tool. The pack is `finding.capability_pack` (Phase C: every finding carries the routed pack triple). Per-pack verifier blocks live in the capability-pack registry — the verifier prompt does not branch on `chain_family`.
 
-**HTTP findings** (`surface_type: "web"` or null):
-- Call `bounty_list_auth_profiles` before re-running authenticated PoCs.
-- Use `bounty_http_scan` with `target_domain` and the appropriate `auth_profile` when the finding's PoC used authenticated requests.
-- If tokens expired, note "auth expired" in reasoning — do not deny the finding solely because of token expiry.
+For every finding:
 
-**Smart-contract findings** (`surface_type: "smart_contract"`):
-- Read `finding.sc_evidence`. Required fields are `chain_id`, `contract_address`, `harness_path`, `match_test`. Optional: `chain_family` (defaults to `evm`), `match_contract`, `fork_block`, `function_signature`.
-- Dispatch by `chain_family` (default `evm` when omitted on legacy rows):
+1. Read `finding.capability_pack` and consult the pack's `verifier` block in the **Capability pack verifier table** at the end of this prompt. The table tells you which MCP runner to call (`replay_tool`), the matching `sample_type` for evidence labels, the sc_evidence field to OMIT to force a fresh-state replay (`fresh-state replay` column), and any required read-side disambiguation.
 
-  **EVM (`chain_family: "evm"`)** — re-run via `bounty_foundry_run` against a FRESH fork (do NOT pass `fork_block` — verifying the bug still reproduces on current state is the point):
-  ```
-  bounty_foundry_run({
-    target_domain,
-    harness_path: finding.sc_evidence.harness_path,
-    match_test: finding.sc_evidence.match_test,
-    match_contract: finding.sc_evidence.match_contract,
-    chain_id: finding.sc_evidence.chain_id,
-    timeout_ms: 90000
-  })
-  ```
-  - If `ok: false` with `reason: "forge_not_in_path"`, set disposition=denied, severity=null, reportable=false, reasoning="cannot re-run: forge unavailable".
-  - If `ok: false` with `reason: "rpc_unreachable"`, set disposition=denied, reasoning="cannot re-run: fork-blocked, no usable RPC". Do NOT silently confirm based on the original PoC — fail closed.
-  - Optional read-side checks: use `bounty_evm_call` / `bounty_evm_role_table` / `bounty_evm_storage_read` to verify the trust map still has the bypass condition the hunter claimed (e.g., role still held by EOA, oracle still stale).
+2. Build the runner call with the pack's standard argument shape:
+   - **Web (`replay_tool: "bounty_http_scan"`)**: call `bounty_list_auth_profiles` first, then `bounty_http_scan` with `target_domain`, the request from the finding's PoC, the captured `auth_profile`, and `egress_profile`. If tokens expired, note "auth expired" in reasoning — do not deny the finding solely because of token expiry.
+   - **Smart-contract (`replay_tool: "bounty_<chain>_run"`)**: read `finding.sc_evidence` for `chain_id`, `contract_address`, `harness_path`, `match_test`, and `fork_block` (sc_evidence stores a single `fork_block` field for every chain). Call the pack's `replay_tool` with `{ target_domain, harness_path, match_test, chain_id (or cluster/network — see runner schema), match_contract, function_signature, timeout_ms }`. Do NOT pass the pack's `fresh_state_omit_field` runner-input parameter (`fork_block` for EVM/Substrate/CosmWasm, `fork_slot` for SVM, `fork_version` for Aptos, `fork_checkpoint` for Sui — these are the runner's input parameter names, even though sc_evidence persists the value as `fork_block`). Verifying the bug still reproduces on current state is the point.
 
-  **SVM (`chain_family: "svm"`)** — re-run via `bounty_anchor_run` against a FRESH cluster fork (do NOT pass `fork_slot`):
-  ```
-  bounty_anchor_run({
-    target_domain,
-    harness_path: finding.sc_evidence.harness_path,
-    match_test: finding.sc_evidence.match_test,
-    cluster: finding.sc_evidence.chain_id,
-    timeout_ms: 120000
-  })
-  ```
-  - If `ok: false` with `reason: "anchor_not_in_path"`, set disposition=denied, severity=null, reportable=false, reasoning="cannot re-run: anchor unavailable".
-  - If `ok: false` with `reason: "anchor_dependency_missing"` (anchor present, but cargo / solana / solana-test-validator / npm-or-yarn missing — surfaced via stderr scan), set disposition=denied with reasoning="cannot re-run: anchor toolchain dependency missing". Fail closed.
-  - If `ok: false` with `reason: "anchor_test_runner_unknown"` (the harness's `[scripts.test]` uses a runner like jest / ts-mocha / ts-node / vitest and our forced `--reporter json --grep` shape does not apply), set disposition=denied with reasoning="cannot re-run: anchor test runner override prevents JSON shape". Fail closed.
-  - If `ok: false` with `reason: "rpc_unreachable"` (or all `fork_attempts[]` failed and no mocha JSON parsed), set disposition=denied with reasoning="cannot re-run: fork-blocked, no usable RPC". Fail closed.
-  - Optional read-side checks: use `bounty_svm_fetch_program` to confirm `upgrade_authority` still matches the hunter's claim (still EOA / still frozen / still multisig); use `bounty_svm_fetch_account` to inspect a multisig data account or token balance.
+3. If the pack's `verifier.disambiguation` is set (Aptos / Sui / Substrate / CosmWasm), call its `tool` against the claimed address on the claimed `chain_id` BEFORE confirming. If the tool returns 404 / null / RPC-not-found, set `disposition=denied` and use the pack's `fail_reason` template as the reasoning. Same-shaped addresses across networks (0x+64hex Aptos vs Sui, SS58 polkadot vs kusama, bech32 osmo vs juno) cannot be distinguished by the runner alone — `*_run` tools execute test code in a deterministic VM with no on-chain check.
 
-  **Aptos (`chain_family: "aptos"`)** — re-run via `bounty_aptos_run` against a FRESH network reference (do NOT pass `fork_version`):
-  ```
-  bounty_aptos_run({
-    target_domain,
-    harness_path: finding.sc_evidence.harness_path,
-    match_test: finding.sc_evidence.match_test,
-    network: finding.sc_evidence.chain_id,
-    timeout_ms: 120000
-  })
-  ```
-  - If `ok: false` with `reason: "aptos_not_in_path"`, set disposition=denied, severity=null, reportable=false, reasoning="cannot re-run: aptos CLI unavailable".
-  - If `ok: false` with `reason: "aptos_dependency_missing"` (aptos present, but cargo / move-cli / rustc missing — surfaced via stderr scan), set disposition=denied with reasoning="cannot re-run: Aptos Move toolchain dependency missing". Fail closed.
-  - If `ok: false` with `reason: "move_compile_failed"` (the harness's `Move.toml` or sources fail compilation — `error[E...]` or "unable to find package" / "failed to fetch git dependencies"), set disposition=denied with reasoning="cannot re-run: Move package compile failed". Fail closed.
-  - If `ok: false` with `reason: "rpc_unreachable"` (or all `fork_attempts[]` failed and no test lines parsed), set disposition=denied with reasoning="cannot re-run: fork-blocked, no usable REST". Fail closed.
-  - REQUIRED read-side disambiguation: Aptos and Sui share the same 0x + 64-hex address space. A hunter could have recorded a Sui package_id under `chain_family: "aptos"` (or vice versa), and the runner alone cannot detect this — `aptos move test` runs in a deterministic VM with no on-chain check. Before confirming, call `bounty_aptos_fetch_module` against the claimed module address (and a representative module name from the harness) on the claimed `chain_id` network. If the call returns 404 or `result.module === null`, the address does not exist on Aptos — set disposition=denied with reasoning="address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected". Pass through only when at least one read confirms the address exists.
+4. Interpret runner output by `ok` and `reason`:
+   - `ok: true` and `tests[]` contains a test with `status: "Pass"` matching `match_test` → the bug reproduced on fresh state. Confirm.
+   - `ok: true` and the matching test has `status: "Fail"` → assertion held; bug no longer reproduces. Set `disposition=denied`.
+   - `ok: false` with `reason: "<runner>_not_in_path"` (forge / anchor / aptos / sui / cargo missing) → `disposition=denied`, `severity=null`, `reportable=false`, reasoning="cannot re-run: <runner> unavailable".
+   - `ok: false` with `reason: "<runner>_dependency_missing"` (toolchain installed but a transitive dep — solana-test-validator, rustc, move-cli, wasmd, etc. — missing) → `disposition=denied`, reasoning="cannot re-run: <runner> toolchain dependency missing". Fail closed.
+   - `ok: false` with `reason: "rpc_unreachable"` or all `fork_attempts[]` failed → `disposition=denied`, reasoning="cannot re-run: fork-blocked, no usable RPC/REST". Fail closed — do NOT silently confirm based on the original PoC.
+   - `ok: false` with `reason: "move_compile_failed"` / `"cargo_compile_failed"` / `"anchor_test_runner_unknown"` → `disposition=denied`, reasoning matches the failure. Fail closed.
 
-  **Sui (`chain_family: "sui"`)** — re-run via `bounty_sui_run` against a FRESH network reference (do NOT pass `fork_checkpoint`):
-  ```
-  bounty_sui_run({
-    target_domain,
-    harness_path: finding.sc_evidence.harness_path,
-    match_test: finding.sc_evidence.match_test,
-    network: finding.sc_evidence.chain_id,
-    timeout_ms: 120000
-  })
-  ```
-  - If `ok: false` with `reason: "sui_not_in_path"`, set disposition=denied, severity=null, reportable=false, reasoning="cannot re-run: sui CLI unavailable".
-  - If `ok: false` with `reason: "sui_dependency_missing"` (sui present, but cargo / move-cli / rustc missing — surfaced via stderr scan), set disposition=denied with reasoning="cannot re-run: Sui Move toolchain dependency missing". Fail closed.
-  - If `ok: false` with `reason: "move_compile_failed"`, set disposition=denied with reasoning="cannot re-run: Move package compile failed". Fail closed.
-  - If `ok: false` with `reason: "rpc_unreachable"` (or all `fork_attempts[]` failed and no test lines parsed), set disposition=denied with reasoning="cannot re-run: fork-blocked, no usable RPC". Fail closed.
-  - REQUIRED read-side disambiguation: Aptos and Sui share the same 0x + 64-hex address space; the runner alone cannot prove the family. Before confirming, call `bounty_sui_fetch_package` against the claimed package_id on the claimed `chain_id` network. If the call returns an empty/null modules map or RPC error indicating the package does not exist, the address does not resolve on Sui — set disposition=denied with reasoning="package does not resolve on the claimed Sui network; chain_family/chain_id mismatch suspected". Pass through only when at least one read confirms the package exists.
+5. Optional read-side checks (per pack, not required for confirmation):
+   - EVM: `bounty_evm_call` / `bounty_evm_role_table` / `bounty_evm_storage_read` to verify the trust map still has the bypass condition.
+   - SVM: `bounty_svm_fetch_program` (upgrade_authority) / `bounty_svm_fetch_account` (multisig data, token balance).
+   - Substrate: `bounty_substrate_fetch_runtime` to confirm spec_version has not jumped past the audit horizon.
 
-  **Substrate (`chain_family: "substrate"`)** — re-run via `bounty_substrate_run` against a FRESH chain reference (do NOT pass `fork_block`):
-  ```
-  bounty_substrate_run({
-    target_domain,
-    harness_path: finding.sc_evidence.harness_path,
-    match_test: finding.sc_evidence.match_test,
-    network: finding.sc_evidence.chain_id,
-    timeout_ms: 120000
-  })
-  ```
-  - If `ok: false` with `reason: "substrate_not_in_path"`, set disposition=denied, severity=null, reportable=false, reasoning="cannot re-run: cargo unavailable".
-  - If `ok: false` with `reason: "substrate_dependency_missing"` (cargo present but rustc / linker / substrate-contracts-node missing — surfaced via stderr scan), set disposition=denied with reasoning="cannot re-run: substrate toolchain dependency missing". Fail closed.
-  - If `ok: false` with `reason: "cargo_compile_failed"` (the harness's `Cargo.toml` or sources fail compilation — `error[E...]` or "could not compile" / "failed to load manifest"), set disposition=denied with reasoning="cannot re-run: cargo compile failed". Fail closed.
-  - If `ok: false` with `reason: "rpc_unreachable"` (or all `fork_attempts[]` failed and no test lines parsed), set disposition=denied with reasoning="cannot re-run: fork-blocked, no usable RPC". Fail closed.
-  - REQUIRED read-side disambiguation: SS58 base58 with a chain-specific prefix BYTE that the address validator does NOT verify (we skip BLAKE2b checksum to avoid pulling a crypto dep — `findings.js` documents this). A hunter could record a Kusama prefix-2 SS58 against `chain_id: "polkadot"` and `cargo test` cannot detect it (ink! `#[ink::test]` runs in-VM with no on-chain check). Before confirming, call `bounty_substrate_fetch_storage` with the storage key for `pallet_contracts.ContractInfoOf(<address>)` on the claimed `chain_id` network. If `storage_value` is null / `0x` / RPC error indicating no such account, the address does not resolve on the claimed network — set disposition=denied with reasoning="address does not resolve on the claimed Substrate network; chain_family/chain_id mismatch suspected". Pass through only when at least one read confirms the address exists. Optional follow-up: use `bounty_substrate_fetch_runtime` to confirm spec_version hasn't been bumped past the audit horizon.
+Convention (all packs): hunter exploit tests ASSERT the bug exists. A test in `tests[]` matching `match_test` with `status: "Pass"` means the bug reproduced. `status: "Fail"` means the assertion held — bug no longer reproduces. The runners translate raw status (Foundry `Success`/`Failure`, mocha empty/non-empty `err`, Move `[ PASS ]`/`[ FAIL ]`/`[ TIMEOUT ]`, cargo `ok`/`FAILED`/`ignored`) into `Pass`/`Fail`/`Skipped`; check the `status` field, NOT `status_raw`. Do NOT invert this polarity.
 
-  **CosmWasm (`chain_family: "cosmwasm"`)** — re-run via `bounty_cosmwasm_run` against a FRESH chain reference (do NOT pass `fork_block`):
-  ```
-  bounty_cosmwasm_run({
-    target_domain,
-    harness_path: finding.sc_evidence.harness_path,
-    match_test: finding.sc_evidence.match_test,
-    network: finding.sc_evidence.chain_id,
-    timeout_ms: 120000
-  })
-  ```
-  - If `ok: false` with `reason: "cosmwasm_not_in_path"`, set disposition=denied, severity=null, reportable=false, reasoning="cannot re-run: cargo unavailable".
-  - If `ok: false` with `reason: "cosmwasm_dependency_missing"` (cargo present but rustc / wasmd / linker missing — surfaced via stderr scan), set disposition=denied with reasoning="cannot re-run: cosmwasm toolchain dependency missing". Fail closed.
-  - If `ok: false` with `reason: "cargo_compile_failed"` (the harness's `Cargo.toml` or sources fail compilation), set disposition=denied with reasoning="cannot re-run: cargo compile failed". Fail closed.
-  - If `ok: false` with `reason: "rpc_unreachable"` (or all `fork_attempts[]` failed and no test lines parsed), set disposition=denied with reasoning="cannot re-run: fork-blocked, no usable REST". Fail closed.
-  - REQUIRED read-side disambiguation: bech32 addresses with different HRPs share the bech32 character space; a hunter could record an `osmo1...` address under `chain_id: "juno"` and the runner alone cannot detect this (cw-multi-test runs in-memory with no on-chain check). Before confirming, call `bounty_cosmwasm_fetch_contract` against the claimed contract address on the claimed `chain_id` network. If the call returns 404 or `result.contract === null`, the address does not exist on the network — set disposition=denied with reasoning="address does not resolve on the claimed CosmWasm network; chain_family/chain_id mismatch suspected". Pass through only when the read confirms the address exists.
+## Capability pack verifier table
 
-- Convention (all families): hunter exploit tests ASSERT the bug exists. A test in `tests[]` matching `match_test` with `status: "Pass"` means the bug reproduced. `status: "Fail"` means the assertion held — bug no longer reproduces. The runners translate raw status (Foundry `Success`/`Failure`, mocha empty/non-empty `err`, Move `[ PASS ]`/`[ FAIL ]`/`[ TIMEOUT ]`, cargo `ok`/`FAILED`/`ignored`) into `Pass`/`Fail`/`Skipped` for you; check the `status` field, NOT `status_raw`. Do NOT invert this polarity.
+Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
+
+| capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read |
+|---|---|---|---|---|---|
+| `web` | `bounty_http_scan` | `http_replay` | — | — | — |
+| `smart_contract_evm` | `bounty_foundry_run` | `evm_foundry_run` | omit `fork_block` | `fork_block_used` (block) | — |
+| `smart_contract_svm` | `bounty_anchor_run` | `svm_anchor_run` | omit `fork_slot` | `fork_slot_used` (slot) | — |
+| `smart_contract_aptos` | `bounty_aptos_run` | `aptos_move_test` | omit `fork_version` | `fork_version_used` (ledger_version) | `bounty_aptos_fetch_module` |
+| `smart_contract_sui` | `bounty_sui_run` | `sui_move_test` | omit `fork_checkpoint` | `fork_checkpoint_used` (checkpoint) | `bounty_sui_fetch_package` |
+| `smart_contract_substrate` | `bounty_substrate_run` | `substrate_ink_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_substrate_fetch_storage` |
+| `smart_contract_cosmwasm` | `bounty_cosmwasm_run` | `cosmwasm_cw_multi_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_cosmwasm_fetch_contract` |
+
+Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):
+- `smart_contract_aptos` disambiguation deny reason: address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected
+- `smart_contract_sui` disambiguation deny reason: package does not resolve on the claimed Sui network; chain_family/chain_id mismatch suspected
+- `smart_contract_substrate` disambiguation deny reason: address does not resolve on the claimed Substrate network; chain_family/chain_id mismatch suspected
+- `smart_contract_cosmwasm` disambiguation deny reason: address does not resolve on the claimed CosmWasm network; chain_family/chain_id mismatch suspected
 
 For each finding:
 1. Re-run the PoC per the procedure above.
@@ -1387,24 +1351,21 @@ You are the balanced verifier. Your job is to catch false negatives and severity
 Read findings through `bounty_read_findings`, read round 1 through `bounty_read_verification_round(round="brutalist")`, and read `chains.md` from the session directory provided in the spawn prompt.
 Use `bounty_read_http_audit` if recent request history helps distinguish stale auth, repeated 403/429/timeout failures, or already-confirmed replay behavior.
 
-Per-finding re-run procedure depends on `finding.surface_type`:
+Per-finding re-run procedure: look up `finding.capability_pack` in the **Capability pack verifier table** at the end of this prompt. The table tells you the runner (`replay_tool`), the matching `sample_type`, the fresh-state field to omit, and any required disambiguation read. The verifier prompt does not branch on `chain_family` — the pack manifest carries the dispatch.
 
-**HTTP findings** (`surface_type: "web"` or null):
-- Call `bounty_list_auth_profiles` before re-running authenticated PoCs.
-- Use `bounty_http_scan` with `target_domain` and the appropriate `auth_profile` when the finding's PoC used authenticated requests.
-- If tokens expired, note "auth expired" in reasoning — do not deny the finding solely because of token expiry.
+For each finding:
 
-**Smart-contract findings** (`surface_type: "smart_contract"`):
-- Read `finding.sc_evidence` (`chain_family`, `chain_id`, `contract_address`, `harness_path`, `match_test`, optional `match_contract`, `fork_block`, `function_signature`). When `chain_family` is omitted on a legacy row, treat it as `evm`.
-- Dispatch by `chain_family`:
-  - `evm`: re-run via `bounty_foundry_run` against a FRESH fork (do NOT pin `fork_block`). Trust-map reads via `bounty_evm_call` / `bounty_evm_role_table` / `bounty_evm_storage_read`.
-  - `svm`: re-run via `bounty_anchor_run` against a FRESH cluster fork (do NOT pin `fork_slot`). Trust-map reads via `bounty_svm_fetch_program` (upgrade authority) / `bounty_svm_fetch_account` (multisig members, token balances).
-  - `aptos`: re-run via `bounty_aptos_run` against a FRESH network reference (do NOT pin `fork_version`). Trust-map reads via `bounty_aptos_fetch_module` (exposed_functions, structs, friends) / `bounty_aptos_fetch_resource` (capability tokens, ownership records, treasury balances).
-  - `sui`: re-run via `bounty_sui_run` against a FRESH network reference (do NOT pin `fork_checkpoint`). Trust-map reads via `bounty_sui_fetch_package` (per-module ABI summary) / `bounty_sui_fetch_object` (owner, Move type, content fields).
-  - `substrate`: re-run via `bounty_substrate_run` against a FRESH chain reference (do NOT pin `fork_block`). Trust-map reads via `bounty_substrate_fetch_storage` (pallet_contracts.ContractInfoOf for code_hash + admin) / `bounty_substrate_fetch_runtime` (spec_version cross-check).
-  - `cosmwasm`: re-run via `bounty_cosmwasm_run` against a FRESH chain reference (do NOT pin `fork_block`). Trust-map reads via `bounty_cosmwasm_fetch_contract` (code_id + admin) / `bounty_cosmwasm_smart_query` (post-run state validation).
-- A test matching `match_test` with `status: "Pass"` confirms the bug reproduced; `status: "Fail"` means the assertion held. (The runners normalize Foundry's `Success`/`Failure`, mocha's empty/non-empty `err`, Move's `[ PASS ]`/`[ FAIL ]`/`[ TIMEOUT ]`, and cargo's `ok`/`FAILED`/`ignored` to `Pass`/`Fail`/`Skipped`.)
-- If brutalist denied a SC finding because of `forge_not_in_path` / `anchor_not_in_path` / `anchor_dependency_missing` / `anchor_test_runner_unknown` / `aptos_not_in_path` / `aptos_dependency_missing` / `sui_not_in_path` / `sui_dependency_missing` / `substrate_not_in_path` / `substrate_dependency_missing` / `cosmwasm_not_in_path` / `cosmwasm_dependency_missing` / `move_compile_failed` / `cargo_compile_failed` / `reason: "rpc_unreachable"`: re-run yourself; if your run succeeds, you can REINSTATE the finding. CRITICAL: brutalist's denial only ruled out tooling, NOT the hunter's claimed severity. Independently re-judge severity from the on-chain effect (`response_evidence`), the trust-map reads (EVM role table; SVM upgrade authority/multisig; Aptos capability resource owner; Sui object owner field; substrate contract admin / code_hash; cosmwasm contract admin / code_id), and the bug class. Do NOT rubber-stamp the hunter's original severity. Note "reinstated after fresh fork; severity re-judged" in reasoning.
+1. Look up the routed pack and its `verifier` block.
+2. **Web (`replay_tool: "bounty_http_scan"`)**: call `bounty_list_auth_profiles` first, then `bounty_http_scan` with `target_domain`, the request from the finding's PoC, the captured `auth_profile`, and `egress_profile`. If tokens expired, note "auth expired" in reasoning — do not deny solely because of token expiry.
+3. **Smart-contract (`replay_tool: "bounty_<chain>_run"`)**: read `finding.sc_evidence` (sc_evidence stores a single `fork_block` field for every chain) and call the pack's `replay_tool` with `harness_path`, `match_test`, the chain_id (or cluster/network — see runner schema), `match_contract`, `function_signature`. Do NOT pass the pack's runner-input fresh-state parameter (omit `fork_block` for EVM/Substrate/CosmWasm, `fork_slot` for SVM, `fork_version` for Aptos, `fork_checkpoint` for Sui) so the replay runs on current state. Trust-map reads per-pack:
+   - EVM: `bounty_evm_call` / `bounty_evm_role_table` / `bounty_evm_storage_read`.
+   - SVM: `bounty_svm_fetch_program` (upgrade authority) / `bounty_svm_fetch_account` (multisig data, token balances).
+   - Aptos: `bounty_aptos_fetch_module` / `bounty_aptos_fetch_resource`.
+   - Sui: `bounty_sui_fetch_package` / `bounty_sui_fetch_object`.
+   - Substrate: `bounty_substrate_fetch_storage` / `bounty_substrate_fetch_runtime`.
+   - CosmWasm: `bounty_cosmwasm_fetch_contract` / `bounty_cosmwasm_smart_query`.
+4. A test matching `match_test` with `status: "Pass"` confirms the bug reproduced; `status: "Fail"` means the assertion held. The runners normalize Foundry `Success`/`Failure`, mocha empty/non-empty `err`, Move `[ PASS ]`/`[ FAIL ]`/`[ TIMEOUT ]`, and cargo `ok`/`FAILED`/`ignored` to `Pass`/`Fail`/`Skipped`.
+5. If brutalist denied a SC finding because of any tooling failure (`<runner>_not_in_path`, `<runner>_dependency_missing`, `<runner>_test_runner_unknown`, `move_compile_failed`, `cargo_compile_failed`, `reason: "rpc_unreachable"`): re-run yourself; if your run succeeds, you can REINSTATE the finding. CRITICAL: brutalist's denial only ruled out tooling, NOT the hunter's claimed severity. Independently re-judge severity from the on-chain effect (`response_evidence`), trust-map reads, and the bug class. Do NOT rubber-stamp the hunter's original severity. Note "reinstated after fresh fork; severity re-judged" in reasoning.
 - Move severity heuristics (Aptos / Sui) — apply when re-judging:
   - `capability_leakage` of `TreasuryCap` / `MintCap` / `BurnCap` / `UpgradeCap` (the cap controls money or code) → HIGH or CRITICAL.
   - `capability_leakage` of a read-only / configuration-only capability → LOW.
@@ -1438,7 +1399,7 @@ Per-finding re-run procedure depends on `finding.surface_type`:
   - `wasmd_migrate_admin_lockout` permanent brick of contract holding value → HIGH; brick of low-value contract → LOW.
   - `post_dispatch_state_consistency` (CW 2.x) → MEDIUM unless the stale state drives a balance write (HIGH).
   - `cw_multi_test_only_passes` is a partial finding — does NOT confirm a real-chain bug. Downgrade to LOW or deny unless the hunter also demonstrated on a real wasmd fork.
-- If your own run also returns `forge_not_in_path` / `anchor_not_in_path` / `anchor_dependency_missing` / `anchor_test_runner_unknown` / `aptos_not_in_path` / `aptos_dependency_missing` / `sui_not_in_path` / `sui_dependency_missing` / `substrate_not_in_path` / `substrate_dependency_missing` / `cosmwasm_not_in_path` / `cosmwasm_dependency_missing` / `move_compile_failed` / `cargo_compile_failed` / `reason: "rpc_unreachable"`: pass the brutalist verdict through unchanged with reasoning that records the persistent unavailability.
+- If your own run also fails with the same tooling unavailable (`<runner>_not_in_path`, `<runner>_dependency_missing`, compile failures, or `reason: "rpc_unreachable"`): pass the brutalist verdict through unchanged with reasoning that records the persistent unavailability.
 
 Focus your re-testing on findings the brutalist denied or downgraded, plus any remaining `HIGH`/`CRITICAL` findings.
 
@@ -1493,6 +1454,26 @@ bounty_write_verification_round({
 EVERY finding from the brutalist round must appear in `results`. If this tool call fails, read the error, fix the parameters, and retry. Never fall back to writing files via Bash.
 
 Your final response must be compact summary-only, must not include raw requests, raw responses, cookies, tokens, authorization headers, or other secrets, and must end with `BOB_VERIFY_DONE`.
+
+## Capability pack verifier table
+
+Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
+
+| capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read |
+|---|---|---|---|---|---|
+| `web` | `bounty_http_scan` | `http_replay` | — | — | — |
+| `smart_contract_evm` | `bounty_foundry_run` | `evm_foundry_run` | omit `fork_block` | `fork_block_used` (block) | — |
+| `smart_contract_svm` | `bounty_anchor_run` | `svm_anchor_run` | omit `fork_slot` | `fork_slot_used` (slot) | — |
+| `smart_contract_aptos` | `bounty_aptos_run` | `aptos_move_test` | omit `fork_version` | `fork_version_used` (ledger_version) | `bounty_aptos_fetch_module` |
+| `smart_contract_sui` | `bounty_sui_run` | `sui_move_test` | omit `fork_checkpoint` | `fork_checkpoint_used` (checkpoint) | `bounty_sui_fetch_package` |
+| `smart_contract_substrate` | `bounty_substrate_run` | `substrate_ink_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_substrate_fetch_storage` |
+| `smart_contract_cosmwasm` | `bounty_cosmwasm_run` | `cosmwasm_cw_multi_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_cosmwasm_fetch_contract` |
+
+Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):
+- `smart_contract_aptos` disambiguation deny reason: address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected
+- `smart_contract_sui` disambiguation deny reason: package does not resolve on the claimed Sui network; chain_family/chain_id mismatch suspected
+- `smart_contract_substrate` disambiguation deny reason: address does not resolve on the claimed Substrate network; chain_family/chain_id mismatch suspected
+- `smart_contract_cosmwasm` disambiguation deny reason: address does not resolve on the claimed CosmWasm network; chain_family/chain_id mismatch suspected
 END balanced-verifier CONTRACT
 
 ### final-verifier
@@ -1502,42 +1483,17 @@ Use `bounty_read_http_audit` if recent request history helps distinguish stale a
 
 Read findings through `bounty_read_findings` so you can join full finding details back onto the balanced-round results.
 
-Per-finding re-run procedure depends on `finding.surface_type`:
+Per-finding re-run procedure: look up `finding.capability_pack` in the **Capability pack verifier table** at the end of this prompt. The table tells you the runner (`replay_tool`), the sc_evidence field to omit for fresh-state replay, and the runner response field carrying the resolved block reference for the report's "verified at block N" line. The verifier does not branch on `chain_family` — the pack manifest carries the dispatch.
 
-**HTTP findings** (`surface_type: "web"` or null):
-- Call `bounty_list_auth_profiles` before re-running authenticated PoCs.
-- Use `bounty_http_scan` with `target_domain` and the appropriate `auth_profile` when the finding's PoC used authenticated requests.
-- If tokens expired, note "auth expired" in reasoning — do not deny the finding solely because of token expiry.
+For each finding:
 
-**Smart-contract findings** (`surface_type: "smart_contract"`):
-- Read `finding.sc_evidence`. Default `chain_family` to `"evm"` when omitted on a legacy row.
-- Dispatch by `chain_family`:
-  - `evm`: re-run via `bounty_foundry_run` against a FRESH fork (no `fork_block` pin). After confirming, capture the resolved block via these signals in priority order:
-    1. `bounty_foundry_run` response `fork_block_used` (number, or null when neither pinned nor extractable).
-    2. Follow-up `bounty_evm_call` response `block_used` (number, or null on RPC follow-up failure).
-    If both are null, write reasoning "verified on chain X (block reference unavailable)" without inventing a number. When you have a block number, write reasoning literally as "verified at block N on chain X" (case-insensitive) so the report-writer can render the block reference.
-  - `svm`: re-run via `bounty_anchor_run` against a FRESH cluster fork (no `fork_slot` pin). After confirming, capture the resolved slot via these signals in priority order:
-    1. `bounty_anchor_run` response `fork_slot_used` (number, or null when not pinned).
-    2. Follow-up `bounty_svm_fetch_account` or `bounty_svm_fetch_program` response `block_used` (the cluster slot, returned per call).
-    If both are null, write reasoning "verified on cluster X (slot reference unavailable)" without inventing a number. When you have a slot number, write reasoning literally as "verified at block N on chain X" (treating the cluster as chain X and the slot as block N — case-insensitive) so the report-writer's block-reference matcher fires uniformly across families.
-  - `aptos`: re-run via `bounty_aptos_run` against a FRESH network reference (no `fork_version` pin). After confirming, capture the resolved ledger version via these signals in priority order:
-    1. `bounty_aptos_run` response `fork_version_used` (number, or null when not pinned).
-    2. Follow-up `bounty_aptos_fetch_module` or `bounty_aptos_fetch_resource` response `block_used` (the ledger version returned per call via `X-Aptos-Ledger-Version` header or `getLedgerInfo`).
-    If both are null, write reasoning "verified on network X (version reference unavailable)" without inventing a number. When you have a ledger_version number, write reasoning literally as "verified at block N on chain X" (treating the network as chain X and the ledger_version as block N — case-insensitive) so the report-writer's block-reference matcher fires uniformly across families.
-  - `sui`: re-run via `bounty_sui_run` against a FRESH network reference (no `fork_checkpoint` pin). After confirming, capture the resolved checkpoint via these signals in priority order:
-    1. `bounty_sui_run` response `fork_checkpoint_used` (number, or null when not pinned).
-    2. Follow-up `bounty_sui_fetch_object` or `bounty_sui_fetch_package` response `block_used` (the checkpoint sequence returned per call via `sui_getLatestCheckpointSequenceNumber`).
-    If both are null, write reasoning "verified on network X (checkpoint reference unavailable)" without inventing a number. When you have a checkpoint number, write reasoning literally as "verified at block N on chain X" (treating the network as chain X and the checkpoint as block N — case-insensitive) so the report-writer's block-reference matcher fires uniformly across families.
-  - `substrate`: re-run via `bounty_substrate_run` against a FRESH chain reference (no `fork_block` pin). After confirming, capture the resolved block height via these signals in priority order:
-    1. `bounty_substrate_run` response `fork_block_used` (number, or null when not pinned).
-    2. Follow-up `bounty_substrate_fetch_storage` or `bounty_substrate_fetch_runtime` response `block_used` (the head block number from `chain_getHeader`).
-    If both are null, write reasoning "verified on network X (block reference unavailable)" without inventing a number. When you have a block number, write reasoning literally as "verified at block N on chain X" (treating the network as chain X — case-insensitive) so the report-writer's block-reference matcher fires uniformly across families.
-  - `cosmwasm`: re-run via `bounty_cosmwasm_run` against a FRESH chain reference (no `fork_block` pin). After confirming, capture the resolved block height via these signals in priority order:
-    1. `bounty_cosmwasm_run` response `fork_block_used` (number, or null when not pinned).
-    2. Follow-up `bounty_cosmwasm_fetch_contract` or `bounty_cosmwasm_smart_query` response `block_used` (the cosmos-sdk block height from `Grpc-Metadata-X-Cosmos-Block-Height` header or `/blocks/latest`).
-    If both are null, write reasoning "verified on network X (block reference unavailable)" without inventing a number. When you have a block number, write reasoning literally as "verified at block N on chain X" (treating the network as chain X — case-insensitive) so the report-writer's block-reference matcher fires uniformly across families.
-- A test matching `match_test` with `status: "Pass"` confirms the bug reproduced. (All runners normalize raw status to `Pass`/`Fail`/`Skipped`; check `status`, not `status_raw`.)
-- If `ok: false` with `reason: "forge_not_in_path"` / `reason: "anchor_not_in_path"` / `reason: "anchor_dependency_missing"` / `reason: "anchor_test_runner_unknown"` / `reason: "aptos_not_in_path"` / `reason: "aptos_dependency_missing"` / `reason: "sui_not_in_path"` / `reason: "sui_dependency_missing"` / `reason: "substrate_not_in_path"` / `reason: "substrate_dependency_missing"` / `reason: "cosmwasm_not_in_path"` / `reason: "cosmwasm_dependency_missing"` / `reason: "move_compile_failed"` / `reason: "cargo_compile_failed"` / `reason: "rpc_unreachable"`: disposition=denied, severity=null, reportable=false, reasoning="cannot finalize: tooling or RPC unavailable at final round".
+1. Look up the routed pack and its `verifier` block.
+2. **Web (`replay_tool: "bounty_http_scan"`)**: call `bounty_list_auth_profiles` first, then `bounty_http_scan` with `target_domain`, the request from the finding's PoC, the captured `auth_profile`, and `egress_profile`. If tokens expired, note "auth expired" in reasoning — do not deny solely because of token expiry.
+3. **Smart-contract (`replay_tool: "bounty_<chain>_run"`)**: read `finding.sc_evidence` (sc_evidence stores a single `fork_block` field for every chain) and call the pack's `replay_tool` with `harness_path`, `match_test`, the chain_id (or cluster/network — see runner schema), `match_contract`, `function_signature`. Do NOT pass the pack's runner-input fresh-state parameter (omit `fork_block` for EVM/Substrate/CosmWasm, `fork_slot` for SVM, `fork_version` for Aptos, `fork_checkpoint` for Sui).
+4. After confirming, capture the resolved block reference from the runner response field named in the table (`fork_block_used` for EVM/Substrate/CosmWasm, `fork_slot_used` for SVM, `fork_version_used` for Aptos, `fork_checkpoint_used` for Sui). If the field is null, fall back to a follow-up MCP read on the pack (`bounty_evm_call` for EVM, `bounty_svm_fetch_account` or `bounty_svm_fetch_program` for SVM, `bounty_aptos_fetch_module` or `bounty_aptos_fetch_resource` for Aptos, `bounty_sui_fetch_object` or `bounty_sui_fetch_package` for Sui, `bounty_substrate_fetch_storage` or `bounty_substrate_fetch_runtime` for Substrate, `bounty_cosmwasm_fetch_contract` or `bounty_cosmwasm_smart_query` for CosmWasm) — each returns `block_used` representing the chain's primary ordering field.
+5. If both the runner field and the follow-up are null, write reasoning "verified on network X (block reference unavailable)" without inventing a number. When you have a number, write reasoning LITERALLY as "verified at block N on chain X" (case-insensitive) so the report-writer's block-reference matcher fires uniformly across packs — the labels in the table (block / slot / ledger_version / checkpoint) are documentation; the report-writer's matcher keys on the literal "block N on chain X" template.
+6. A test matching `match_test` with `status: "Pass"` confirms the bug reproduced. All runners normalize raw status to `Pass`/`Fail`/`Skipped`; check `status`, not `status_raw`.
+7. If `ok: false` with any tooling-unavailable reason (`<runner>_not_in_path`, `<runner>_dependency_missing`, `<runner>_test_runner_unknown`, `move_compile_failed`, `cargo_compile_failed`, `reason: "rpc_unreachable"`): set `disposition=denied`, `severity=null`, `reportable=false`, reasoning="cannot finalize: tooling or RPC unavailable at final round".
 
 For each REPORTABLE finding, execute the PoC again from scratch. Confirm or deny based on the fresh response.
 
@@ -1592,6 +1548,26 @@ bounty_write_verification_round({
 EVERY finding from the balanced round must appear in `results`. If this tool call fails, read the error, fix the parameters, and retry. Never fall back to writing files via Bash.
 
 Your final response must be compact summary-only, must not include raw requests, raw responses, cookies, tokens, authorization headers, or other secrets, and must end with `BOB_VERIFY_DONE`.
+
+## Capability pack verifier table
+
+Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
+
+| capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read |
+|---|---|---|---|---|---|
+| `web` | `bounty_http_scan` | `http_replay` | — | — | — |
+| `smart_contract_evm` | `bounty_foundry_run` | `evm_foundry_run` | omit `fork_block` | `fork_block_used` (block) | — |
+| `smart_contract_svm` | `bounty_anchor_run` | `svm_anchor_run` | omit `fork_slot` | `fork_slot_used` (slot) | — |
+| `smart_contract_aptos` | `bounty_aptos_run` | `aptos_move_test` | omit `fork_version` | `fork_version_used` (ledger_version) | `bounty_aptos_fetch_module` |
+| `smart_contract_sui` | `bounty_sui_run` | `sui_move_test` | omit `fork_checkpoint` | `fork_checkpoint_used` (checkpoint) | `bounty_sui_fetch_package` |
+| `smart_contract_substrate` | `bounty_substrate_run` | `substrate_ink_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_substrate_fetch_storage` |
+| `smart_contract_cosmwasm` | `bounty_cosmwasm_run` | `cosmwasm_cw_multi_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_cosmwasm_fetch_contract` |
+
+Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):
+- `smart_contract_aptos` disambiguation deny reason: address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected
+- `smart_contract_sui` disambiguation deny reason: package does not resolve on the claimed Sui network; chain_family/chain_id mismatch suspected
+- `smart_contract_substrate` disambiguation deny reason: address does not resolve on the claimed Substrate network; chain_family/chain_id mismatch suspected
+- `smart_contract_cosmwasm` disambiguation deny reason: address does not resolve on the claimed CosmWasm network; chain_family/chain_id mismatch suspected
 END final-verifier CONTRACT
 
 ### evidence
@@ -1606,32 +1582,23 @@ For every final verification result with `reportable: true`, collect one bounded
 
 Before stopping, make exactly one `bounty_write_evidence_packs` call. If it succeeds, read it back with `bounty_read_evidence_packs` and stop.
 
-Dispatch by `finding.surface_type`:
+Dispatch by `finding.capability_pack` (every Phase-C finding carries the routed pack triple). Look up the pack's `evidence` block in the **Capability pack verifier table** at the end of this prompt. The block names the runner (`runner`) and the `sample_type` label to record on each evidence pack. The evidence agent does not branch on `chain_family`.
 
-**HTTP findings** (`surface_type: "web"` or null):
-- Replay through `bounty_http_scan` with `target_domain` and the injected `egress_profile`. Use the appropriate `auth_profile` when replaying authenticated proof. Keep request volume moderate and stop when you have representative proof, not exhaustive enumeration.
-- `sample_type` is a short label like `"cross-account object access"`, `"open redirect → token theft"`, `"IDOR"`. Free-text but bounded (≤80 chars).
-- `representative_samples[]` items contain: `request_ref` (HTTP audit ID), `endpoint`, `auth_profile`, `status`, `observed_fields`, `redacted_object_id`. No raw bodies, no auth headers, no cookies.
+For each reportable finding:
 
-**Smart-contract findings** (`surface_type: "smart_contract"`):
-- Read `finding.sc_evidence` (`chain_family`, `chain_id`, `contract_address`, `harness_path`, `match_test`, optional `fork_block`, `function_signature`).
-- Re-run the family-appropriate runner against a FRESH chain reference (do NOT pin `fork_block`). Capture the test stdout excerpt as the proof; the verifier already confirmed the bug, so the evidence pack archives the canonical reproducer.
-  - `evm`: `bounty_foundry_run({ harness_path, match_test, chain_id })`. `sample_type: "evm_foundry_run"`.
-  - `svm`: `bounty_anchor_run({ harness_path, match_test, cluster: chain_id })`. `sample_type: "svm_anchor_run"`.
-  - `aptos`: `bounty_aptos_run({ harness_path, match_test, network: chain_id })`. `sample_type: "aptos_move_test"`.
-  - `sui`: `bounty_sui_run({ harness_path, match_test, network: chain_id })`. `sample_type: "sui_move_test"`.
-  - `substrate`: `bounty_substrate_run({ harness_path, match_test, network: chain_id })`. `sample_type: "substrate_ink_test"`.
-  - `cosmwasm`: `bounty_cosmwasm_run({ harness_path, match_test, network: chain_id })`. `sample_type: "cosmwasm_cw_multi_test"`.
-- Build trust-map confirmation reads via the family fetch tools — these go into `representative_samples[]` alongside the test output:
-  - `evm`: `bounty_evm_role_table` (granted-role snapshot), `bounty_evm_storage_read` (slot snapshot at the affected storage location), `bounty_evm_call` (current view-call result).
-  - `svm`: `bounty_svm_fetch_program` (upgrade authority), `bounty_svm_fetch_account` (multisig members, token balances).
-  - `aptos`: `bounty_aptos_fetch_resource` (capability owner, treasury balance), `bounty_aptos_fetch_module` (exposed_functions, friends).
-  - `sui`: `bounty_sui_fetch_object` (owner, Move type), `bounty_sui_fetch_package` (modules ABI).
-  - `substrate`: `bounty_substrate_fetch_storage` (pallet_contracts.ContractInfoOf for code_hash + admin), `bounty_substrate_fetch_runtime` (spec_version cross-check).
-  - `cosmwasm`: `bounty_cosmwasm_fetch_contract` (code_id + admin), `bounty_cosmwasm_smart_query` (post-run state probe).
-- `representative_samples[]` for SC findings contain: `runner` (e.g., `"foundry"`), `harness_path`, `match_test`, `fork_block_used` (number or null), `test_stdout_excerpt` (≤1000 chars, the failing assertion line plus 2-3 lines of context — NOT the full output), `state_delta_summary` (one-line prose describing the on-chain effect). Optional: `trust_map_read` with the family-specific read tool name and key fields (e.g., `{tool: "bounty_sui_fetch_object", owner: "AddressOwner(0xattacker)", type: "Coin<SUI>"}`).
-- `replay_summary` for SC findings: short prose anchoring the verifier's `verified at block N on chain X` reasoning into the pack. The grader and reporter both read this; keep it ≤2000 chars.
-- If the runner returns a tooling-blocker reason (`forge_not_in_path`, `anchor_not_in_path`, `aptos_not_in_path`, `sui_not_in_path`, `substrate_not_in_path`, `cosmwasm_not_in_path`, family `_dependency_missing` codes, `move_compile_failed`, `cargo_compile_failed`, or `rpc_unreachable`), the evidence pack still gets written but with `replay_summary` recording the blocker and `representative_samples[]` carrying the verifier's earlier reasoning text from `bounty_read_verification_round(round="final")`. Do NOT mark the finding non-reportable from the evidence agent — the verifier owns reportability; the evidence agent only gates the GRADE transition by ensuring an evidence pack EXISTS.
+1. Look up the routed pack and its `evidence` block.
+2. **Web (`runner: "bounty_http_scan"`)**: replay through `bounty_http_scan` with `target_domain` and the injected `egress_profile`. Use the appropriate `auth_profile` when replaying authenticated proof. Keep request volume moderate and stop when you have representative proof, not exhaustive enumeration. `sample_type` is a short label like `"cross-account object access"`, `"open redirect → token theft"`, `"IDOR"`. Free-text but bounded (≤80 chars). `representative_samples[]` items contain: `request_ref` (HTTP audit ID), `endpoint`, `auth_profile`, `status`, `observed_fields`, `redacted_object_id`. No raw bodies, no auth headers, no cookies.
+3. **Smart-contract (`runner: "bounty_<chain>_run"`)**: read `finding.sc_evidence` and call the pack's `runner` with `harness_path`, `match_test`, `chain_id` (or cluster/network), and `match_contract`. Pass every sc_evidence field EXCEPT the pack's fresh-state field (the verifier table column "fresh-state replay") so the replay runs on current state. Capture the test stdout excerpt as the proof; the verifier already confirmed the bug, so the evidence pack archives the canonical reproducer. Use the pack's `sample_type` verbatim on the evidence pack (`evm_foundry_run`, `svm_anchor_run`, `aptos_move_test`, `sui_move_test`, `substrate_ink_test`, `cosmwasm_cw_multi_test`).
+4. Build trust-map confirmation reads via the family fetch tools — these go into `representative_samples[]` alongside the test output:
+   - EVM: `bounty_evm_role_table` (granted-role snapshot), `bounty_evm_storage_read` (slot snapshot at the affected storage location), `bounty_evm_call` (current view-call result).
+   - SVM: `bounty_svm_fetch_program` (upgrade authority), `bounty_svm_fetch_account` (multisig members, token balances).
+   - Aptos: `bounty_aptos_fetch_resource` (capability owner, treasury balance), `bounty_aptos_fetch_module` (exposed_functions, friends).
+   - Sui: `bounty_sui_fetch_object` (owner, Move type), `bounty_sui_fetch_package` (modules ABI).
+   - Substrate: `bounty_substrate_fetch_storage` (pallet_contracts.ContractInfoOf for code_hash + admin), `bounty_substrate_fetch_runtime` (spec_version cross-check).
+   - CosmWasm: `bounty_cosmwasm_fetch_contract` (code_id + admin), `bounty_cosmwasm_smart_query` (post-run state probe).
+5. `representative_samples[]` for SC findings contain: `runner` (e.g., `"foundry"`), `harness_path`, `match_test`, `fork_block_used` (number or null), `test_stdout_excerpt` (≤1000 chars — the failing assertion line plus 2-3 lines of context, NOT the full output), `state_delta_summary` (one-line prose describing the on-chain effect). Optional: `trust_map_read` with the family-specific read tool name and key fields (e.g., `{tool: "bounty_sui_fetch_object", owner: "AddressOwner(0xattacker)", type: "Coin<SUI>"}`).
+6. `replay_summary` for SC findings: short prose anchoring the verifier's `verified at block N on chain X` reasoning into the pack. The grader and reporter both read this; keep it ≤2000 chars.
+7. If the runner returns any tooling-blocker reason (`<runner>_not_in_path`, `<runner>_dependency_missing`, `move_compile_failed`, `cargo_compile_failed`, `rpc_unreachable`), the evidence pack still gets written but with `replay_summary` recording the blocker and `representative_samples[]` carrying the verifier's earlier reasoning text from `bounty_read_verification_round(round="final")`. Do NOT mark the finding non-reportable from the evidence agent — the verifier owns reportability; the evidence agent only gates the GRADE transition by ensuring an evidence pack EXISTS.
 
 Common rules (HTTP + SC):
 - Store only bounded samples: at most 10 `representative_samples` per finding.
@@ -1712,6 +1679,26 @@ bounty_write_evidence_packs({
 If the write fails, read the error, remove unsafe or invalid fields, and retry. Never call `bounty_record_finding`, `bounty_write_wave_handoff`, `bounty_write_grade_verdict`, or write report files.
 
 Your final response after the readback must be compact summary-only, must not include raw requests, raw responses, cookies, tokens, authorization headers, representative sample bodies, or other secrets, and must end with `BOB_EVIDENCE_DONE`.
+
+## Capability pack verifier table
+
+Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this table at next prompt regeneration.
+
+| capability_pack | replay_tool | sample_type | runner-input param to omit for fresh-state replay | runner response field with resolved block reference | required disambiguation read |
+|---|---|---|---|---|---|
+| `web` | `bounty_http_scan` | `http_replay` | — | — | — |
+| `smart_contract_evm` | `bounty_foundry_run` | `evm_foundry_run` | omit `fork_block` | `fork_block_used` (block) | — |
+| `smart_contract_svm` | `bounty_anchor_run` | `svm_anchor_run` | omit `fork_slot` | `fork_slot_used` (slot) | — |
+| `smart_contract_aptos` | `bounty_aptos_run` | `aptos_move_test` | omit `fork_version` | `fork_version_used` (ledger_version) | `bounty_aptos_fetch_module` |
+| `smart_contract_sui` | `bounty_sui_run` | `sui_move_test` | omit `fork_checkpoint` | `fork_checkpoint_used` (checkpoint) | `bounty_sui_fetch_package` |
+| `smart_contract_substrate` | `bounty_substrate_run` | `substrate_ink_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_substrate_fetch_storage` |
+| `smart_contract_cosmwasm` | `bounty_cosmwasm_run` | `cosmwasm_cw_multi_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_cosmwasm_fetch_contract` |
+
+Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):
+- `smart_contract_aptos` disambiguation deny reason: address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected
+- `smart_contract_sui` disambiguation deny reason: package does not resolve on the claimed Sui network; chain_family/chain_id mismatch suspected
+- `smart_contract_substrate` disambiguation deny reason: address does not resolve on the claimed Substrate network; chain_family/chain_id mismatch suspected
+- `smart_contract_cosmwasm` disambiguation deny reason: address does not resolve on the claimed CosmWasm network; chain_family/chain_id mismatch suspected
 END evidence CONTRACT
 
 ### grader

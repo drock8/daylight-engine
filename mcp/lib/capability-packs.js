@@ -1,11 +1,38 @@
 "use strict";
 
+// Capability pack manifest. Each pack is the single source of truth for:
+//   id              — string used in surface-routes.json and findings.jsonl
+//   hunter_agent    — Claude/Codex subagent name spawned for this pack
+//   brief_profile   — selects which buildBriefExtras builder hunter-brief calls
+//   role_bundles    — MCP tool bundles the spawned hunter sees
+//   completion_gate — wave-handoff completion rule the merge layer enforces
+//   verifier        — pack-keyed PoC replay for brutalist/balanced/final verifier
+//   evidence        — pack-keyed runner for evidence-agent's pre-grade re-runs
+//
+// Adding a new chain pack must be a single-file edit here plus a new prompt
+// body. Phase D consumers (verifier, evidence) look up the pack by
+// finding.capability_pack and dispatch on the verifier/evidence blocks
+// instead of branching on chain_family in their prompts.
+
 const WEB_CAPABILITY_PACK = Object.freeze({
   id: "web",
   hunter_agent: "hunter-agent",
   brief_profile: "web",
   role_bundles: Object.freeze(["hunter-shared", "hunter-web"]),
   completion_gate: "web_wave_handoff",
+  verifier: Object.freeze({
+    // Web verifier replay is a fresh HTTP call against the same endpoint
+    // with the captured auth profile. Verifier extracts the request from
+    // the finding's PoC and re-issues via bounty_http_scan.
+    replay_tool: "bounty_http_scan",
+    sample_type: "http_replay",
+    fresh_state_omit_field: null,        // HTTP has no fork concept
+    disambiguation: null,                // single endpoint, no chain confusion
+  }),
+  evidence: Object.freeze({
+    runner: "bounty_http_scan",
+    sample_type: "http_replay",
+  }),
 });
 
 const SMART_CONTRACT_EVM_CAPABILITY_PACK = Object.freeze({
@@ -14,6 +41,23 @@ const SMART_CONTRACT_EVM_CAPABILITY_PACK = Object.freeze({
   brief_profile: "smart_contract_evm",
   role_bundles: Object.freeze(["hunter-shared", "hunter-evm"]),
   completion_gate: "smart_contract_wave_handoff",
+  verifier: Object.freeze({
+    replay_tool: "bounty_foundry_run",
+    sample_type: "evm_foundry_run",
+    fresh_state_omit_field: "fork_block",
+    // The runner response field carrying the resolved block reference
+    // (block / slot / version / checkpoint depending on chain). Final
+    // verifier captures this for the report's "verified at block N" line.
+    block_reference_field: "fork_block_used",
+    block_reference_label: "block",
+    // EVM 0x... addresses are unambiguous across EVM chains; chain_id alone
+    // fixes the fork RPC. No read-side disambiguation required.
+    disambiguation: null,
+  }),
+  evidence: Object.freeze({
+    runner: "bounty_foundry_run",
+    sample_type: "evm_foundry_run",
+  }),
 });
 
 const SMART_CONTRACT_SVM_CAPABILITY_PACK = Object.freeze({
@@ -22,14 +66,78 @@ const SMART_CONTRACT_SVM_CAPABILITY_PACK = Object.freeze({
   brief_profile: "smart_contract_svm",
   role_bundles: Object.freeze(["hunter-shared", "hunter-svm"]),
   completion_gate: "smart_contract_wave_handoff",
+  verifier: Object.freeze({
+    replay_tool: "bounty_anchor_run",
+    sample_type: "svm_anchor_run",
+    // The runner-input parameter that pins replay to a specific chain
+    // ordering point. sc_evidence persists a single `fork_block` field
+    // (findings.js), and the verifier translates it into this runner
+    // parameter when calling the runner. Omitting this parameter forces
+    // a fresh-state replay against current cluster state.
+    fresh_state_omit_field: "fork_slot",
+    block_reference_field: "fork_slot_used",
+    block_reference_label: "slot",
+    disambiguation: null,
+  }),
+  evidence: Object.freeze({
+    runner: "bounty_anchor_run",
+    sample_type: "svm_anchor_run",
+  }),
 });
 
-const SMART_CONTRACT_MOVE_CAPABILITY_PACK = Object.freeze({
-  id: "smart_contract_move",
+// Aptos and Sui were merged into a single "Move" pack pre-Phase-D so the
+// hunter-move-agent could dispatch internally. That broke verifier
+// dispatch (one runner per pack) so Phase D splits them. Both packs still
+// route to hunter-move-agent — the agent's own tool list covers both
+// bounty_aptos_* and bounty_sui_* — but verifier dispatch is one runner.
+const SMART_CONTRACT_APTOS_CAPABILITY_PACK = Object.freeze({
+  id: "smart_contract_aptos",
   hunter_agent: "hunter-move-agent",
-  brief_profile: "smart_contract_move",
+  brief_profile: "smart_contract_aptos",
   role_bundles: Object.freeze(["hunter-shared", "hunter-move"]),
   completion_gate: "smart_contract_wave_handoff",
+  verifier: Object.freeze({
+    replay_tool: "bounty_aptos_run",
+    sample_type: "aptos_move_test",
+    fresh_state_omit_field: "fork_version",
+    block_reference_field: "fork_version_used",
+    block_reference_label: "ledger_version",
+    // Aptos and Sui share the same 0x + 64-hex address space; the runner
+    // alone cannot detect a wrong-network record. Verifier must call
+    // bounty_aptos_fetch_module to confirm the module exists on the
+    // claimed network before passing through.
+    disambiguation: Object.freeze({
+      tool: "bounty_aptos_fetch_module",
+      fail_reason: "address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected",
+    }),
+  }),
+  evidence: Object.freeze({
+    runner: "bounty_aptos_run",
+    sample_type: "aptos_move_test",
+  }),
+});
+
+const SMART_CONTRACT_SUI_CAPABILITY_PACK = Object.freeze({
+  id: "smart_contract_sui",
+  hunter_agent: "hunter-move-agent",
+  brief_profile: "smart_contract_sui",
+  role_bundles: Object.freeze(["hunter-shared", "hunter-move"]),
+  completion_gate: "smart_contract_wave_handoff",
+  verifier: Object.freeze({
+    replay_tool: "bounty_sui_run",
+    sample_type: "sui_move_test",
+    fresh_state_omit_field: "fork_checkpoint",
+    block_reference_field: "fork_checkpoint_used",
+    block_reference_label: "checkpoint",
+    disambiguation: Object.freeze({
+      tool: "bounty_sui_fetch_package",
+      fail_reason: "package does not resolve on the claimed Sui network; chain_family/chain_id mismatch suspected",
+    }),
+  }),
+  evidence: Object.freeze({
+    runner: "bounty_sui_run",
+    sample_type: "sui_move_test",
+  }),
 });
 
 const SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK = Object.freeze({
@@ -38,6 +146,25 @@ const SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK = Object.freeze({
   brief_profile: "smart_contract_substrate",
   role_bundles: Object.freeze(["hunter-shared", "hunter-substrate"]),
   completion_gate: "smart_contract_wave_handoff",
+  verifier: Object.freeze({
+    replay_tool: "bounty_substrate_run",
+    sample_type: "substrate_ink_test",
+    fresh_state_omit_field: "fork_block",
+    block_reference_field: "fork_block_used",
+    block_reference_label: "block",
+    // SS58 addresses share base58 alphabet with chain-specific prefix
+    // bytes the validator does not BLAKE2b-check (cost). A Kusama address
+    // could be recorded against polkadot. Verifier must read storage on
+    // the claimed network before passing through.
+    disambiguation: Object.freeze({
+      tool: "bounty_substrate_fetch_storage",
+      fail_reason: "address does not resolve on the claimed Substrate network; chain_family/chain_id mismatch suspected",
+    }),
+  }),
+  evidence: Object.freeze({
+    runner: "bounty_substrate_run",
+    sample_type: "substrate_ink_test",
+  }),
 });
 
 const SMART_CONTRACT_COSMWASM_CAPABILITY_PACK = Object.freeze({
@@ -46,13 +173,32 @@ const SMART_CONTRACT_COSMWASM_CAPABILITY_PACK = Object.freeze({
   brief_profile: "smart_contract_cosmwasm",
   role_bundles: Object.freeze(["hunter-shared", "hunter-cosmwasm"]),
   completion_gate: "smart_contract_wave_handoff",
+  verifier: Object.freeze({
+    replay_tool: "bounty_cosmwasm_run",
+    sample_type: "cosmwasm_cw_multi_test",
+    fresh_state_omit_field: "fork_block",
+    block_reference_field: "fork_block_used",
+    block_reference_label: "block",
+    // bech32 addresses with different HRPs share the bech32 character
+    // space — an osmo1... could be recorded against juno. Verifier must
+    // call bounty_cosmwasm_fetch_contract on the claimed network.
+    disambiguation: Object.freeze({
+      tool: "bounty_cosmwasm_fetch_contract",
+      fail_reason: "address does not resolve on the claimed CosmWasm network; chain_family/chain_id mismatch suspected",
+    }),
+  }),
+  evidence: Object.freeze({
+    runner: "bounty_cosmwasm_run",
+    sample_type: "cosmwasm_cw_multi_test",
+  }),
 });
 
 const CAPABILITY_PACKS = Object.freeze({
   web: WEB_CAPABILITY_PACK,
   smart_contract_evm: SMART_CONTRACT_EVM_CAPABILITY_PACK,
   smart_contract_svm: SMART_CONTRACT_SVM_CAPABILITY_PACK,
-  smart_contract_move: SMART_CONTRACT_MOVE_CAPABILITY_PACK,
+  smart_contract_aptos: SMART_CONTRACT_APTOS_CAPABILITY_PACK,
+  smart_contract_sui: SMART_CONTRACT_SUI_CAPABILITY_PACK,
   smart_contract_substrate: SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK,
   smart_contract_cosmwasm: SMART_CONTRACT_COSMWASM_CAPABILITY_PACK,
 });
@@ -75,15 +221,15 @@ const WEB_SURFACE_TYPES = Object.freeze([
 
 const WEB_SURFACE_TYPE_SET = new Set(WEB_SURFACE_TYPES);
 
-// Smart-contract surfaces are routed by `chain_family`. Aptos and Sui share
-// the Move pack because hunter-move-agent dispatches between
-// bounty_aptos_* and bounty_sui_* tools internally.
+// Smart-contract surfaces are routed by `chain_family`. Aptos and Sui have
+// distinct packs (so verifier dispatch is one runner per pack) but both
+// route to hunter-move-agent — the agent's tool list covers both
+// bounty_aptos_* and bounty_sui_*.
 const SMART_CONTRACT_CHAIN_FAMILY_TO_PACK = Object.freeze({
   evm: SMART_CONTRACT_EVM_CAPABILITY_PACK,
   svm: SMART_CONTRACT_SVM_CAPABILITY_PACK,
-  aptos: SMART_CONTRACT_MOVE_CAPABILITY_PACK,
-  sui: SMART_CONTRACT_MOVE_CAPABILITY_PACK,
-  move: SMART_CONTRACT_MOVE_CAPABILITY_PACK,
+  aptos: SMART_CONTRACT_APTOS_CAPABILITY_PACK,
+  sui: SMART_CONTRACT_SUI_CAPABILITY_PACK,
   substrate: SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK,
   cosmwasm: SMART_CONTRACT_COSMWASM_CAPABILITY_PACK,
 });

@@ -9,6 +9,9 @@ const {
   mcpToolNamesForRole,
   roleDefinition,
 } = require("../../mcp/lib/role-model.js");
+const {
+  substituteCapabilityPackVerifierTable,
+} = require("../../mcp/lib/capability-packs-rendering.js");
 
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 
@@ -494,6 +497,11 @@ function renderClaudePromptBody(roleId, body) {
   for (const [placeholder, template] of Object.entries(CLAUDE_LAUNCH_TEMPLATES)) {
     document = document.split(placeholder).join(template);
   }
+  // Lazily-rendered, registry-driven placeholders. Substitution lives in
+  // mcp/lib/capability-packs-rendering.js so the Codex renderer consumes
+  // the same logic. Adding a pack to capability-packs.js updates every
+  // consumer prompt at next regeneration.
+  document = substituteCapabilityPackVerifierTable(document);
   return document
     .replace(/\/bob:hunt/g, "/bob-hunt")
     .replace(/\/bob:status/g, "/bob-status")

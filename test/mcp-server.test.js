@@ -10495,7 +10495,8 @@ test("bounty_read_hunter_brief preserves per-chain harness paths for every smart
   // hunters falsely report missing harnesses and write partial handoffs.
   const cases = [
     { pack: "smart_contract_svm",       chain_family: "svm",       agent: "hunter-svm-agent",       field: "anchor_harness_path",   value: "/tmp/harness/svm" },
-    { pack: "smart_contract_move",      chain_family: "aptos",     agent: "hunter-move-agent",      field: "move_harness_path",     value: "/tmp/harness/move" },
+    { pack: "smart_contract_aptos",     chain_family: "aptos",     agent: "hunter-move-agent",      field: "move_harness_path",     value: "/tmp/harness/aptos" },
+    { pack: "smart_contract_sui",       chain_family: "sui",       agent: "hunter-move-agent",      field: "move_harness_path",     value: "/tmp/harness/sui" },
     { pack: "smart_contract_substrate", chain_family: "substrate", agent: "hunter-substrate-agent", field: "ink_harness_path",      value: "/tmp/harness/ink" },
     { pack: "smart_contract_substrate", chain_family: "substrate", agent: "hunter-substrate-agent", field: "cargo_harness_path",    value: "/tmp/harness/cargo" },
     { pack: "smart_contract_cosmwasm",  chain_family: "cosmwasm",  agent: "hunter-cosmwasm-agent",  field: "cosmwasm_harness_path", value: "/tmp/harness/cw" },

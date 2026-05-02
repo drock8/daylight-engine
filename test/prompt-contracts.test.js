@@ -1080,6 +1080,33 @@ test("SubagentStop hooks cover every routed capability-pack hunter agent", () =>
   assert.deepEqual(configuredHunters, expectedHunters);
 });
 
+test("no rendered prompt artifact leaks an unsubstituted {{...}} placeholder (renderer parity, Phase D)", () => {
+  // Phase D moved the {{CAPABILITY_PACK_VERIFIER_TABLE}} substitution into a
+  // renderer-agnostic helper because the Codex renderer was previously
+  // shipping raw placeholders to verifier/evidence worker contracts. This
+  // test catches any future renderer-parity drift: every checked-in
+  // generated prompt artifact (Claude agents, Codex skills, Bob skills)
+  // must contain zero literal `{{...}}` placeholders.
+  const generatedFiles = [
+    ...fs.readdirSync(path.join(ROOT, ".claude/agents"))
+      .filter((name) => name.endsWith(".md"))
+      .map((name) => `.claude/agents/${name}`),
+    ".claude/skills/bob-hunt/SKILL.md",
+    "adapters/codex/skills/bob-hunt/SKILL.md",
+    "adapters/codex/skills/bob-status/SKILL.md",
+    "adapters/codex/skills/bob-debug/SKILL.md",
+  ];
+  for (const relativePath of generatedFiles) {
+    const document = readFile(relativePath);
+    const matches = document.match(/\{\{[A-Z][A-Z0-9_]+\}\}/g) || [];
+    assert.deepEqual(
+      matches,
+      [],
+      `${relativePath} contains unsubstituted placeholders: ${matches.join(", ")}`,
+    );
+  }
+});
+
 test("checked-in .claude/settings.json SubagentStop matches every capability-pack hunter agent", () => {
   // The repo-local settings.json is what direct-from-repo Claude usage reads
   // (e.g., when developing the framework itself or running ./dev-sync.sh).
@@ -1283,19 +1310,19 @@ test("report-writer agent has Read tool exposure for chains.md", () => {
   assert.match(frontmatter.tools, /\bRead\b/, "report-writer must expose Read tool to consume chains.md");
 });
 
-test("verifier prompts route SC findings to bounty_foundry_run with the test-pass convention", () => {
-  // Phase 3a: each verifier prompt body must teach surface_type routing AND
-  // the polarity convention (exploit-test PASS = bug reproduced). A polarity
-  // bug here would silently invert every SC verification.
+test("verifier prompt sources instruct pack-driven dispatch and embed the capability pack verifier table (Phase D)", () => {
+  // Phase D moves the SC dispatch out of every verifier prompt body and
+  // into the capability-pack manifest. Sources must instruct lookup via
+  // finding.capability_pack and embed the {{CAPABILITY_PACK_VERIFIER_TABLE}}
+  // placeholder so the renderer drops the per-pack reference table at the
+  // bottom of each rendered agent. The polarity convention and SC fail-mode
+  // language stay in every source prompt so a polarity bug can't slip in.
   for (const role of ["brutalist-verifier", "balanced-verifier", "final-verifier"]) {
     const prompt = readFile(`prompts/roles/${role}.md`);
-    assert.match(prompt, /surface_type/, `${role}.md does not mention surface_type`);
     assert.match(prompt, /sc_evidence/, `${role}.md does not mention sc_evidence`);
-    assert.match(prompt, /bounty_foundry_run/, `${role}.md does not call bounty_foundry_run`);
-    assert.match(prompt, /smart_contract/, `${role}.md does not branch on smart_contract`);
-    // Polarity convention must be explicit in at least one of the verifier
-    // prompts (brutalist defines it; balanced/final reference). We assert each
-    // mentions Pass + reproduce semantics so a partial edit can't drift.
+    assert.match(prompt, /finding\.capability_pack/, `${role}.md must instruct lookup via finding.capability_pack (Phase D)`);
+    assert.match(prompt, /\{\{CAPABILITY_PACK_VERIFIER_TABLE\}\}/, `${role}.md must embed the capability pack verifier table placeholder`);
+    assert.match(prompt, /smart_contract|smart-contract/i, `${role}.md does not branch on smart_contract`);
     assert.match(
       prompt,
       /Pass.*reproduce|reproduce.*Pass|assert(s|ed)?\s+the\s+bug|exploit harness|exploit-test/i,
@@ -1303,22 +1330,86 @@ test("verifier prompts route SC findings to bounty_foundry_run with the test-pas
     );
     assert.match(
       prompt,
-      /forge_not_in_path|fork-blocked|cannot re-run/i,
+      /not_in_path|fork-blocked|cannot re-run|cannot finalize/i,
       `${role}.md does not document SC fail-closed behavior`,
     );
   }
 });
 
-test("verifier prompts dispatch by chain_family to bounty_foundry_run (evm) and bounty_anchor_run (svm)", () => {
-  // Phase 4c: chain_family dispatch is what keeps EVM verifications from
-  // running against an SVM PoC and vice versa. Each verifier prompt must
-  // mention both runners and the chain_family discriminator.
+test("rendered verifier agents carry every capability pack runner via the rendered pack table (Phase D)", () => {
+  // The rendered .claude/agents/*-verifier.md files must contain the
+  // capability-pack verifier table with every pack's runner, fail-mode
+  // codes, and disambiguation tool. Adding a 7th pack to capability-packs.js
+  // updates these at next regeneration without touching prompt sources.
   for (const role of ["brutalist-verifier", "balanced-verifier", "final-verifier"]) {
+    const rendered = readFile(`.claude/agents/${role}.md`);
+    assert.match(rendered, /Capability pack verifier table/, `${role}.md must render the capability pack table`);
+    for (const runner of [
+      "bounty_http_scan",
+      "bounty_foundry_run",
+      "bounty_anchor_run",
+      "bounty_aptos_run",
+      "bounty_sui_run",
+      "bounty_substrate_run",
+      "bounty_cosmwasm_run",
+    ]) {
+      assert.match(rendered, new RegExp(runner), `${role}.md rendered table must list ${runner}`);
+    }
+  }
+});
+
+test("capability pack registry exposes a verifier replay tool for every pack (Phase D source of truth)", () => {
+  // The pack manifest is the dispatch source of truth in Phase D. Every
+  // pack must declare a replay_tool that resolves to a registered MCP tool
+  // and a sample_type for evidence labels. SC packs must also declare
+  // a disambiguation read; web is allowed to omit it.
+  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
+  const toolNames = new Set(Object.keys(TOOL_MANIFEST));
+  for (const pack of Object.values(CAPABILITY_PACKS)) {
+    const v = pack.verifier;
+    assert.ok(v, `pack ${pack.id} must declare a verifier block`);
+    assert.ok(typeof v.replay_tool === "string" && v.replay_tool.length > 0,
+      `pack ${pack.id} verifier.replay_tool must be a non-empty string`);
+    assert.ok(toolNames.has(v.replay_tool),
+      `pack ${pack.id} verifier.replay_tool ${v.replay_tool} is not a registered MCP tool`);
+    assert.ok(typeof v.sample_type === "string" && v.sample_type.length > 0,
+      `pack ${pack.id} verifier.sample_type must be a non-empty string`);
+    if (pack.id !== "web") {
+      // Same-shape addresses across networks (Aptos↔Sui 0x+64hex, SS58
+      // polkadot↔kusama, bech32 osmo↔juno) cannot be distinguished by the
+      // runner alone. Every SC pack must declare the disambiguation read
+      // tool. Newcomer packs that genuinely don't need one (e.g. EVM —
+      // chain_id alone fixes the fork) are allowed to set null explicitly.
+      assert.ok(v.disambiguation === null || (v.disambiguation && toolNames.has(v.disambiguation.tool)),
+        `pack ${pack.id} verifier.disambiguation.tool must be null or a registered MCP tool`);
+    }
+  }
+});
+
+test("capability pack registry exposes an evidence runner for every pack (Phase D)", () => {
+  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
+  const toolNames = new Set(Object.keys(TOOL_MANIFEST));
+  for (const pack of Object.values(CAPABILITY_PACKS)) {
+    const e = pack.evidence;
+    assert.ok(e, `pack ${pack.id} must declare an evidence block`);
+    assert.ok(toolNames.has(e.runner),
+      `pack ${pack.id} evidence.runner ${e.runner} is not a registered MCP tool`);
+    assert.equal(typeof e.sample_type, "string");
+  }
+});
+
+test("verifier prompt sources stay below the chain_family branching budget (Phase D anti-cruft)", () => {
+  // Phase D's goal: the source prompt instructs pack-driven dispatch once,
+  // then the renderer drops the per-pack table. Crossing 2 chain_family
+  // references in a verifier source means the prompt is creeping back to
+  // the per-chain branch chain Phase D removed.
+  for (const role of ["brutalist-verifier", "balanced-verifier", "final-verifier", "evidence"]) {
     const prompt = readFile(`prompts/roles/${role}.md`);
-    assert.match(prompt, /chain_family/, `${role}.md does not branch on chain_family`);
-    assert.match(prompt, /bounty_foundry_run/, `${role}.md does not call bounty_foundry_run for EVM`);
-    assert.match(prompt, /bounty_anchor_run/, `${role}.md does not call bounty_anchor_run for SVM`);
-    assert.match(prompt, /anchor_not_in_path|anchor unavailable/i, `${role}.md does not document anchor missing-tooling fallback`);
+    const matches = prompt.match(/chain_family/g) || [];
+    assert.ok(
+      matches.length <= 2,
+      `${role}.md has ${matches.length} chain_family references; Phase D cap is 2 (the dispatch lives in the pack manifest)`,
+    );
   }
 });
 
@@ -1382,15 +1473,19 @@ test("report-writer prompt renders SVM cluster + program_id + cwe map", () => {
   assert.match(prompt, /slot reference unavailable/i, "reporter.md must use 'slot reference unavailable' for SVM");
 });
 
-test("verifier prompts handle anchor_dependency_missing and anchor_test_runner_unknown reasons", () => {
+test("verifier prompts document the SC tooling fail-mode taxonomy at least once (Phase D)", () => {
   // Phase 4 fix-up: anchor_not_in_path only fires on ENOENT for the anchor
   // binary itself. When cargo / solana / solana-test-validator / yarn / jest /
   // ts-mocha cause the failure, we surface anchor_dependency_missing or
-  // anchor_test_runner_unknown — verifier prompts must fail-closed on those.
+  // anchor_test_runner_unknown. Phase D collapsed the per-runner cases to a
+  // generic taxonomy: <runner>_not_in_path, <runner>_dependency_missing,
+  // <runner>_test_runner_unknown, move_compile_failed, cargo_compile_failed,
+  // rpc_unreachable. Each verifier source must mention the canonical pattern
+  // so the prompt tells the agent how to interpret runner failures.
   for (const role of ["brutalist-verifier", "balanced-verifier", "final-verifier"]) {
     const prompt = readFile(`prompts/roles/${role}.md`);
-    assert.match(prompt, /anchor_dependency_missing/, `${role}.md must handle anchor_dependency_missing`);
-    assert.match(prompt, /anchor_test_runner_unknown/, `${role}.md must handle anchor_test_runner_unknown`);
+    assert.match(prompt, /not_in_path/, `${role}.md must reference the <runner>_not_in_path family of fail-modes`);
+    assert.match(prompt, /dependency_missing/, `${role}.md must reference the <runner>_dependency_missing family`);
   }
 });
 
@@ -1398,14 +1493,20 @@ test("verifier prompts handle anchor_dependency_missing and anchor_test_runner_u
 // Phase 5c: Move (Aptos + Sui) prompt contracts
 // ----------------------------------------------------------------------
 
-test("verifier prompts dispatch by chain_family to bounty_aptos_run (aptos) and bounty_sui_run (sui)", () => {
+test("Aptos and Sui packs route to the correct Move runners (Phase D)", () => {
+  // Phase D split smart_contract_move into smart_contract_aptos and
+  // smart_contract_sui so verifier dispatch is one runner per pack. Both
+  // still use hunter-move-agent (the agent's tool list covers both).
+  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
+  assert.equal(CAPABILITY_PACKS.smart_contract_aptos.verifier.replay_tool, "bounty_aptos_run");
+  assert.equal(CAPABILITY_PACKS.smart_contract_aptos.hunter_agent, "hunter-move-agent");
+  assert.equal(CAPABILITY_PACKS.smart_contract_sui.verifier.replay_tool, "bounty_sui_run");
+  assert.equal(CAPABILITY_PACKS.smart_contract_sui.hunter_agent, "hunter-move-agent");
+  // Move compile fail-mode must be documented in at least one verifier source
+  // (it's shared by aptos+sui and applies in the rendered table footer).
   for (const role of ["brutalist-verifier", "balanced-verifier", "final-verifier"]) {
     const prompt = readFile(`prompts/roles/${role}.md`);
-    assert.match(prompt, /bounty_aptos_run/, `${role}.md does not call bounty_aptos_run for Aptos`);
-    assert.match(prompt, /bounty_sui_run/, `${role}.md does not call bounty_sui_run for Sui`);
-    assert.match(prompt, /aptos_not_in_path|aptos unavailable/i, `${role}.md does not document aptos missing-tooling fallback`);
-    assert.match(prompt, /sui_not_in_path|sui unavailable/i, `${role}.md does not document sui missing-tooling fallback`);
-    assert.match(prompt, /move_compile_failed/, `${role}.md must handle move_compile_failed reason`);
+    assert.match(prompt, /move_compile_failed/, `${role}.md must reference move_compile_failed in the SC fail-mode taxonomy`);
   }
 });
 
@@ -1457,16 +1558,30 @@ test("chain-builder prompt enumerates Aptos + Sui patterns and enforces aptos/su
   assert.match(prompt, /chain_family.*sui|sui.*chain_family/, "chain.md must enforce sui-side cite");
 });
 
-test("verifier prompts require read-side disambiguation for Aptos/Sui (Phase 5 fix-up #2)", () => {
+test("Aptos and Sui packs declare the address-disambiguation read tool (Phase D)", () => {
   // Phase 5 fix-up: Aptos and Sui share 0x+64-hex address space. A hunter
   // could record chain_family=aptos with a Sui package_id (or vice versa);
-  // the runner alone cannot detect this. Verifier prompts must REQUIRE a
-  // read-side check that resolves the address on the claimed network.
+  // the runner alone cannot detect this. Phase D moves the disambiguation
+  // requirement from prompt prose into the pack manifest's verifier block.
+  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
+  const aptos = CAPABILITY_PACKS.smart_contract_aptos.verifier.disambiguation;
+  assert.ok(aptos, "smart_contract_aptos must declare a disambiguation read");
+  assert.equal(aptos.tool, "bounty_aptos_fetch_module");
+  assert.match(aptos.fail_reason, /Aptos|chain_family\/chain_id mismatch/i);
+  const sui = CAPABILITY_PACKS.smart_contract_sui.verifier.disambiguation;
+  assert.ok(sui, "smart_contract_sui must declare a disambiguation read");
+  assert.equal(sui.tool, "bounty_sui_fetch_package");
+  assert.match(sui.fail_reason, /Sui|chain_family\/chain_id mismatch/i);
+  // Brutalist prompt source must require running the disambiguation when
+  // the pack declares one — keeps the contract honest at the call site.
   const brutalist = readFile("prompts/roles/brutalist-verifier.md");
-  assert.match(brutalist, /REQUIRED read-side disambiguation/i, "brutalist must require read-side checks for Move families");
-  assert.match(brutalist, /chain_family\/chain_id mismatch suspected/i, "brutalist must call out family/chain_id mismatch on no-resolve");
-  assert.match(brutalist, /bounty_aptos_fetch_module/, "brutalist must name bounty_aptos_fetch_module for Aptos disambiguation");
-  assert.match(brutalist, /bounty_sui_fetch_package/, "brutalist must name bounty_sui_fetch_package for Sui disambiguation");
+  assert.match(brutalist, /pack's `verifier\.disambiguation` is set/i,
+    "brutalist must instruct running pack.verifier.disambiguation when present");
+  // The chain_family/chain_id mismatch language lives in pack.disambiguation.fail_reason
+  // — surfaced in the rendered brutalist via the verifier table.
+  const brutalistRendered = readFile(".claude/agents/brutalist-verifier.md");
+  assert.match(brutalistRendered, /chain_family\/chain_id mismatch/i,
+    "rendered brutalist must surface chain_family/chain_id mismatch via the pack table");
 });
 
 test("balanced-verifier carries Move severity heuristics (Phase 5 fix-up #9)", () => {
@@ -1563,28 +1678,26 @@ test("orchestrator dispatches by chain_family to hunter-substrate and hunter-cos
   assert.match(prompt, /chain_family.*"cosmwasm"/, "orchestrator must dispatch on chain_family for cosmwasm");
 });
 
-test("brutalist-verifier dispatches Substrate + CosmWasm with REQUIRED read-side disambiguation for both (Phase 6c + fix-up #1)", () => {
-  const brutalist = readFile("prompts/roles/brutalist-verifier.md");
-  // Substrate dispatch
-  assert.match(brutalist, /Substrate.*chain_family.*"substrate"/i, "brutalist must have a Substrate dispatch block");
-  assert.match(brutalist, /bounty_substrate_run/, "brutalist must call bounty_substrate_run for substrate findings");
-  assert.match(brutalist, /substrate_not_in_path/, "brutalist must handle substrate_not_in_path fail-mode");
-  assert.match(brutalist, /substrate_dependency_missing/, "brutalist must handle substrate_dependency_missing fail-mode");
-  assert.match(brutalist, /cargo_compile_failed/, "brutalist must handle cargo_compile_failed fail-mode");
-  // Substrate REQUIRED disambiguation (Phase 6 fix-up #1): SS58 prefix byte not
-  // checksum-verified, so kusama-prefix SS58 against chain_id="polkadot" must
-  // be caught by an on-chain read.
-  assert.match(brutalist, /REQUIRED read-side disambiguation: SS58/, "brutalist must REQUIRE substrate read-side disambiguation post-fix-up");
-  assert.match(brutalist, /address does not resolve on the claimed Substrate network/, "brutalist must deny on substrate address-network mismatch");
-  assert.match(brutalist, /bounty_substrate_fetch_storage/, "brutalist must use substrate_fetch_storage for the disambiguation read");
-  // CosmWasm dispatch
-  assert.match(brutalist, /CosmWasm.*chain_family.*"cosmwasm"/i, "brutalist must have a CosmWasm dispatch block");
-  assert.match(brutalist, /bounty_cosmwasm_run/, "brutalist must call bounty_cosmwasm_run for cosmwasm findings");
-  assert.match(brutalist, /cosmwasm_not_in_path/, "brutalist must handle cosmwasm_not_in_path fail-mode");
-  assert.match(brutalist, /cosmwasm_dependency_missing/, "brutalist must handle cosmwasm_dependency_missing fail-mode");
-  // CosmWasm REQUIRED disambiguation (bech32 HRP can mislead network claim)
-  assert.match(brutalist, /REQUIRED read-side disambiguation/, "brutalist must REQUIRE cosmwasm read-side disambiguation");
-  assert.match(brutalist, /bounty_cosmwasm_fetch_contract/, "brutalist must use cosmwasm_fetch_contract for the disambiguation read");
+test("Substrate and CosmWasm packs declare disambiguation reads (Phase D)", () => {
+  // Phase D moves the per-chain dispatch into the pack manifest. SS58 prefix
+  // bytes are not BLAKE2b-checked (cost), so a Kusama SS58 against
+  // chain_id="polkadot" must be caught by an on-chain read; bech32 HRPs
+  // similarly need a network-resolving call to detect a wrong-network record.
+  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
+  const sub = CAPABILITY_PACKS.smart_contract_substrate.verifier;
+  assert.equal(sub.replay_tool, "bounty_substrate_run");
+  assert.ok(sub.disambiguation, "substrate pack must declare disambiguation read");
+  assert.equal(sub.disambiguation.tool, "bounty_substrate_fetch_storage");
+  assert.match(sub.disambiguation.fail_reason, /Substrate/);
+  const cw = CAPABILITY_PACKS.smart_contract_cosmwasm.verifier;
+  assert.equal(cw.replay_tool, "bounty_cosmwasm_run");
+  assert.ok(cw.disambiguation, "cosmwasm pack must declare disambiguation read");
+  assert.equal(cw.disambiguation.tool, "bounty_cosmwasm_fetch_contract");
+  assert.match(cw.disambiguation.fail_reason, /CosmWasm/);
+  // Rendered brutalist must list these tools via the rendered pack table.
+  const brutalistRendered = readFile(".claude/agents/brutalist-verifier.md");
+  assert.match(brutalistRendered, /bounty_substrate_fetch_storage/);
+  assert.match(brutalistRendered, /bounty_cosmwasm_fetch_contract/);
 });
 
 test("balanced-verifier carries Substrate + CosmWasm severity heuristics (Phase 6c)", () => {
@@ -1596,13 +1709,16 @@ test("balanced-verifier carries Substrate + CosmWasm severity heuristics (Phase 
   assert.match(balanced, /cw_multi_test_only_passes/i, "balanced must caveat cw-multi-test-only findings");
 });
 
-test("final-verifier carries Substrate + CosmWasm dispatch for fresh-fork re-runs (Phase 6c)", () => {
-  const final = readFile("prompts/roles/final-verifier.md");
-  // Dispatch lines look like: `- `substrate`: re-run via `bounty_substrate_run`...`
-  assert.match(final, /`substrate`:\s*re-run via `bounty_substrate_run`/i, "final must branch on chain_family substrate");
-  assert.match(final, /`cosmwasm`:\s*re-run via `bounty_cosmwasm_run`/i, "final must branch on chain_family cosmwasm");
-  assert.match(final, /substrate_not_in_path|substrate_dependency_missing/, "final must handle substrate fail-modes");
-  assert.match(final, /cosmwasm_not_in_path|cosmwasm_dependency_missing/, "final must handle cosmwasm fail-modes");
+test("rendered final-verifier carries Substrate + CosmWasm runners and block-reference fields via the pack table (Phase D)", () => {
+  const final = readFile(".claude/agents/final-verifier.md");
+  assert.match(final, /bounty_substrate_run/, "rendered final must mention bounty_substrate_run via the pack table");
+  assert.match(final, /bounty_cosmwasm_run/, "rendered final must mention bounty_cosmwasm_run via the pack table");
+  // Both packs use fork_block_used for the resolved block reference.
+  assert.match(final, /fork_block_used/);
+  // Source prompt instructs pack-driven dispatch; the per-chain branches are
+  // gone from the source.
+  const finalSource = readFile("prompts/roles/final-verifier.md");
+  assert.match(finalSource, /finding\.capability_pack/, "final-verifier source must instruct lookup via finding.capability_pack");
 });
 
 test("chain-builder enumerates Substrate + CosmWasm patterns and enforces family-cite (Phase 6c)", () => {
@@ -1803,7 +1919,10 @@ test("bounty_http_scan prompt contracts require target_domain on every call", ()
   assert.doesNotMatch(orchestratorPrompt, /cross-domain[\s\S]{0,160}target_domain/i);
 
   for (const verifierPrompt of verifierPrompts) {
-    assert.match(verifierPrompt, /`bounty_http_scan` with `target_domain` and the appropriate `auth_profile`/);
+    // Phase D rephrased the web replay instruction. The contract is still that
+    // every bounty_http_scan call from a verifier carries target_domain and
+    // the captured auth_profile — the exact wording can vary.
+    assert.match(verifierPrompt, /`bounty_http_scan`[^\n]*`target_domain`[^\n]*`auth_profile`/);
     assert.doesNotMatch(verifierPrompt, /cross-domain[\s\S]{0,160}target_domain/i);
   }
 });
@@ -1894,12 +2013,13 @@ test("chain.md instructs bounty_write_chain_attempt for every SC pivot with term
   assert.match(prompt, /SC pivots specifically.*proof_reference.*MUST cite/, "chain.md must require sc_evidence-anchored proof_reference for SC pivots");
 });
 
-test("evidence-agent dispatches by surface_type with family runner workflow (SC support)", () => {
+test("evidence-agent dispatches by capability_pack with pack-driven runner workflow (Phase D)", () => {
+  // Phase D: evidence-agent looks up finding.capability_pack in the pack
+  // manifest and uses the pack's evidence.runner. The agent's allowlist
+  // still carries every runner so polymorphic dispatch works in a single run.
   const document = readFile(".claude/agents/evidence-agent.md");
   const frontmatter = parseFrontmatter(document, "evidence-agent.md");
   const tools = frontmatter.tools.split(",").map((tool) => tool.trim());
-  // SC family runners must be in the evidence-agent allowlist for SC findings
-  // to flow through the VERIFY -> GRADE evidence-pack gate.
   for (const required of [
     "mcp__bountyagent__bounty_foundry_run",
     "mcp__bountyagent__bounty_anchor_run",
@@ -1910,29 +2030,31 @@ test("evidence-agent dispatches by surface_type with family runner workflow (SC 
   ]) {
     assert.ok(tools.includes(required), `evidence-agent must include ${required}`);
   }
-  // HTTP path stays available for web findings.
   assert.ok(tools.includes("mcp__bountyagent__bounty_http_scan"), "evidence-agent must keep bounty_http_scan for web findings");
 
-  // Source body documents the dispatch.
+  // Source body instructs pack-driven dispatch and embeds the placeholder.
   const source = readFile("prompts/roles/evidence.md");
-  assert.match(source, /Dispatch by `finding\.surface_type`/i, "evidence source must document surface_type dispatch");
-  assert.match(source, /HTTP findings.*surface_type.*"web"/, "evidence source must describe HTTP path");
-  assert.match(source, /Smart-contract findings.*surface_type.*"smart_contract"/, "evidence source must describe SC path");
-  // Each family branch routes to its canonical runner. EVM/SVM use foundry/anchor;
-  // Move/Substrate/CosmWasm use family-named runners.
+  assert.match(source, /Dispatch by `finding\.capability_pack`/i, "evidence source must document capability_pack dispatch (Phase D)");
+  assert.match(source, /\{\{CAPABILITY_PACK_VERIFIER_TABLE\}\}/, "evidence source must embed the capability pack table placeholder");
+  // The capability pack registry is the runtime source of truth.
+  const { CAPABILITY_PACKS } = require("../mcp/lib/capability-packs.js");
   const familyRunners = {
-    evm: "bounty_foundry_run",
-    svm: "bounty_anchor_run",
-    aptos: "bounty_aptos_run",
-    sui: "bounty_sui_run",
-    substrate: "bounty_substrate_run",
-    cosmwasm: "bounty_cosmwasm_run",
+    smart_contract_evm: "bounty_foundry_run",
+    smart_contract_svm: "bounty_anchor_run",
+    smart_contract_aptos: "bounty_aptos_run",
+    smart_contract_sui: "bounty_sui_run",
+    smart_contract_substrate: "bounty_substrate_run",
+    smart_contract_cosmwasm: "bounty_cosmwasm_run",
   };
-  for (const [family, runner] of Object.entries(familyRunners)) {
-    assert.match(source, new RegExp(`\`${family}\`:.*${runner}`), `evidence source must route ${family} to ${runner}`);
+  for (const [packId, runner] of Object.entries(familyRunners)) {
+    assert.equal(CAPABILITY_PACKS[packId].evidence.runner, runner, `pack ${packId} must route to ${runner}`);
   }
-  // Tooling-blocker fallback ensures the gate clears even when re-run is blocked.
-  assert.match(source, /tooling-blocker reason.*evidence pack still gets written/i, "evidence source must describe tooling-blocker fallback so gate clears");
+  // Rendered evidence agent contains every runner via the pack table.
+  for (const runner of Object.values(familyRunners)) {
+    assert.match(document, new RegExp(runner), `evidence-agent rendered prompt must list ${runner} via the pack table`);
+  }
+  // Tooling-blocker fallback survives the prompt rewrite.
+  assert.match(source, /tooling-blocker reason[^\n]*evidence pack still gets written/i, "evidence source must describe tooling-blocker fallback so gate clears");
 });
 
 test("hunter-completion.js exports evidence-mode helpers (post-merge refactor)", () => {

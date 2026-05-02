@@ -8,6 +8,9 @@ const {
 const {
   codexRoleSpec,
 } = require("../../adapters/codex/role-specs.js");
+const {
+  substituteCapabilityPackVerifierTable,
+} = require("../../mcp/lib/capability-packs-rendering.js");
 
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 const CODEX_WORKER_CONTRACT_ROLE_IDS = Object.freeze([
@@ -161,6 +164,53 @@ function codexLaunchTemplates() {
       "Wait with `wait_agent`, read the report, then `close_agent`.",
       "```",
     ].join("\n"),
+    "{{SPAWN_EVIDENCE_AGENT}}": [
+      "```text",
+      `Use Codex spawn_agent for ${workerLabel("evidence")}.`,
+      "- agent_type: \"worker\"",
+      "- message: `Bob role: evidence-agent. Session: ~/bounty-agent-sessions/[domain]. Egress profile: [egress_profile].` Include the full `evidence` contract from Codex Worker Role Contracts.",
+      "Wait with `wait_agent`, read `bounty_read_evidence_packs.data`, then `close_agent`.",
+      "```",
+    ].join("\n"),
+    // Chain-specific hunter spawn references. The orchestrator embeds these
+    // as type catalogue entries; the routed `assignment.hunter_agent` from
+    // the MCP capability router is the runtime dispatch — Codex picks the
+    // matching worker contract from the role appendix in this skill.
+    "{{SPAWN_HUNTER_EVM_AGENT}}": [
+      "```text",
+      `For smart_contract_evm assignments: spawn Codex worker for ${workerLabel("hunter-evm")}.`,
+      "- agent_type: \"worker\"",
+      "- message: include the standard SC run header (Domain, Wave, Agent, Surface, Capability pack, Brief profile, Hunter agent, Handoff token, Checkpoint mode) plus the full `hunter-evm` contract from Codex Worker Role Contracts.",
+      "```",
+    ].join("\n"),
+    "{{SPAWN_HUNTER_SVM_AGENT}}": [
+      "```text",
+      `For smart_contract_svm assignments: spawn Codex worker for ${workerLabel("hunter-svm")}.`,
+      "- agent_type: \"worker\"",
+      "- message: include the standard SC run header plus the full `hunter-svm` contract from Codex Worker Role Contracts.",
+      "```",
+    ].join("\n"),
+    "{{SPAWN_HUNTER_MOVE_AGENT}}": [
+      "```text",
+      `For smart_contract_aptos and smart_contract_sui assignments: spawn Codex worker for ${workerLabel("hunter-move")}.`,
+      "- agent_type: \"worker\"",
+      "- message: include the standard SC run header plus the full `hunter-move` contract from Codex Worker Role Contracts. The hunter dispatches between bounty_aptos_* and bounty_sui_* internally based on surface.chain_family.",
+      "```",
+    ].join("\n"),
+    "{{SPAWN_HUNTER_SUBSTRATE_AGENT}}": [
+      "```text",
+      `For smart_contract_substrate assignments: spawn Codex worker for ${workerLabel("hunter-substrate")}.`,
+      "- agent_type: \"worker\"",
+      "- message: include the standard SC run header plus the full `hunter-substrate` contract from Codex Worker Role Contracts.",
+      "```",
+    ].join("\n"),
+    "{{SPAWN_HUNTER_COSMWASM_AGENT}}": [
+      "```text",
+      `For smart_contract_cosmwasm assignments: spawn Codex worker for ${workerLabel("hunter-cosmwasm")}.`,
+      "- agent_type: \"worker\"",
+      "- message: include the standard SC run header plus the full `hunter-cosmwasm` contract from Codex Worker Role Contracts.",
+      "```",
+    ].join("\n"),
   });
 }
 
@@ -223,7 +273,10 @@ function codexRoleContractAppendix({ root = DEFAULT_ROOT } = {}) {
       "",
       `### ${roleId}`,
       `BEGIN ${roleId} CONTRACT`,
-      applyCodexHostText(roleBody(roleId, { root })).trimEnd(),
+      // Substitute the capability-pack verifier table inside Codex worker
+      // contracts too — verifier/evidence prompts embed the placeholder
+      // and Codex workers read it from the appendix in bob-hunt SKILL.md.
+      substituteCapabilityPackVerifierTable(applyCodexHostText(roleBody(roleId, { root })).trimEnd()),
       `END ${roleId} CONTRACT`,
     );
   }
@@ -233,6 +286,7 @@ function codexRoleContractAppendix({ root = DEFAULT_ROOT } = {}) {
 function renderCodexPromptBody(roleId, body, options = {}) {
   let document = applyCodexHostText(body);
   document = replaceLaunchTemplates(document);
+  document = substituteCapabilityPackVerifierTable(document);
   if (roleId === "orchestrator") {
     document = document.replace("## Hard Rules\n", `${codexOrchestratorPreamble()}## Hard Rules\n`);
     document += `${codexRoleContractAppendix(options)}\n`;
