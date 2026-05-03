@@ -6,56 +6,56 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const {
-  EXECUTABLE_HOOKS,
-  HOOK_FILES,
+  BOB_RESOURCE_DIR,
+  NEUTRAL_INSTALL_SCHEMA_VERSION,
+  RESOURCE_SETS,
   commandExists,
+  detectInstalledAdapterIds,
+  installedAdapterIds,
+  neutralInstallMetadataPath,
+  neutralVersionPath,
   patchrightAvailable,
 } = require("./install.js");
 const {
-  STALE_GLOBAL_MCP_PERMISSIONS,
-} = require("./merge-claude-config.js");
-const {
-  defaultClaudeSettings,
-} = require("../mcp/lib/claude-config.js");
-const {
-  egressProfilesPath,
-  isUntouchedGeneratedEgressConfig,
-  normalizeEgressProfilesDocument,
-} = require("../mcp/lib/egress-profiles.js");
+  adapterIdsForSelection,
+  detectAdapterId,
+  getAdapter,
+} = require("../adapters/index.js");
 
-const BOB_COMMAND_FILES = Object.freeze([
-  "bob-egress.md",
-  "bob-update.md",
-]);
+// When --adapter is omitted on doctor/uninstall, prefer to act on whatever is
+// actually installed in this project rather than the install-time default.
+// Returns { ids, reason } parallel to scripts/install.js#resolveInstallAdapters.
+function resolveLifecycleAdapters(targetAbs, options = {}) {
+  const explicit = adapterIdsForSelection(options.adapter || options.adapters, { defaultIds: [] });
+  if (explicit.length > 0) {
+    return { ids: explicit, reason: "explicit_flag" };
+  }
 
-const LEGACY_BOB_COMMAND_FILES = Object.freeze([
-  "hunt.md",
-  "status.md",
-  "debug.md",
-  "update.md",
-]);
+  let installed = [];
+  try {
+    installed = installedAdapterIds(targetAbs);
+  } catch {
+    installed = [];
+  }
+  if (installed.length > 0) {
+    return { ids: installed, reason: "installed_adapters" };
+  }
 
-const BOB_SKILLS = Object.freeze([
-  "bob-debug",
-  "bob-hunt",
-  "bob-status",
-]);
+  const detection = detectAdapterId(targetAbs, options.detectionOptions || {});
+  return { ids: [detection.id], reason: detection.reason, detection };
+}
 
-const BOB_POLICY_REPLAY_FILES = Object.freeze([
-  "replay.mjs",
-  "tune.mjs",
-  "bench.mjs",
-  "case-schema.mjs",
-  "synth-session.mjs",
-  "README.md",
-  path.join("cases", "sample-hunter-refusal.json"),
-]);
+function defaultLogLifecycleResolution(resolution, command) {
+  if (resolution.reason === "explicit_flag") return;
+  const noun = resolution.ids.length > 1 ? "adapters" : "adapter";
+  process.stderr.write(
+    `hacker-bob ${command}: auto-selected ${noun} ${resolution.ids.join(", ")} (reason: ${resolution.reason})\n` +
+    `  Override with --adapter <claude|codex|generic-mcp|all>\n`,
+  );
+}
 
-const LEGACY_BOB_SKILLS = Object.freeze([
-  "bountyagent",
-  "bountyagentdebug",
-  "bountyagentstatus",
-]);
+const LEGACY_CLAUDE_RESOURCE_DIR = ".claude";
+const ROOT_MCP_ADAPTER_IDS = Object.freeze(["claude", "generic-mcp"]);
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -64,10 +64,6 @@ function readJson(filePath) {
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-function isPlainObject(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function relativeDisplay(targetAbs, filePath) {
@@ -125,58 +121,100 @@ function jsonReadCheck(checks, filePath, id, targetAbs) {
   }
 }
 
-function hookKey(hook) {
-  return JSON.stringify({
-    type: hook && hook.type,
-    command: hook && hook.command,
-    timeout: hook && hook.timeout,
-  });
-}
-
-function hooksContain(hooks, expectedHook) {
-  if (!Array.isArray(hooks)) return false;
-  const expected = hookKey(expectedHook);
-  return hooks.some((hook) => hookKey(hook) === expected);
-}
-
-function hookEntryHasHooks(entries, expectedEntry) {
-  if (!Array.isArray(entries)) return false;
-  return entries.some((entry) => {
-    if (!entry || entry.matcher !== expectedEntry.matcher) return false;
-    return (expectedEntry.hooks || []).every((hook) => hooksContain(entry.hooks, hook));
-  });
-}
-
-function settingsHasHookEntries(settings, bobSettings) {
-  const missing = [];
-  const hooks = isPlainObject(settings && settings.hooks) ? settings.hooks : {};
-  for (const [eventName, expectedEntries] of Object.entries(bobSettings.hooks || {})) {
-    for (const expectedEntry of expectedEntries || []) {
-      if (!hookEntryHasHooks(hooks[eventName], expectedEntry)) {
-        missing.push(`${eventName}:${expectedEntry.matcher}`);
-      }
-    }
+function readVersionFile(filePath) {
+  try {
+    const value = fs.readFileSync(filePath, "utf8").trim();
+    return value || null;
+  } catch {
+    return null;
   }
-  return missing;
 }
 
-function statusLineMatches(settings, bobSettings) {
-  return JSON.stringify(settings && settings.statusLine) === JSON.stringify(bobSettings.statusLine);
-}
+function addNeutralInstallChecks(checks, targetAbs, adapterIds) {
+  const versionPath = neutralVersionPath(targetAbs);
+  const legacyVersionPath = path.join(targetAbs, ".claude", "bob", "VERSION");
+  const neutralVersion = readVersionFile(versionPath);
+  const legacyVersion = readVersionFile(legacyVersionPath);
+  let installedVersion = neutralVersion;
 
-function requiredBobMcpPermissions(bobSettings) {
-  return (bobSettings.permissions && Array.isArray(bobSettings.permissions.allow)
-    ? bobSettings.permissions.allow
-    : []
-  ).filter((permission) => permission.startsWith("mcp__bountyagent__"));
-}
+  if (neutralVersion) {
+    addCheck(checks, "ok", "install_version", `Installed Bob version is ${neutralVersion}`, {
+      installed_version: neutralVersion,
+      path: relativeDisplay(targetAbs, versionPath),
+    });
+  } else if (fileExists(versionPath)) {
+    addCheck(checks, "error", "install_version", `${relativeDisplay(targetAbs, versionPath)} is empty`);
+  } else if (legacyVersion) {
+    installedVersion = legacyVersion;
+    addCheck(
+      checks,
+      "warn",
+      "install_version",
+      `Neutral install version is missing; using legacy ${relativeDisplay(targetAbs, legacyVersionPath)} fallback`,
+      {
+        installed_version: legacyVersion,
+        expected: relativeDisplay(targetAbs, versionPath),
+        legacy: relativeDisplay(targetAbs, legacyVersionPath),
+      },
+    );
+  } else {
+    addCheck(checks, "error", "install_version", `${relativeDisplay(targetAbs, versionPath)} is missing`);
+  }
 
-function settingsMissingPermissions(settings, bobSettings) {
-  const allow = settings && settings.permissions && Array.isArray(settings.permissions.allow)
-    ? settings.permissions.allow
-    : [];
-  const present = new Set(allow);
-  return requiredBobMcpPermissions(bobSettings).filter((permission) => !present.has(permission));
+  const metadataPath = neutralInstallMetadataPath(targetAbs);
+  const legacyMetadataPath = path.join(targetAbs, ".claude", "bob", "install.json");
+  let metadata = null;
+  if (fileExists(metadataPath)) {
+    metadata = jsonReadCheck(checks, metadataPath, "install_metadata_json", targetAbs);
+  } else if (fileExists(legacyMetadataPath)) {
+    addCheck(
+      checks,
+      "warn",
+      "install_metadata_json",
+      `Neutral install metadata is missing; legacy ${relativeDisplay(targetAbs, legacyMetadataPath)} exists`,
+      {
+        expected: relativeDisplay(targetAbs, metadataPath),
+        legacy: relativeDisplay(targetAbs, legacyMetadataPath),
+      },
+    );
+    addCheck(checks, "warn", "install_metadata", "Install metadata is legacy; reinstall to write neutral adapter metadata");
+  } else {
+    addCheck(checks, "error", "install_metadata_json", `${relativeDisplay(targetAbs, metadataPath)} is missing`);
+  }
+
+  if (!metadata) return;
+
+  const metadataErrors = [];
+  if (metadata.schema_version !== NEUTRAL_INSTALL_SCHEMA_VERSION) {
+    metadataErrors.push(`schema_version must be ${NEUTRAL_INSTALL_SCHEMA_VERSION}`);
+  }
+  if (!metadata.bob_version) metadataErrors.push("bob_version is missing");
+  if (installedVersion && metadata.bob_version !== installedVersion) {
+    metadataErrors.push("bob_version does not match VERSION");
+  }
+  if (metadata.install_target !== targetAbs) metadataErrors.push("install_target does not match this project");
+  if (!metadata.package_name) metadataErrors.push("package_name is missing");
+  let metadataAdapters = [];
+  try {
+    metadataAdapters = adapterIdsForSelection(metadata.installed_adapters || [], { defaultIds: [] });
+  } catch (error) {
+    metadataErrors.push(error.message || String(error));
+  }
+  if (metadataAdapters.length === 0) metadataErrors.push("installed_adapters is missing or empty");
+  const missingAdapters = adapterIds.filter((id) => !metadataAdapters.includes(id));
+  if (missingAdapters.length > 0) {
+    metadataErrors.push(`installed_adapters is missing ${missingAdapters.join(", ")}`);
+  }
+
+  if (metadataErrors.length === 0) {
+    addCheck(checks, "ok", "install_metadata", "Neutral install metadata matches this project", {
+      installed_adapters: metadataAdapters,
+    });
+  } else {
+    addCheck(checks, "error", "install_metadata", "Neutral install metadata is incomplete or mismatched", {
+      errors: metadataErrors,
+    });
+  }
 }
 
 function expectedMcpServer(targetAbs) {
@@ -184,10 +222,6 @@ function expectedMcpServer(targetAbs) {
     command: "node",
     args: [path.join(targetAbs, "mcp", "server.js")],
   };
-}
-
-function mcpServerMatches(server, targetAbs) {
-  return JSON.stringify(server) === JSON.stringify(expectedMcpServer(targetAbs));
 }
 
 function loadServerCheck(serverPath) {
@@ -201,12 +235,60 @@ function loadServerCheck(serverPath) {
   });
 }
 
-function moduleResolvableFrom(moduleName, fromDir) {
-  try {
-    require.resolve(moduleName, { paths: [fromDir] });
-    return true;
-  } catch {
-    return false;
+function fileNamesInDir(targetAbs, relativeDir, predicate) {
+  const dir = path.join(targetAbs, relativeDir);
+  if (!dirExists(dir)) return [];
+  return fs.readdirSync(dir)
+    .sort()
+    .filter((name) => fileExists(path.join(dir, name)))
+    .filter((name) => !predicate || predicate(name));
+}
+
+function legacyResourceDir(resourceSet) {
+  return path.join(LEGACY_CLAUDE_RESOURCE_DIR, path.basename(resourceSet.destination));
+}
+
+function resourceCheckId(resourceSet) {
+  return `resource_${path.basename(resourceSet.destination).replace(/-/g, "_")}`;
+}
+
+function resourceLabel(resourceSet) {
+  return path.basename(resourceSet.destination) === "knowledge" ? "hunter knowledge" : "bypass tables";
+}
+
+function addRuntimeResourceChecks(checks, targetAbs) {
+  for (const resourceSet of RESOURCE_SETS) {
+    const canonical = fileNamesInDir(targetAbs, resourceSet.destination, resourceSet.predicate);
+    const legacyDir = legacyResourceDir(resourceSet);
+    const legacy = fileNamesInDir(targetAbs, legacyDir, resourceSet.predicate);
+    const id = resourceCheckId(resourceSet);
+    const label = resourceLabel(resourceSet);
+    if (canonical.length > 0) {
+      addCheck(
+        checks,
+        "ok",
+        id,
+        `${resourceSet.destination} contains ${canonical.length} Bob ${label} file${canonical.length === 1 ? "" : "s"}`,
+      );
+    } else if (legacy.length > 0) {
+      addCheck(
+        checks,
+        "warn",
+        id,
+        `Only legacy ${legacyDir} ${label} files were found; runtime fallback still works, but reinstall to write ${resourceSet.destination}`,
+        {
+          legacy: legacy.map((name) => path.join(legacyDir, name)),
+          expected: resourceSet.destination,
+        },
+      );
+    } else {
+      addCheck(
+        checks,
+        "error",
+        id,
+        `Bob ${label} files are missing from ${resourceSet.destination}`,
+      );
+    }
   }
 }
 
@@ -217,6 +299,11 @@ function httpxAvailable() {
 function doctorProject(projectDir, options = {}) {
   const sourceRoot = path.resolve(options.sourceRoot || path.join(__dirname, ".."));
   const targetAbs = path.resolve(projectDir || ".");
+  const adapterResolution = resolveLifecycleAdapters(targetAbs, options);
+  const adapterIds = adapterResolution.ids;
+  const logResolution = options.onAdapterResolution
+    || ((resolution) => defaultLogLifecycleResolution(resolution, "doctor"));
+  logResolution(adapterResolution);
   const checks = [];
 
   if (nodeMajor(process.versions.node) >= 20) {
@@ -230,6 +317,7 @@ function doctorProject(projectDir, options = {}) {
     return {
       ok: false,
       target: targetAbs,
+      adapters: adapterIds,
       checks,
     };
   }
@@ -243,141 +331,23 @@ function doctorProject(projectDir, options = {}) {
     }
   }
 
-  const claudeDir = path.join(targetAbs, ".claude");
-  const versionPath = path.join(claudeDir, "bob", "VERSION");
-  let installedVersion = null;
-  if (fileExists(versionPath)) {
-    installedVersion = fs.readFileSync(versionPath, "utf8").trim();
-    if (installedVersion) {
-      addCheck(checks, "ok", "installed_version", `Installed Bob version is ${installedVersion}`, {
-        installed_version: installedVersion,
+  addNeutralInstallChecks(checks, targetAbs, adapterIds);
+
+  for (const adapterId of adapterIds) {
+    const adapter = getAdapter(adapterId);
+    if (adapterId === "claude") {
+      adapter.doctor({
+        targetAbs,
+        checks,
+        addCheck,
+        fileExists,
+        idPrefix: "claude_",
+        jsonReadCheck,
+        relativeDisplay,
       });
     } else {
-      addCheck(checks, "error", "installed_version", ".claude/bob/VERSION is empty");
-    }
-  } else {
-    addCheck(checks, "error", "installed_version", ".claude/bob/VERSION is missing");
-  }
-
-  const installMetaPath = path.join(claudeDir, "bob", "install.json");
-  const installMeta = jsonReadCheck(checks, installMetaPath, "install_metadata_json", targetAbs);
-  if (installMeta) {
-    const metadataErrors = [];
-    if (installMeta.schema_version !== 1) metadataErrors.push("schema_version must be 1");
-    if (!installMeta.bob_version) metadataErrors.push("bob_version is missing");
-    if (installedVersion && installMeta.bob_version !== installedVersion) {
-      metadataErrors.push("bob_version does not match VERSION");
-    }
-    if (installMeta.install_target !== targetAbs) metadataErrors.push("install_target does not match this project");
-    if (!installMeta.package_name) metadataErrors.push("package_name is missing");
-    if (metadataErrors.length === 0) {
-      addCheck(checks, "ok", "install_metadata", "Install metadata matches this project");
-    } else {
-      addCheck(checks, "error", "install_metadata", "Install metadata is incomplete or mismatched", {
-        errors: metadataErrors,
-      });
-    }
-  }
-
-  const egressPath = egressProfilesPath(targetAbs);
-  if (!fileExists(egressPath)) {
-    addCheck(checks, "warn", "egress_profiles_config", ".claude/bob/egress-profiles.json is missing; egress defaults to direct local connections");
-  } else {
-    try {
-      const egressConfig = normalizeEgressProfilesDocument(readJson(egressPath));
-      addCheck(checks, "ok", "egress_profiles_config", ".claude/bob/egress-profiles.json is valid");
-      const nonDefaultEnabled = egressConfig.profiles.some((profile) => profile.name !== "default" && profile.enabled);
-      if (nonDefaultEnabled) {
-        addCheck(checks, "ok", "egress_profiles_non_default", "At least one non-default egress profile is enabled");
-      } else {
-        addCheck(checks, "warn", "egress_profiles_non_default", "No enabled non-default egress profiles are configured; this is optional");
-      }
-    } catch (error) {
-      addCheck(checks, "error", "egress_profiles_config", ".claude/bob/egress-profiles.json is invalid", {
-        errors: [error.message || String(error)],
-      });
-    }
-  }
-
-  const missingCommands = BOB_COMMAND_FILES
-    .map((name) => path.join(".claude", "commands", name))
-    .filter((relative) => !fileExists(path.join(targetAbs, relative)));
-  if (missingCommands.length === 0) {
-    addCheck(checks, "ok", "commands", "Bob slash commands are installed");
-  } else {
-    addCheck(checks, "error", "commands", "Bob slash commands are missing", {
-      missing: missingCommands,
-    });
-  }
-
-  const missingHooks = HOOK_FILES
-    .map((name) => path.join(".claude", "hooks", name))
-    .filter((relative) => !fileExists(path.join(targetAbs, relative)));
-  if (missingHooks.length === 0) {
-    addCheck(checks, "ok", "hook_files", "Bob hook files are installed");
-  } else {
-    addCheck(checks, "error", "hook_files", "Bob hook files are missing", {
-      missing: missingHooks,
-    });
-  }
-
-  const missingPolicyReplay = BOB_POLICY_REPLAY_FILES
-    .map((name) => path.join("testing", "policy-replay", name))
-    .filter((relative) => !fileExists(path.join(targetAbs, relative)));
-  if (missingPolicyReplay.length === 0) {
-    addCheck(checks, "ok", "policy_replay", "Bob policy replay harness is installed");
-  } else {
-    addCheck(checks, "error", "policy_replay", "Bob policy replay harness is missing", {
-      missing: missingPolicyReplay,
-    });
-  }
-
-  const nonExecutableHooks = EXECUTABLE_HOOKS
-    .map((name) => path.join(claudeDir, "hooks", name))
-    .filter((hookPath) => fileExists(hookPath) && (fs.statSync(hookPath).mode & 0o111) === 0)
-    .map((hookPath) => relativeDisplay(targetAbs, hookPath));
-  if (nonExecutableHooks.length === 0) {
-    addCheck(checks, "ok", "hook_modes", "Executable Bob hooks have executable mode");
-  } else {
-    addCheck(checks, "error", "hook_modes", "Some executable Bob hooks are not executable", {
-      files: nonExecutableHooks,
-    });
-  }
-
-  const mcpPath = path.join(targetAbs, ".mcp.json");
-  const mcp = jsonReadCheck(checks, mcpPath, "mcp_json", targetAbs);
-  if (mcp && mcpServerMatches(mcp.mcpServers && mcp.mcpServers.bountyagent, targetAbs)) {
-    addCheck(checks, "ok", "mcp_server_config", ".mcp.json points bountyagent at this project's mcp/server.js");
-  } else if (mcp) {
-    addCheck(checks, "error", "mcp_server_config", ".mcp.json is missing the Bob-managed bountyagent server entry");
-  }
-
-  const bobSettings = defaultClaudeSettings();
-  const settingsPath = path.join(claudeDir, "settings.json");
-  const settings = jsonReadCheck(checks, settingsPath, "settings_json", targetAbs);
-  if (settings) {
-    const missingHookEntries = settingsHasHookEntries(settings, bobSettings);
-    if (missingHookEntries.length === 0) {
-      addCheck(checks, "ok", "settings_hooks", ".claude/settings.json contains Bob hooks");
-    } else {
-      addCheck(checks, "error", "settings_hooks", ".claude/settings.json is missing Bob hooks", {
-        missing: missingHookEntries,
-      });
-    }
-
-    const missingPermissions = settingsMissingPermissions(settings, bobSettings);
-    if (missingPermissions.length === 0) {
-      addCheck(checks, "ok", "settings_permissions", ".claude/settings.json contains Bob MCP permissions");
-    } else {
-      addCheck(checks, "error", "settings_permissions", ".claude/settings.json is missing Bob MCP permissions", {
-        missing: missingPermissions,
-      });
-    }
-
-    if (statusLineMatches(settings, bobSettings)) {
-      addCheck(checks, "ok", "settings_statusline", ".claude/settings.json contains Bob statusline");
-    } else {
-      addCheck(checks, "error", "settings_statusline", ".claude/settings.json is missing the Bob statusline");
+      const adapterResult = adapter.doctor({ targetAbs });
+      checks.push(...adapterResult.checks);
     }
   }
 
@@ -397,11 +367,7 @@ function doctorProject(projectDir, options = {}) {
     }
   }
 
-  if (moduleResolvableFrom("proxy-agent", path.join(targetAbs, "mcp"))) {
-    addCheck(checks, "ok", "mcp_dependency_proxy_agent", "proxy-agent is available to the installed MCP runtime");
-  } else {
-    addCheck(checks, "warn", "mcp_dependency_proxy_agent", "proxy-agent is missing; non-default egress profiles will not work until dependencies are installed");
-  }
+  addRuntimeResourceChecks(checks, targetAbs);
 
   for (const tool of ["subfinder", "nuclei", "amass", "assetfinder", "chaos"]) {
     if (commandExists(tool)) {
@@ -432,6 +398,7 @@ function doctorProject(projectDir, options = {}) {
   return {
     ok: checks.every((check) => check.status !== "error"),
     target: targetAbs,
+    adapters: adapterIds,
     checks,
   };
 }
@@ -482,21 +449,30 @@ function sourceTreeFiles(sourceRoot, relativeDir) {
   return files.sort();
 }
 
-function managedClaudeFiles(sourceRoot) {
+function managedNeutralResourceFiles(sourceRoot) {
   return [
-    ...sourceDirFiles(sourceRoot, path.join(".claude", "agents"), (name) => name.endsWith(".md")),
-    ...BOB_COMMAND_FILES.map((name) => path.join(".claude", "commands", name)),
-    ...LEGACY_BOB_COMMAND_FILES.map((name) => path.join(".claude", "commands", "bob", name)),
-    ...BOB_SKILLS.map((skill) => path.join(".claude", "skills", skill, "SKILL.md")),
-    ...LEGACY_BOB_SKILLS.map((skill) => path.join(".claude", "skills", skill, "SKILL.md")),
-    ...sourceDirFiles(sourceRoot, path.join(".claude", "rules"), (name) => name.endsWith(".md")),
-    ...sourceDirFiles(sourceRoot, path.join(".claude", "bypass-tables"), (name) => name.endsWith(".txt")),
-    ...sourceDirFiles(sourceRoot, path.join(".claude", "knowledge"), (name) => name.endsWith(".json")),
-    ...HOOK_FILES.map((name) => path.join(".claude", "hooks", name)),
-    path.join(".claude", "bob", "egress-profiles.example.json"),
-    path.join(".claude", "bob", "VERSION"),
-    path.join(".claude", "bob", "install.json"),
+    path.join(BOB_RESOURCE_DIR, "VERSION"),
+    path.join(BOB_RESOURCE_DIR, "install.json"),
+    ...RESOURCE_SETS.flatMap((resourceSet) => sourceDirFiles(
+      sourceRoot,
+      resourceSet.source,
+      resourceSet.predicate,
+    )),
   ];
+}
+
+function managedLegacyResourceFiles(sourceRoot) {
+  const files = [];
+  for (const resourceSet of RESOURCE_SETS) {
+    const legacyDir = legacyResourceDir(resourceSet);
+    for (const relative of sourceDirFiles(sourceRoot, resourceSet.source, resourceSet.predicate)) {
+      files.push(path.join(legacyDir, path.basename(relative)));
+    }
+    for (const relative of sourceDirFiles(sourceRoot, legacyDir, resourceSet.predicate)) {
+      files.push(relative);
+    }
+  }
+  return Array.from(new Set(files)).sort();
 }
 
 function managedRuntimeFiles(sourceRoot) {
@@ -523,192 +499,66 @@ function maybeRemoveEmptyDir(targetAbs, relativePath, result) {
   if (!result.dry_run) fs.rmdirSync(dirPath);
 }
 
-function maybeRemoveDirTree(targetAbs, relativePath, result) {
-  const dirPath = path.join(targetAbs, relativePath);
-  if (!dirExists(dirPath)) return;
-  result.actions.push({ type: "remove_dir", path: relativePath });
-  if (!result.dry_run) fs.rmSync(dirPath, { recursive: true, force: true });
+function appendAdapterUninstallResult(result, adapterResult) {
+  if (!adapterResult) return;
+  result.actions.push(...(adapterResult.actions || []));
+  result.skipped.push(...(adapterResult.skipped || []));
+  if (adapterResult.ok === false) result.ok = false;
 }
 
-function pruneManagedDirs(targetAbs, result) {
-  for (const relativePath of [
-    path.join(".claude", "commands", "bob"),
-    path.join(".claude", "commands"),
-    path.join(".claude", "skills", "bountyagent"),
-    path.join(".claude", "skills", "bountyagentdebug"),
-    path.join(".claude", "skills", "bountyagentstatus"),
-    path.join(".claude", "skills"),
-    path.join(".claude", "agents"),
-    path.join(".claude", "rules"),
-    path.join(".claude", "bypass-tables"),
-    path.join(".claude", "knowledge"),
-    path.join(".claude", "hooks"),
-    path.join(".claude", "bob"),
-    path.join("mcp", "lib", "tools"),
-    path.join("mcp", "lib"),
-    "mcp",
-  ]) {
-    maybeRemoveEmptyDir(targetAbs, relativePath, result);
-  }
+function remainingAdapterIds(installedIds, selectedIds) {
+  return installedIds.filter((id) => !selectedIds.includes(id));
 }
 
-function removeMcpConfig(targetAbs, result) {
-  const mcpPath = path.join(targetAbs, ".mcp.json");
-  if (!fileExists(mcpPath)) return;
-  let mcp;
+function shouldPreserveRootMcpConfig(adapterId, remainingIds) {
+  return ROOT_MCP_ADAPTER_IDS.includes(adapterId) &&
+    remainingIds.some((id) => ROOT_MCP_ADAPTER_IDS.includes(id));
+}
+
+function updateNeutralMetadataAfterUninstall(targetAbs, remainingIds, result) {
+  const metadataPath = neutralInstallMetadataPath(targetAbs);
+  if (!fileExists(metadataPath)) return;
+  let metadata;
   try {
-    mcp = readJson(mcpPath);
-  } catch (error) {
-    result.skipped.push({ type: "config", path: ".mcp.json", reason: `invalid JSON: ${error.message || String(error)}` });
-    return;
-  }
-  if (!isPlainObject(mcp) || !isPlainObject(mcp.mcpServers) || !("bountyagent" in mcp.mcpServers)) return;
-  if (!mcpServerMatches(mcp.mcpServers.bountyagent, targetAbs)) {
-    result.skipped.push({ type: "config", path: ".mcp.json", reason: "bountyagent server entry is not Bob-managed" });
-    return;
-  }
-  const next = { ...mcp, mcpServers: { ...mcp.mcpServers } };
-  delete next.mcpServers.bountyagent;
-  if (Object.keys(next.mcpServers).length === 0) delete next.mcpServers;
-  result.actions.push({ type: Object.keys(next).length === 0 ? "remove_config_file" : "update_config", path: ".mcp.json" });
-  if (result.dry_run) return;
-  if (Object.keys(next).length === 0) {
-    fs.rmSync(mcpPath, { force: true });
-  } else {
-    writeJson(mcpPath, next);
-  }
-}
-
-function removeMatchingHooks(existingEntries, expectedEntries) {
-  if (!Array.isArray(existingEntries)) return existingEntries;
-  const expectedByMatcher = new Map();
-  for (const entry of expectedEntries || []) {
-    expectedByMatcher.set(entry.matcher, new Set((entry.hooks || []).map(hookKey)));
-  }
-
-  const nextEntries = [];
-  let removed = 0;
-  for (const entry of existingEntries) {
-    if (!entry || typeof entry.matcher !== "string" || !Array.isArray(entry.hooks)) {
-      nextEntries.push(entry);
-      continue;
-    }
-    const expectedKeys = expectedByMatcher.get(entry.matcher);
-    if (!expectedKeys) {
-      nextEntries.push(entry);
-      continue;
-    }
-    const hooks = entry.hooks.filter((hook) => {
-      if (expectedKeys.has(hookKey(hook))) {
-        removed += 1;
-        return false;
-      }
-      return true;
-    });
-    if (hooks.length > 0) {
-      nextEntries.push({ ...entry, hooks });
-    }
-  }
-  return { entries: nextEntries, removed };
-}
-
-function objectWithoutEmptyKnownContainers(settings) {
-  const next = { ...settings };
-  if (isPlainObject(next.permissions)) {
-    const permissions = { ...next.permissions };
-    if (Array.isArray(permissions.allow) && permissions.allow.length === 0) delete permissions.allow;
-    if (Object.keys(permissions).length === 0) {
-      delete next.permissions;
-    } else {
-      next.permissions = permissions;
-    }
-  }
-  if (isPlainObject(next.hooks) && Object.keys(next.hooks).length === 0) delete next.hooks;
-  return next;
-}
-
-function removeSettingsConfig(targetAbs, result) {
-  const settingsPath = path.join(targetAbs, ".claude", "settings.json");
-  if (!fileExists(settingsPath)) return;
-  let settings;
-  try {
-    settings = readJson(settingsPath);
+    metadata = readJson(metadataPath);
   } catch (error) {
     result.skipped.push({
       type: "config",
-      path: path.join(".claude", "settings.json"),
+      path: path.join(BOB_RESOURCE_DIR, "install.json"),
       reason: `invalid JSON: ${error.message || String(error)}`,
     });
     return;
   }
-  if (!isPlainObject(settings)) return;
 
-  const bobSettings = defaultClaudeSettings();
-  let changed = false;
-  let next = { ...settings };
-
-  if (isPlainObject(next.permissions) && Array.isArray(next.permissions.allow)) {
-    const bobPermissions = new Set([
-      ...requiredBobMcpPermissions(bobSettings),
-      ...STALE_GLOBAL_MCP_PERMISSIONS,
-    ]);
-    const allow = next.permissions.allow.filter((permission) => !bobPermissions.has(permission));
-    if (allow.length !== next.permissions.allow.length) {
-      next.permissions = { ...next.permissions, allow };
-      changed = true;
-    }
-  }
-
-  if (isPlainObject(next.hooks)) {
-    const hooks = { ...next.hooks };
-    for (const [eventName, expectedEntries] of Object.entries(bobSettings.hooks || {})) {
-      const removal = removeMatchingHooks(hooks[eventName], expectedEntries);
-      if (removal && removal.removed > 0) {
-        changed = true;
-        if (removal.entries.length === 0) {
-          delete hooks[eventName];
-        } else {
-          hooks[eventName] = removal.entries;
-        }
-      }
-    }
-    next.hooks = hooks;
-  }
-
-  if (statusLineMatches(next, bobSettings)) {
-    delete next.statusLine;
-    changed = true;
-  }
-
-  next = objectWithoutEmptyKnownContainers(next);
-  if (!changed) return;
-
-  result.actions.push({
-    type: Object.keys(next).length === 0 ? "remove_config_file" : "update_config",
-    path: path.join(".claude", "settings.json"),
-  });
-  if (result.dry_run) return;
-  if (Object.keys(next).length === 0) {
-    fs.rmSync(settingsPath, { force: true });
-  } else {
-    writeJson(settingsPath, next);
-  }
+  const next = {
+    ...metadata,
+    updated_at: new Date().toISOString(),
+    installed_adapters: adapterIdsForSelection(remainingIds, { defaultIds: [] }),
+  };
+  result.actions.push({ type: "update_config", path: path.join(BOB_RESOURCE_DIR, "install.json") });
+  if (!result.dry_run) writeJson(metadataPath, next);
 }
 
-function removeGeneratedEgressConfig(targetAbs, result) {
-  const configPath = egressProfilesPath(targetAbs);
-  const relativePath = path.join(".claude", "bob", "egress-profiles.json");
-  if (!fileExists(configPath)) return;
-  if (!isUntouchedGeneratedEgressConfig(targetAbs)) {
-    result.skipped.push({
-      type: "config",
-      path: relativePath,
-      reason: "operator-owned egress profile config is preserved",
-    });
-    return;
+function pruneManagedDirs(targetAbs, result, { adapterIds, removeShared }) {
+  const dirs = [];
+  for (const adapterId of adapterIds) {
+    const adapter = getAdapter(adapterId);
+    if (typeof adapter.managedDirs === "function") dirs.push(...adapter.managedDirs());
   }
-  result.actions.push({ type: "remove_file", path: relativePath });
-  if (!result.dry_run) fs.rmSync(configPath, { force: true });
+  if (removeShared) {
+    dirs.push(
+      path.join(BOB_RESOURCE_DIR, "bypass-tables"),
+      path.join(BOB_RESOURCE_DIR, "knowledge"),
+      BOB_RESOURCE_DIR,
+      path.join("mcp", "lib", "tools"),
+      path.join("mcp", "lib"),
+      "mcp",
+    );
+  }
+
+  for (const relativePath of dirs) {
+    maybeRemoveEmptyDir(targetAbs, relativePath, result);
+  }
 }
 
 function uninstallProject(projectDir, options = {}) {
@@ -717,27 +567,77 @@ function uninstallProject(projectDir, options = {}) {
   if (!dirExists(targetAbs)) {
     throw new Error(`Uninstall target does not exist or is not a directory: ${targetAbs}`);
   }
+  const adapterResolution = resolveLifecycleAdapters(targetAbs, options);
+  const adapterIds = adapterResolution.ids;
+  const logResolution = options.onAdapterResolution
+    || ((resolution) => defaultLogLifecycleResolution(resolution, "uninstall"));
+  logResolution(adapterResolution);
+  const installedBefore = adapterIdsForSelection([
+    ...installedAdapterIds(targetAbs),
+    ...detectInstalledAdapterIds(targetAbs),
+    ...adapterIds,
+  ], { defaultIds: [] });
+  const remainingIds = remainingAdapterIds(installedBefore, adapterIds);
+  const removeShared = remainingIds.length === 0;
   const result = {
     ok: true,
     dry_run: options.dryRun !== false,
     target: targetAbs,
+    adapters: adapterIds,
+    remaining_adapters: remainingIds,
+    remove_shared: removeShared,
     actions: [],
     skipped: [],
   };
 
-  removeMcpConfig(targetAbs, result);
-  removeSettingsConfig(targetAbs, result);
-  removeGeneratedEgressConfig(targetAbs, result);
-
-  for (const relativePath of [
-    ...managedClaudeFiles(sourceRoot),
-    ...managedRuntimeFiles(sourceRoot),
-  ]) {
-    maybeRemoveFile(targetAbs, relativePath, result);
+  for (const adapterId of adapterIds) {
+    const adapter = getAdapter(adapterId);
+    const preserveMcpConfig = shouldPreserveRootMcpConfig(adapterId, remainingIds);
+    if (adapterId === "claude") {
+      adapter.uninstall({
+        sourceRoot,
+        targetAbs,
+        result,
+        helpers: {
+          fileExists,
+          maybeRemoveFile,
+          readJson,
+          writeJson,
+        },
+        preserveMcpConfig,
+      });
+    } else if (adapterId === "generic-mcp") {
+      appendAdapterUninstallResult(result, adapter.uninstall({
+        targetAbs,
+        dryRun: result.dry_run,
+        preserveMcpConfig,
+      }));
+    } else {
+      appendAdapterUninstallResult(result, adapter.uninstall({
+        sourceRoot,
+        targetAbs,
+        dryRun: result.dry_run,
+      }));
+    }
   }
-  maybeRemoveDirTree(targetAbs, path.join("mcp", "node_modules"), result);
 
-  pruneManagedDirs(targetAbs, result);
+  if (removeShared) {
+    for (const relativePath of [
+      ...managedNeutralResourceFiles(sourceRoot),
+      ...managedRuntimeFiles(sourceRoot),
+    ]) {
+      maybeRemoveFile(targetAbs, relativePath, result);
+    }
+  } else {
+    updateNeutralMetadataAfterUninstall(targetAbs, remainingIds, result);
+  }
+  if (removeShared || adapterIds.includes("claude")) {
+    for (const relativePath of managedLegacyResourceFiles(sourceRoot)) {
+      maybeRemoveFile(targetAbs, relativePath, result);
+    }
+  }
+
+  pruneManagedDirs(targetAbs, result, { adapterIds, removeShared });
   return result;
 }
 
@@ -760,13 +660,10 @@ function printUninstallReport(result, stream = process.stdout) {
 }
 
 module.exports = {
-  BOB_COMMAND_FILES,
-  LEGACY_BOB_COMMAND_FILES,
-  BOB_SKILLS,
-  LEGACY_BOB_SKILLS,
   doctorProject,
   expectedMcpServer,
-  managedClaudeFiles,
+  managedLegacyResourceFiles,
+  managedNeutralResourceFiles,
   managedRuntimeFiles,
   printDoctorReport,
   printUninstallReport,

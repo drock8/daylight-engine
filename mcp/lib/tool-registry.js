@@ -1,18 +1,28 @@
 "use strict";
 
 const { TOOL_MODULES } = require("./tools/index.js");
+const { chainSpecificHunterBundles } = require("./capability-packs.js");
 
-const VALID_ROLE_BUNDLES = Object.freeze([
+// Cross-cutting role bundles: orchestration, auth, verifier, evidence, etc.
+// — not chain-specific. The per-chain hunter bundles are derived from
+// HUNTER_ROLES in capability-packs.js so adding a 7th hunter role extends
+// VALID_ROLE_BUNDLES automatically without editing this file.
+const CROSS_CUTTING_ROLE_BUNDLES = Object.freeze([
   "auth",
   "chain",
   "evidence",
   "grader",
-  "hunter",
+  "hunter-shared",
   "hunter-web",
   "orchestrator",
   "reporter",
   "router",
   "verifier",
+]);
+
+const VALID_ROLE_BUNDLES = Object.freeze([
+  ...CROSS_CUTTING_ROLE_BUNDLES,
+  ...chainSpecificHunterBundles(),
 ]);
 const REQUIRED_FIELDS = Object.freeze([
   "name",

@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const {
   defaultClaudeSettings,
-} = require("../mcp/lib/claude-config.js");
+} = require("../adapters/claude/config.js");
 
 function readJsonIfExists(filePath, fallback) {
   if (!fs.existsSync(filePath)) return fallback;
@@ -109,6 +109,15 @@ function mergeSettings(existing, bobSettings) {
   return next;
 }
 
+// External adversarial-roast MCP server consumed by the brutalist-verifier
+// role. Optional — registered alongside bountyagent but not required at
+// runtime. See prompts/roles/brutalist-verifier.md for the graceful-fallback
+// contract.
+const BRUTALIST_MCP_SERVER = Object.freeze({
+  command: "npx",
+  args: ["-y", "@brutalist/mcp@latest"],
+});
+
 function mergeMcp(existing, serverPath) {
   const next = existing && typeof existing === "object" && !Array.isArray(existing)
     ? { ...existing }
@@ -120,6 +129,7 @@ function mergeMcp(existing, serverPath) {
     command: "node",
     args: [serverPath],
   };
+  next.mcpServers.brutalist = { ...BRUTALIST_MCP_SERVER, args: [...BRUTALIST_MCP_SERVER.args] };
   return next;
 }
 
@@ -142,6 +152,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  BRUTALIST_MCP_SERVER,
   STALE_GLOBAL_MCP_PERMISSIONS,
   hookScriptName,
   mergeMcp,

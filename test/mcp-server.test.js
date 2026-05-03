@@ -68,6 +68,11 @@ const {
   readToolTelemetry,
   toolTelemetryPath,
 } = require("../mcp/lib/tool-telemetry.js");
+const {
+  readResourceText,
+  resolveResourcePath,
+  runtimeClient,
+} = require("../mcp/lib/runtime-resources.js");
 
 const ROOT = path.join(__dirname, "..");
 
@@ -89,6 +94,7 @@ const {
   coverageJsonlPath,
   evidencePackPaths,
   executeTool,
+  finalizeHunterRun,
   findingsJsonlPath,
   findingsMarkdownPath,
   getContextBudget,
@@ -168,9 +174,11 @@ const {
   readStaticScanResultsFromJsonl,
   readTechniqueAttemptRecordsFromJsonl,
   readTechniquePack,
+  readTechniquePackReadRecordsFromJsonl,
   promoteSurfaceLeads,
   selectTechniquePacks,
   techniqueAttemptsJsonlPath,
+  techniquePackReadsJsonlPath,
 } = serverModule;
 
 const EXPECTED_TOOL_NAMES = [
@@ -178,6 +186,7 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_read_http_audit",
   "bounty_start_wave",
   "bounty_route_surfaces",
+  "bounty_read_surface_routes",
   "bounty_import_http_traffic",
   "bounty_public_intel",
   "bounty_import_static_artifact",
@@ -199,6 +208,7 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_apply_wave_merge",
   "bounty_write_handoff",
   "bounty_write_wave_handoff",
+  "bounty_finalize_hunter_run",
   "bounty_wave_handoff_status",
   "bounty_merge_wave_handoffs",
   "bounty_read_wave_handoffs",
@@ -221,6 +231,27 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_log_technique_attempt",
   "bounty_read_tool_telemetry",
   "bounty_read_pipeline_analytics",
+  "bounty_evm_call",
+  "bounty_evm_storage_read",
+  "bounty_evm_fetch_source",
+  "bounty_evm_role_table",
+  "bounty_foundry_run",
+  "bounty_halmos_run",
+  "bounty_svm_fetch_account",
+  "bounty_svm_fetch_program",
+  "bounty_anchor_run",
+  "bounty_aptos_fetch_resource",
+  "bounty_aptos_fetch_module",
+  "bounty_aptos_run",
+  "bounty_sui_fetch_object",
+  "bounty_sui_fetch_package",
+  "bounty_sui_run",
+  "bounty_substrate_run",
+  "bounty_substrate_fetch_storage",
+  "bounty_substrate_fetch_runtime",
+  "bounty_cosmwasm_run",
+  "bounty_cosmwasm_fetch_contract",
+  "bounty_cosmwasm_smart_query",
   "bounty_record_surface_leads",
   "bounty_read_surface_leads",
   "bounty_promote_surface_leads",
@@ -415,9 +446,56 @@ function seedSessionState(domain, overrides = {}) {
 function seedAssignments(domain, waveNumber, assignments) {
   const dir = sessionDir(domain);
   fs.mkdirSync(dir, { recursive: true });
+  // Production invariant: a wave cannot start without an attack_surface.json.
+  // Mirror that here so writeWaveHandoff's strict surface_type lookup succeeds.
+  const surfacePath = attackSurfacePath(domain);
+  if (!fs.existsSync(surfacePath)) {
+    const surfaceIds = Array.from(new Set(assignments.map((a) => a.surface_id))).filter(Boolean);
+    seedAttackSurface(domain, surfaceIds.length > 0 ? surfaceIds : ["surface-a"]);
+  }
+  // Mirror production startWave: capture surface_type from attack_surface.json
+  // into the immutable assignment file. Tests that seed an SC surface get the
+  // same enforcement path the runtime takes.
+  const surfaceById = new Map();
+  try {
+    const surfaceDoc = JSON.parse(fs.readFileSync(surfacePath, "utf8"));
+    for (const surface of surfaceDoc.surfaces || []) {
+      if (!surface || typeof surface !== "object") continue;
+      surfaceById.set(surface.id, surface);
+    }
+  } catch {}
+  // Also mirror startWave's call to routeSurfacesInternal: classify each
+  // surface to derive capability_pack/hunter_agent/brief_profile so the
+  // assignment file is shaped exactly as production writes it. Without
+  // this, normalizeAssignmentRouteMetadata throws on any SC assignment.
+  // Test cases that explicitly want to forge alternate route metadata
+  // pass it directly on the assignment and we preserve it.
+  const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
+  const persistedAssignments = assignments.map((assignment) => {
+    const surface = surfaceById.get(assignment.surface_id);
+    const surfaceTypeRaw = surface && typeof surface.surface_type === "string"
+      ? surface.surface_type.trim()
+      : "";
+    const surfaceType = surfaceTypeRaw !== "" ? surfaceTypeRaw : null;
+    const persisted = { ...assignment };
+    if (surfaceType && persisted.surface_type == null) {
+      persisted.surface_type = surfaceType;
+    }
+    if (surface
+      && persisted.capability_pack == null
+      && persisted.hunter_agent == null
+      && persisted.brief_profile == null
+    ) {
+      const route = classifySurfaceCapability(surface);
+      persisted.capability_pack = route.capability_pack;
+      persisted.hunter_agent = route.hunter_agent;
+      persisted.brief_profile = route.brief_profile;
+    }
+    return persisted;
+  });
   writeFileAtomic(path.join(dir, `wave-${waveNumber}-assignments.json`), `${JSON.stringify({
     wave_number: waveNumber,
-    assignments,
+    assignments: persistedAssignments,
   }, null, 2)}\n`);
 }
 
@@ -663,6 +741,7 @@ test("mcp server public exports remain stable", () => {
     "evidencePackPaths",
     "executeTool",
     "filterExclusionsByHosts",
+    "finalizeHunterRun",
     "findingsJsonlPath",
     "findingsMarkdownPath",
     "getContextBudget",
@@ -713,6 +792,7 @@ test("mcp server public exports remain stable", () => {
     "readSurfaceLeads",
     "readTechniqueAttemptRecordsFromJsonl",
     "readTechniquePack",
+    "readTechniquePackReadRecordsFromJsonl",
     "readTrafficRecordsFromJsonl",
     "readVerificationRound",
     "readWaveHandoffs",
@@ -746,6 +826,7 @@ test("mcp server public exports remain stable", () => {
     "surfaceLeadsPath",
     "surfaceRoutesPath",
     "techniqueAttemptsJsonlPath",
+    "techniquePackReadsJsonlPath",
     "tempEmail",
     "trafficJsonlPath",
     "transitionPhase",
@@ -848,7 +929,10 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bounty_read_pipeline_analytics.mutating, false);
   assert.equal(TOOL_MANIFEST.bounty_read_pipeline_analytics.global_preapproval, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_read_pipeline_analytics.role_bundles, ["orchestrator"]);
-  assert.deepEqual(TOOL_MANIFEST.bounty_record_surface_leads.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_finalize_hunter_run.mutating, true);
+  assert.equal(TOOL_MANIFEST.bounty_finalize_hunter_run.global_preapproval, true);
+  assert.deepEqual(TOOL_MANIFEST.bounty_finalize_hunter_run.role_bundles, ["hunter-shared"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_record_surface_leads.role_bundles, ["hunter-web", "orchestrator"]);
   assert.equal(TOOL_MANIFEST.bounty_record_surface_leads.mutating, true);
   assert.equal(TOOL_MANIFEST.bounty_record_surface_leads.global_preapproval, true);
   assert.equal(TOOL_MANIFEST.bounty_record_surface_leads.network_access, false);
@@ -857,7 +941,7 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bounty_record_surface_leads.sensitive_output, false);
   assert.equal(TOOL_MANIFEST.bounty_record_surface_leads.hook_required, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_record_surface_leads.session_artifacts_written, ["surface-leads.json"]);
-  assert.deepEqual(TOOL_MANIFEST.bounty_read_surface_leads.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_surface_leads.role_bundles, ["hunter-web", "orchestrator"]);
   assert.equal(TOOL_MANIFEST.bounty_read_surface_leads.mutating, false);
   assert.equal(TOOL_MANIFEST.bounty_read_surface_leads.global_preapproval, true);
   assert.equal(TOOL_MANIFEST.bounty_read_surface_leads.network_access, false);
@@ -875,18 +959,19 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bounty_promote_surface_leads.sensitive_output, false);
   assert.equal(TOOL_MANIFEST.bounty_promote_surface_leads.hook_required, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_promote_surface_leads.session_artifacts_written, ["surface-leads.json", "attack_surface.json", "state.json"]);
-  assert.deepEqual(TOOL_MANIFEST.bounty_get_context_budget.role_bundles, ["hunter", "hunter-web", "orchestrator", "router"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_get_context_budget.role_bundles, ["hunter-shared", "orchestrator"]);
   assert.equal(TOOL_MANIFEST.bounty_get_context_budget.mutating, false);
   assert.equal(TOOL_MANIFEST.bounty_get_context_budget.network_access, false);
   assert.equal(TOOL_MANIFEST.bounty_get_context_budget.browser_access, false);
   assert.equal(TOOL_MANIFEST.bounty_get_context_budget.scope_required, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_get_context_budget.session_artifacts_written, []);
-  assert.deepEqual(TOOL_MANIFEST.bounty_select_technique_packs.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_select_technique_packs.role_bundles, ["hunter-web", "orchestrator"]);
   assert.equal(TOOL_MANIFEST.bounty_select_technique_packs.mutating, false);
-  assert.deepEqual(TOOL_MANIFEST.bounty_read_technique_pack.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
-  assert.equal(TOOL_MANIFEST.bounty_read_technique_pack.mutating, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_technique_pack.role_bundles, ["hunter-web", "orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_read_technique_pack.mutating, true);
   assert.equal(byName.get("bounty_read_technique_pack").inputSchema.properties.mode.enum.includes("full"), true);
-  assert.deepEqual(TOOL_MANIFEST.bounty_log_technique_attempt.role_bundles, ["hunter", "hunter-web", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_read_technique_pack.session_artifacts_written, ["technique-pack-reads.jsonl"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_log_technique_attempt.role_bundles, ["hunter-web", "orchestrator"]);
   assert.equal(TOOL_MANIFEST.bounty_log_technique_attempt.mutating, true);
   assert.equal(TOOL_MANIFEST.bounty_log_technique_attempt.network_access, false);
   assert.equal(TOOL_MANIFEST.bounty_log_technique_attempt.browser_access, false);
@@ -910,7 +995,7 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
     description: "Test tool.",
     inputSchema: { type: "object", properties: {} },
     handler: () => ({}),
-    role_bundles: ["hunter"],
+    role_bundles: ["hunter-shared"],
     mutating: false,
     global_preapproval: true,
     network_access: false,
@@ -1820,6 +1905,90 @@ test("pipeline analytics flags missing evidence only for final reportable findin
   });
 });
 
+test("pipeline analytics flags only HOLD as needs_attention; both SKIP variants are healthy by construction", () => {
+  // writeGradeVerdict rejects any SKIP that does not satisfy
+  // `!hasReportableMedium || total_score < GRADE_HOLD_MIN_SCORE`. SKIP at
+  // read time is therefore either "no reportables" (clean exit) or
+  // "low-score reportables below the HOLD threshold" (grader correctly
+  // applied its scoring rule). Neither is anomalous — only HOLD asks for
+  // operator action.
+  withTempHome(() => {
+    const skipCleanDomain = "skip-clean.example.com";
+    seedSessionState(skipCleanDomain, { phase: "REPORT" });
+    seedVerificationPipeline(skipCleanDomain, []);
+    writeGradeVerdict({
+      target_domain: skipCleanDomain,
+      verdict: "SKIP",
+      total_score: 0,
+      findings: [],
+    });
+    const skipClean = JSON.parse(readPipelineAnalytics({ target_domain: skipCleanDomain, include_events: true }));
+    assert.ok(!skipClean.sessions[0].health.reasons.includes("grade_hold"));
+    assert.ok(!skipClean.sessions[0].health.reasons.includes("grade_hold_skip"));
+    assert.ok(!skipClean.bottlenecks.some((bottleneck) => bottleneck.code.startsWith("grade_")));
+
+    const skipLowScoreDomain = "skip-low-score.example.com";
+    seedSessionState(skipLowScoreDomain, { phase: "REPORT" });
+    seedFinding(skipLowScoreDomain);
+    seedVerificationPipeline(skipLowScoreDomain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed by replay.",
+    }]);
+    writeEvidencePacks({ target_domain: skipLowScoreDomain, packs: [evidencePack("F-1")] });
+    writeGradeVerdict({
+      target_domain: skipLowScoreDomain,
+      verdict: "SKIP",
+      total_score: 5,
+      findings: [{
+        finding_id: "F-1",
+        impact: 1,
+        proof_quality: 1,
+        severity_accuracy: 1,
+        chain_potential: 1,
+        report_quality: 1,
+        total_score: 5,
+        feedback: "Below HOLD_MIN_SCORE despite confirmation; grader contract.",
+      }],
+    });
+    const skipLowScore = JSON.parse(readPipelineAnalytics({ target_domain: skipLowScoreDomain, include_events: true }));
+    assert.ok(!skipLowScore.sessions[0].health.reasons.includes("grade_hold"));
+    assert.ok(!skipLowScore.bottlenecks.some((bottleneck) => bottleneck.code.startsWith("grade_")));
+
+    const holdDomain = "grade-hold.example.com";
+    seedSessionState(holdDomain, { phase: "GRADE" });
+    seedFinding(holdDomain);
+    seedVerificationPipeline(holdDomain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+    writeEvidencePacks({ target_domain: holdDomain, packs: [evidencePack("F-1")] });
+    writeGradeVerdict({
+      target_domain: holdDomain,
+      verdict: "HOLD",
+      total_score: 30,
+      findings: [{
+        finding_id: "F-1",
+        impact: 10,
+        proof_quality: 5,
+        severity_accuracy: 5,
+        chain_potential: 5,
+        report_quality: 5,
+        total_score: 30,
+        feedback: "Promising but needs deeper repro.",
+      }],
+    });
+    const hold = JSON.parse(readPipelineAnalytics({ target_domain: holdDomain, include_events: true }));
+    assert.ok(hold.sessions[0].health.reasons.includes("grade_hold"));
+    assert.ok(hold.bottlenecks.some((bottleneck) => bottleneck.code === "grade_hold"));
+  });
+});
+
 test("pipeline analytics treats malformed evidence packs as invalid metadata", () => {
   withTempHome(() => {
     const domain = "malformed-evidence.example.com";
@@ -2398,17 +2567,20 @@ test("bounty_transition_phase blocks HUNT -> CHAIN with unexplored HIGH or CRITI
   });
 });
 
-test("bounty_transition_phase blocks HUNT -> CHAIN with unfinished latest coverage", () => {
+test("bounty_transition_phase blocks HUNT -> CHAIN with unfinished latest coverage on an unexplored surface", () => {
   withTempHome(() => {
     for (const status of ["promising", "needs_auth", "requeue"]) {
       const domain = `${status.replace("_", "-")}.example.com`;
+      // Note: surface-a is intentionally NOT in `explored`. An unfinished
+      // coverage row on a surface whose `surface_status: complete` handoff
+      // has not yet merged is the canonical "still has work" signal.
       seedSessionState(domain, {
         phase: "HUNT",
         pending_wave: null,
-        explored: ["surface-a"],
+        explored: [],
       });
       seedAttackSurfaces(domain, [
-        { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+        { id: "surface-a", hosts: [`https://${domain}`], priority: "MEDIUM" },
       ]);
       seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
       logCoverage({
@@ -2430,6 +2602,44 @@ test("bounty_transition_phase blocks HUNT -> CHAIN with unfinished latest covera
         /HUNT -> CHAIN blocked: .*surface-a/,
       );
     }
+  });
+});
+
+test("bounty_transition_phase allows HUNT -> CHAIN when unfinished coverage rows exist on explored surfaces", () => {
+  // state.explored is populated from `surface_status: complete` handoffs
+  // by applyWaveMerge. Once a complete handoff merges, the surface is
+  // closed regardless of older endpoint-level coverage rows whose latest
+  // status was promising/needs_auth/requeue. The HUNT -> CHAIN gate must
+  // not refuse the transition over such stale rows.
+  withTempHome(() => {
+    const domain = "explored-with-stale-coverage.example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      pending_wave: null,
+      explored: ["surface-a"],
+      hunt_wave: 1,
+    });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "MEDIUM" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{
+        endpoint: "/api/legacy",
+        method: "GET",
+        bug_class: "idor",
+        status: "requeue",
+        evidence_summary: "endpoint-level requeue from earlier wave; surface later closed by complete handoff",
+      }],
+    });
+
+    transitionPhase({ target_domain: domain, to_phase: "CHAIN" });
+    const summary = JSON.parse(readStateSummary({ target_domain: domain }));
+    assert.equal(summary.state.phase, "CHAIN");
   });
 });
 
@@ -3091,6 +3301,57 @@ test("bounty_apply_wave_merge returns pending without mutating state when handof
   });
 });
 
+test("bounty_apply_wave_merge adds surface_status: complete surfaces to state.explored even when coverage rows are unfinished", () => {
+  // The structured handoff is the contract. Coverage rows are advisory
+  // history. A hunter that wrote `surface_status: complete` AND has stale
+  // unfinished coverage rows for the same wave is internally inconsistent,
+  // but the merge layer trusts the handoff — silently downgrading
+  // complete to "still requeued" stranded the surface in HUNT forever
+  // (the veda.tech regression).
+  withTempHome(() => {
+    const domain = "trust-handoff.example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      pending_wave: 1,
+    });
+    seedAttackSurface(domain, ["surface-a"]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{
+        endpoint: "/api/legacy",
+        method: "GET",
+        bug_class: "idor",
+        status: "requeue",
+        evidence_summary: "endpoint-level requeue logged earlier in the wave",
+      }],
+    });
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Surface tested; one endpoint marked requeue while triaging others, then closed.",
+      content: "# A1",
+    });
+
+    const result = JSON.parse(applyWaveMerge({
+      target_domain: domain,
+      wave_number: 1,
+      force_merge: false,
+    }));
+    assert.equal(result.status, "merged");
+    assert.equal(result.state.explored_count, 1);
+    // Verify the surface really landed in state.explored (not just counted).
+    const fullState = JSON.parse(readSessionState({ target_domain: domain }));
+    assert.deepEqual(fullState.state.explored, ["surface-a"]);
+  });
+});
+
 test("bounty_apply_wave_merge merges state, findings, requeues, and scope exclusions", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -3173,6 +3434,11 @@ test("bounty_apply_wave_merge merges state, findings, requeues, and scope exclus
       new_dead_ends_count: 1,
       new_waf_blocked_count: 1,
       lead_surface_ids: ["surface-a", "surface-c", "surface-d", "surface-x"],
+      blocked_harness_runs: [],
+      blocked_harness_runs_grouped: [],
+      bypass_attempts: [],
+      bypass_attempts_grouped: [],
+      suspicion_flags: [],
       provenance: {
         verified_agents: [],
         legacy_unverified_agents: ["a1", "a2"],
@@ -3604,10 +3870,17 @@ test("bounty_apply_wave_merge requeues unfinished coverage without treating test
 
     assert.deepEqual(result.merge.completed_surface_ids, ["surface-a", "surface-b", "surface-c", "surface-d", "surface-e"]);
     assert.deepEqual(result.merge.partial_surface_ids, []);
+    // Coverage-derived requeue is the next-wave assignment hint: a, d, e
+    // each have at least one promising/needs_auth/requeue endpoint row, so
+    // the orchestrator may re-queue them for a fresh look.
     assert.deepEqual(result.merge.requeue_surface_ids, ["surface-a", "surface-d", "surface-e"]);
 
+    // state.explored is "surfaces with a complete handoff this run." All
+    // five hunters declared complete, so all five are explored. Re-queueing
+    // a surface in a later wave is independent — the orchestrator can
+    // assign an explored surface to a fresh hunter without contradiction.
     const fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
-    assert.deepEqual(fullState.explored, ["surface-b", "surface-c"]);
+    assert.deepEqual(fullState.explored, ["surface-a", "surface-b", "surface-c", "surface-d", "surface-e"]);
   });
 });
 
@@ -3740,6 +4013,9 @@ test("bounty_apply_wave_merge rejects invalid state invariants and hard-fails on
       content: "# A1",
     });
 
+    // seedAssignments mirrors the production invariant by auto-seeding
+    // attack_surface.json. Remove it to exercise the missing-file path.
+    fs.rmSync(attackSurfacePath(domain), { force: true });
     assert.throws(
       () => applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }),
       /Missing attack surface JSON:/,
@@ -3903,14 +4179,347 @@ test("bounty_write_wave_handoff writes matching markdown and json with normalize
       wave: "w1",
       agent: "a1",
       surface_id: "surface-a",
+      surface_type: null,
       surface_status: "complete",
       provenance: "legacy_unverified",
       summary: "Freeform handoff summary.",
       chain_notes: [],
+      blocked_harness_runs: [],
+      bypass_attempts: [],
       dead_ends: [],
       waf_blocked_endpoints: [],
       lead_surface_ids: [],
     });
+  });
+});
+
+test("bounty_write_wave_handoff rejects surface_status: complete with blocked_harness_runs", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Tried but blocked.",
+      content: "# Handoff\n",
+      blocked_harness_runs: [
+        { kind: "foundry_fork", harness: "foundry-fork-mainnet", reason: "RPC timeout at block 19000000", needed_for: "PSM donation invariant" },
+      ],
+    }), /surface_status cannot be 'complete' when blocked_harness_runs is non-empty/);
+  });
+});
+
+test("bounty_write_wave_handoff accepts surface_status: partial with blocked_harness_runs", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    const result = JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "partial",
+      summary: "Blocked harnesses recorded.",
+      content: "# Handoff\n",
+      blocked_harness_runs: [
+        { kind: "foundry_fork", harness: "foundry-fork-mainnet", reason: "RPC timeout at block 19000000", needed_for: "PSM donation invariant" },
+      ],
+    }));
+    const payload = JSON.parse(fs.readFileSync(result.written_json, "utf8"));
+    assert.equal(payload.surface_status, "partial");
+    assert.equal(payload.blocked_harness_runs.length, 1);
+    assert.equal(payload.blocked_harness_runs[0].kind, "foundry_fork");
+    assert.equal(payload.blocked_harness_runs[0].harness, "foundry-fork-mainnet");
+    assert.equal(payload.blocked_harness_runs[0].needed_for, "PSM donation invariant");
+  });
+});
+
+test("bounty_write_wave_handoff rejects smart_contract complete without findings or bypass_attempts", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Audit confirms fixed; nothing to test.",
+      content: "# Handoff\n",
+    }), /smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks/);
+  });
+});
+
+test("bounty_write_wave_handoff accepts smart_contract complete with bypass_attempts entry", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    const result = JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Tested admin bypass; no finding.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        {
+          condition: "admin_eoa_compromise",
+          attempt_summary: "Forge test calls admin function from a non-admin EOA. Reverts with 'caller is not admin'. Tested from forked mainnet.",
+          outcome: "no_finding",
+        },
+      ],
+    }));
+    const payload = JSON.parse(fs.readFileSync(result.written_json, "utf8"));
+    assert.equal(payload.surface_status, "complete");
+    assert.equal(payload.surface_type, "smart_contract");
+    assert.equal(payload.bypass_attempts.length, 1);
+    assert.equal(payload.bypass_attempts[0].condition, "admin_eoa_compromise");
+    assert.equal(payload.bypass_attempts[0].outcome, "no_finding");
+  });
+});
+
+test("bounty_write_wave_handoff accepts smart_contract complete when a finding is recorded for the surface", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    seedFinding(domain, {
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      sc_evidence: {
+        chain_id: 1,
+        contract_address: "0x" + "11".repeat(20),
+        harness_path: os.homedir(),
+        match_test: "test_reentrancy_drain",
+        fork_block: 19_000_000,
+      },
+    });
+    const result = JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Found and recorded a critical reentrancy bug.",
+      content: "# Handoff\n",
+    }));
+    const payload = JSON.parse(fs.readFileSync(result.written_json, "utf8"));
+    assert.equal(payload.surface_status, "complete");
+    assert.equal(payload.surface_type, "smart_contract");
+  });
+});
+
+test("bounty_write_wave_handoff requires finding_id when bypass_attempts.outcome is finding_recorded", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "partial",
+      summary: "Forgot finding_id.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        {
+          condition: "oracle_manipulation",
+          attempt_summary: "Forge test attempts to flash-loan-manipulate the TWAP cache to a stale price; observed the read still passes through.",
+          outcome: "finding_recorded",
+        },
+      ],
+    }), /finding_id is required when outcome is "finding_recorded"/);
+  });
+});
+
+test("bounty_write_wave_handoff allows non-smart_contract surfaces to complete without bypass_attempts", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "api" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    const result = JSON.parse(writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "API surface tested with no findings.",
+      content: "# Handoff\n",
+    }));
+    const payload = JSON.parse(fs.readFileSync(result.written_json, "utf8"));
+    assert.equal(payload.surface_status, "complete");
+    assert.equal(payload.surface_type, "api");
+    assert.deepEqual(payload.bypass_attempts, []);
+  });
+});
+
+test("smart_contract gate ignores agent-mutated attack_surface.json (assignment is the authority)", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    // Simulate a hunter that mutates attack_surface.json after assignments are written,
+    // downgrading the surface from smart_contract -> api in an attempt to disable the gate.
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "api" }]);
+
+    // The gate must still fire because surface_type was captured into the
+    // immutable assignment at start_wave (here, seedAssignments) time.
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Tampered with attack_surface.json; expected to bypass gate.",
+      content: "# Handoff\n",
+    }), /smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks/);
+  });
+});
+
+test("merge re-derives smart_contract surface_type even when stored handoff caches null", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    // Surface marked smart_contract in attack_surface.json from the start.
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedSessionState(domain, { phase: "HUNT", pending_wave: 1 });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    // Simulate a handoff written when the attack_surface lookup had failed (cached surface_type: null)
+    // by manually crafting the stored payload. The merge must re-derive and reject.
+    const dir = sessionDir(domain);
+    fs.mkdirSync(dir, { recursive: true });
+    writeFileAtomic(path.join(dir, "handoff-w1-a1.json"), `${JSON.stringify({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_type: null,
+      surface_status: "complete",
+      provenance: "legacy_unverified",
+      summary: "Audit confirms fixed.",
+      chain_notes: [],
+      blocked_harness_runs: [],
+      bypass_attempts: [],
+      dead_ends: [],
+      waf_blocked_endpoints: [],
+      lead_surface_ids: [],
+    }, null, 2)}\n`);
+
+    const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
+    // Stored null is overridden by attack_surface.json re-derive: SC gate fires,
+    // handoff is rejected at merge as invalid (no findings, no bypass_attempts).
+    assert.deepEqual(merged.invalid_agents, ["a1"]);
+    assert.deepEqual(merged.completed_surface_ids, []);
+  });
+});
+
+test("merge emits sc_complete_with_zero_evidence suspicion flag when all bypass_attempts are no_finding", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedSessionState(domain, { phase: "HUNT", pending_wave: 1 });
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Tested several conditions, no finding.",
+      content: "# Handoff\n",
+      bypass_attempts: [
+        { condition: "admin_eoa_compromise", attempt_summary: "Forge test calls admin function from a non-admin EOA. Reverts as expected.", outcome: "no_finding" },
+        { condition: "oracle_staleness", attempt_summary: "Forge test pushes time forward 30 minutes; price oracle returns stale read but the consumer rejects.", outcome: "no_finding" },
+      ],
+    });
+    const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
+    assert.equal(merged.suspicion_flags.length, 1);
+    assert.equal(merged.suspicion_flags[0].flag, "sc_complete_with_zero_evidence");
+    assert.equal(merged.suspicion_flags[0].surface_id, "surface-a");
+  });
+});
+
+test("merge groups blocked_harness_runs and bypass_attempts by (kind, harness) and (condition, outcome)", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" },
+      { id: "surface-b", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" },
+    ]);
+    seedSessionState(domain, { phase: "HUNT", pending_wave: 1 });
+    seedAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-a" },
+      { agent: "a2", surface_id: "surface-b" },
+    ]);
+    const sharedAttempt = { condition: "admin_eoa_compromise", attempt_summary: "Forge test calls admin function from a non-admin EOA. Reverts with caller is not admin.", outcome: "no_finding" };
+    writeWaveHandoff({
+      target_domain: domain, wave: "w1", agent: "a1", surface_id: "surface-a",
+      surface_status: "partial", summary: "RPC down.", content: "# A1",
+      blocked_harness_runs: [{ kind: "foundry_fork", harness: "foundry-fork-mainnet", reason: "RPC timeout" }],
+      bypass_attempts: [sharedAttempt],
+    });
+    writeWaveHandoff({
+      target_domain: domain, wave: "w1", agent: "a2", surface_id: "surface-b",
+      surface_status: "partial", summary: "RPC down too.", content: "# A2",
+      blocked_harness_runs: [{ kind: "foundry_fork", harness: "foundry-fork-mainnet", reason: "RPC timeout again" }],
+      bypass_attempts: [sharedAttempt],
+    });
+    const merged = JSON.parse(mergeWaveHandoffs({ target_domain: domain, wave_number: 1 }));
+    assert.equal(merged.blocked_harness_runs_grouped.length, 1);
+    assert.equal(merged.blocked_harness_runs_grouped[0].kind, "foundry_fork");
+    assert.equal(merged.blocked_harness_runs_grouped[0].harness, "foundry-fork-mainnet");
+    assert.equal(merged.blocked_harness_runs_grouped[0].count, 2);
+    assert.deepEqual(merged.blocked_harness_runs_grouped[0].agents, ["a1", "a2"]);
+    assert.deepEqual(merged.blocked_harness_runs_grouped[0].surface_ids, ["surface-a", "surface-b"]);
+    assert.equal(merged.bypass_attempts_grouped.length, 1);
+    assert.equal(merged.bypass_attempts_grouped[0].condition, "admin_eoa_compromise");
+    assert.equal(merged.bypass_attempts_grouped[0].outcome, "no_finding");
+    assert.equal(merged.bypass_attempts_grouped[0].count, 2);
+  });
+});
+
+test("bypass_attempts enforces minimum length floors", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain, wave: "w1", agent: "a1", surface_id: "surface-a",
+      surface_status: "partial", summary: "Lazy.", content: "# Handoff\n",
+      bypass_attempts: [{ condition: "x", attempt_summary: "x", outcome: "no_finding" }],
+    }), /condition must be at least 4 characters/);
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain, wave: "w1", agent: "a1", surface_id: "surface-a",
+      surface_status: "partial", summary: "Lazy.", content: "# Handoff\n",
+      bypass_attempts: [{ condition: "admin", attempt_summary: "short", outcome: "no_finding" }],
+    }), /attempt_summary must be at least 30 characters/);
+  });
+});
+
+test("bypass_attempts.finding_id existence is cross-checked against findings.jsonl when supplied", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [{ id: "surface-a", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    assert.throws(() => writeWaveHandoff({
+      target_domain: domain, wave: "w1", agent: "a1", surface_id: "surface-a",
+      surface_status: "partial", summary: "References nonexistent finding.", content: "# Handoff\n",
+      bypass_attempts: [{
+        condition: "admin_eoa_compromise",
+        attempt_summary: "Forge test attempted to call admin function with a non-admin EOA and observed revert.",
+        outcome: "finding_recorded",
+        finding_id: "F-9999",
+      }],
+    }), /F-9999 does not match any recorded finding for this run/);
   });
 });
 
@@ -3995,6 +4604,142 @@ test("tokenized wave handoffs require the correct token and report verified prov
   });
 });
 
+test("bounty_finalize_hunter_run blocks missing invalid and mismatched handoffs", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    const missing = await executeTool("bounty_finalize_hunter_run", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error.code, "STATE_CONFLICT");
+    assert.equal(missing.error.details.block_code, "missing_handoff");
+    assert.equal(missing.error.details.handoff.present, false);
+
+    writeFileAtomic(path.join(sessionDir(domain), "handoff-w1-a1.json"), "{bad json");
+    const invalid = await executeTool("bounty_finalize_hunter_run", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.error.details.block_code, "invalid_handoff");
+    assert.equal(invalid.error.details.handoff.present, true);
+    assert.equal(invalid.error.details.handoff.valid, false);
+
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "A1 complete.",
+      chain_notes: ["No chain."],
+      content: "# a1",
+    });
+    const mismatch = await executeTool("bounty_finalize_hunter_run", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-b",
+    });
+    assert.equal(mismatch.ok, false);
+    assert.equal(mismatch.error.details.block_code, "handoff_mismatch");
+    assert.equal(mismatch.error.details.handoff.valid, true);
+    assert.equal(mismatch.error.details.handoff.surface_status, "complete");
+    assert.equal(mismatch.error.details.handoff.chain_notes_count, 1);
+
+    const rows = readJsonl(agentRunTelemetryPath());
+    assert.deepEqual(rows.map((row) => row.status), ["blocked", "blocked", "blocked"]);
+    assert.deepEqual(rows.map((row) => row.block_code), [
+      "missing_handoff",
+      "invalid_handoff",
+      "handoff_mismatch",
+    ]);
+    assert.ok(rows.every((row) => row.telemetry_source === "bounty_finalize_hunter_run"));
+
+    const pipelineRows = readJsonl(pipelineEventsJsonlPath(domain));
+    assert.deepEqual(
+      pipelineRows.filter((row) => row.type === "hunter_stopped").map((row) => row.source),
+      ["bounty_finalize_hunter_run", "bounty_finalize_hunter_run", "bounty_finalize_hunter_run"],
+    );
+  });
+});
+
+test("bounty_finalize_hunter_run allows valid handoff and records metadata-only telemetry", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    writeWaveHandoff({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "A1 complete.",
+      chain_notes: ["No chain."],
+      content: "# a1\n\nraw handoff body is not telemetry",
+    });
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{
+        endpoint: "/tested",
+        method: "GET",
+        bug_class: "idor",
+        status: "tested",
+        evidence_summary: "tested",
+      }],
+    });
+    recordFinding({
+      target_domain: domain,
+      title: "IDOR",
+      severity: "high",
+      endpoint: "/tested",
+      description: "Cross-account access.",
+      proof_of_concept: "raw finding proof should not enter telemetry",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+
+    const direct = JSON.parse(finalizeHunterRun({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    }));
+    assert.equal(direct.status, "allowed");
+    assert.equal(direct.message, "handoff valid");
+    assert.deepEqual(direct.handoff, {
+      present: true,
+      valid: true,
+      provenance: "legacy_unverified",
+      surface_status: "complete",
+      summary_present: true,
+      chain_notes_count: 1,
+    });
+
+    const rows = readJsonl(agentRunTelemetryPath());
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, "allowed");
+    assert.equal(rows[0].block_code, null);
+    assert.equal(rows[0].telemetry_source, "bounty_finalize_hunter_run");
+    assert.deepEqual(rows[0].coverage, { total: 1, by_status: { tested: 1 } });
+    assert.deepEqual(rows[0].findings, { count: 1 });
+    assert.equal(JSON.stringify(rows[0]).includes("raw handoff body"), false);
+    assert.equal(JSON.stringify(rows[0]).includes("raw finding proof"), false);
+  });
+});
+
 test("executeTool smoke path uses envelopes for init, wave, handoff, and merge", async () => {
   await withTempHome(async () => {
     const domain = "smoke.example";
@@ -4031,6 +4776,15 @@ test("executeTool smoke path uses envelopes for init, wave, handoff, and merge",
       content: "# Smoke",
     });
     assert.equal(handoff.ok, true);
+
+    const finalized = await executeTool("bounty_finalize_hunter_run", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+    });
+    assert.equal(finalized.ok, true);
+    assert.equal(finalized.data.status, "allowed");
 
     const merged = await executeTool("bounty_apply_wave_merge", {
       target_domain: domain,
@@ -4892,6 +5646,11 @@ test("bounty_merge_wave_handoffs merges valid handoffs and dedupes optional arra
       dead_ends: ["/users/1", "/billing"],
       waf_blocked_endpoints: ["/admin", "/reports"],
       lead_surface_ids: ["surface-b", "surface-c", "surface-d"],
+      blocked_harness_runs: [],
+      blocked_harness_runs_grouped: [],
+      bypass_attempts: [],
+      bypass_attempts_grouped: [],
+      suspicion_flags: [],
       provenance: {
         verified_agents: [],
         legacy_unverified_agents: ["a1", "a2"],
@@ -4928,6 +5687,11 @@ test("bounty_merge_wave_handoffs requeues missing and invalid assigned handoffs 
       dead_ends: [],
       waf_blocked_endpoints: [],
       lead_surface_ids: [],
+      blocked_harness_runs: [],
+      blocked_harness_runs_grouped: [],
+      bypass_attempts: [],
+      bypass_attempts_grouped: [],
+      suspicion_flags: [],
       provenance: {
         verified_agents: [],
         legacy_unverified_agents: [],
@@ -4965,10 +5729,13 @@ test("bounty_read_wave_handoffs returns validated structured summaries and ignor
       wave: "w1",
       agent: "a1",
       surface_id: "surface-a",
+      surface_type: null,
       surface_status: "complete",
       provenance: "legacy_unverified",
       summary: "A1 complete with an old dead end.",
       chain_notes: ["Old endpoint may chain into surface-b."],
+      blocked_harness_runs: [],
+      bypass_attempts: [],
       dead_ends: ["/old"],
       waf_blocked_endpoints: [],
       lead_surface_ids: ["surface-b"],
@@ -5039,6 +5806,11 @@ test("bounty_record_finding appends findings.jsonl and bounty_read_findings pres
           wave: "w1",
           agent: "a1",
           surface_id: "surface-a",
+          surface_type: "web",
+          capability_pack: "web",
+          hunter_agent: "hunter-agent",
+          brief_profile: "web",
+          sc_evidence: null,
           auth_profile: null,
         },
         {
@@ -5056,6 +5828,11 @@ test("bounty_record_finding appends findings.jsonl and bounty_read_findings pres
           wave: "w2",
           agent: "a2",
           surface_id: "surface-a",
+          surface_type: "web",
+          capability_pack: "web",
+          hunter_agent: "hunter-agent",
+          brief_profile: "web",
+          sc_evidence: null,
           auth_profile: null,
         },
       ],
@@ -5072,6 +5849,2228 @@ test("bounty_record_finding still writes readable findings.md", () => {
     assert.match(markdown, /## FINDING 1 \(HIGH\): IDOR on account export/);
     assert.match(markdown, /\*\*ID:\*\* F-1/);
     assert.match(markdown, /curl https:\/\/example.com\/api\/export\?account_id=2/);
+  });
+});
+
+test("bounty_record_finding stamps surface_type from the assignment and treats SC findings as requiring sc_evidence", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-web", hosts: [`https://${domain}`], surface_type: "api" },
+      { id: "surface-sc", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" },
+    ]);
+    seedAssignments(domain, 1, [
+      { agent: "a1", surface_id: "surface-web" },
+      { agent: "a2", surface_id: "surface-sc" },
+    ]);
+
+    const webFinding = JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "IDOR on account export",
+      severity: "high",
+      cwe: "CWE-639",
+      endpoint: "/api/export",
+      description: "Authenticated user can export another account's data by changing account_id.",
+      proof_of_concept: "curl https://example.com/api/export?account_id=2",
+      response_evidence: "{\"account_id\":2}",
+      impact: "Cross-account PII disclosure.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-web",
+    }));
+    assert.equal(webFinding.recorded, true);
+    const webRow = readFindings({ target_domain: domain });
+    const webRowFindings = JSON.parse(webRow).findings;
+    assert.equal(webRowFindings[0].surface_type, "web");
+    assert.equal(webRowFindings[0].sc_evidence, null);
+
+    // SC finding without sc_evidence must be rejected
+    assert.throws(() => recordFinding({
+      target_domain: domain,
+      title: "Reentrancy in Vault.borrow",
+      severity: "high",
+      cwe: "CWE-841",
+      endpoint: "0x" + "11".repeat(20) + ":borrow(uint256)",
+      description: "Reentrancy via callback before balance update.",
+      proof_of_concept: "See harness test",
+      response_evidence: "Drained 1000 ETH",
+      impact: "Permanent loss of all vault funds.",
+      validated: true,
+      wave: "w1",
+      agent: "a2",
+      surface_id: "surface-sc",
+    }), /smart-contract findings must include sc_evidence/);
+
+    // Web finding with sc_evidence must be rejected
+    assert.throws(() => recordFinding({
+      target_domain: domain,
+      title: "XSS",
+      severity: "low",
+      cwe: "CWE-79",
+      endpoint: "/admin",
+      description: "Reflected XSS",
+      proof_of_concept: "?q=<script>",
+      response_evidence: "<script>",
+      impact: "Session compromise",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-web",
+      sc_evidence: {
+        chain_id: 1,
+        contract_address: "0x" + "11".repeat(20),
+        harness_path: os.homedir(),
+        match_test: "test_x",
+      },
+    }), /sc_evidence is only allowed on smart_contract findings/);
+
+    // SC finding with valid sc_evidence is accepted and persisted
+    const scResult = JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "Reentrancy in Vault.borrow",
+      severity: "high",
+      cwe: "CWE-841",
+      endpoint: "0x" + "11".repeat(20) + ":borrow(uint256)",
+      description: "Reentrancy via callback before balance update.",
+      proof_of_concept: "See harness test",
+      response_evidence: "Drained 1000 ETH",
+      impact: "Permanent loss of all vault funds.",
+      validated: true,
+      wave: "w1",
+      agent: "a2",
+      surface_id: "surface-sc",
+      sc_evidence: {
+        chain_id: 1,
+        contract_address: "0x" + "AB".repeat(20),
+        harness_path: os.homedir(),
+        match_test: "test_borrow_reentrancy",
+        fork_block: 19_000_000,
+        function_signature: "borrow(uint256)",
+      },
+    }));
+    assert.equal(scResult.recorded, true);
+    const scRows = JSON.parse(readFindings({ target_domain: domain })).findings;
+    const scFinding = scRows.find((f) => f.id === scResult.finding_id);
+    assert.equal(scFinding.surface_type, "smart_contract");
+    assert.equal(scFinding.sc_evidence.chain_id, 1);
+    // contract_address normalized to lowercase
+    assert.equal(scFinding.sc_evidence.contract_address, "0x" + "ab".repeat(20));
+    assert.equal(scFinding.sc_evidence.fork_block, 19_000_000);
+  });
+});
+
+test("bounty_record_finding persists capability_pack metadata from the assignment", () => {
+  // Web hunter: the assignment carries the web pack triple and recordFinding
+  // must persist all three fields verbatim into findings.jsonl.
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-web", hosts: [`https://${domain}`], surface_type: "api" },
+    ]);
+    seedAssignments(domain, 1, [{
+      agent: "a1",
+      surface_id: "surface-web",
+      capability_pack: "web",
+      hunter_agent: "hunter-agent",
+      brief_profile: "web",
+    }]);
+    JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "IDOR on account export",
+      severity: "high",
+      cwe: "CWE-639",
+      endpoint: "/api/export",
+      description: "Cross-account export.",
+      proof_of_concept: "curl ...",
+      response_evidence: "{}",
+      impact: "PII.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-web",
+    }));
+    const finding = JSON.parse(readFindings({ target_domain: domain })).findings[0];
+    assert.equal(finding.capability_pack, "web");
+    assert.equal(finding.hunter_agent, "hunter-agent");
+    assert.equal(finding.brief_profile, "web");
+    assert.equal(finding.surface_type, "web");
+  });
+});
+
+test("bounty_record_finding persists smart_contract_evm pack metadata for an EVM hunter wave", () => {
+  // SC hunter: the routed pack is smart_contract_evm. Persisting it on the
+  // finding lets verifier/grader/reporter dispatch on the routed decision
+  // rather than re-deriving from sc_evidence.chain_family.
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-evm", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" },
+    ]);
+    seedAssignments(domain, 1, [{
+      agent: "a1",
+      surface_id: "surface-evm",
+      capability_pack: "smart_contract_evm",
+      hunter_agent: "hunter-evm-agent",
+      brief_profile: "smart_contract_evm",
+    }]);
+    JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "Reentrancy in Vault.borrow",
+      severity: "high",
+      cwe: "CWE-841",
+      endpoint: "0x" + "11".repeat(20) + ":borrow(uint256)",
+      description: "Reentrancy via callback before balance update.",
+      proof_of_concept: "See harness test",
+      response_evidence: "Drained 1000 ETH",
+      impact: "Loss of vault funds.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-evm",
+      sc_evidence: {
+        chain_family: "evm",
+        chain_id: 1,
+        contract_address: "0x" + "11".repeat(20),
+        harness_path: os.homedir(),
+        match_test: "test_borrow_reentrancy",
+      },
+    }));
+    const finding = JSON.parse(readFindings({ target_domain: domain })).findings[0];
+    assert.equal(finding.capability_pack, "smart_contract_evm");
+    assert.equal(finding.hunter_agent, "hunter-evm-agent");
+    assert.equal(finding.brief_profile, "smart_contract_evm");
+    assert.equal(finding.surface_type, "smart_contract");
+  });
+});
+
+test("bounty_record_finding persists smart_contract_substrate pack metadata for a Substrate hunter wave", () => {
+  // Sanity that non-EVM SC packs round-trip too.
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-sub", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "substrate" },
+    ]);
+    seedAssignments(domain, 1, [{
+      agent: "a1",
+      surface_id: "surface-sub",
+      capability_pack: "smart_contract_substrate",
+      hunter_agent: "hunter-substrate-agent",
+      brief_profile: "smart_contract_substrate",
+    }]);
+    JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "Selector collision in ink contract",
+      severity: "medium",
+      cwe: "CWE-840",
+      endpoint: "5GrwvaEF...:transfer(u128)",
+      description: "Two messages share the same 4-byte selector.",
+      proof_of_concept: "See cargo test",
+      response_evidence: "wrong message dispatched",
+      impact: "Incorrect call routing.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-sub",
+      sc_evidence: {
+        chain_family: "substrate",
+        chain_id: "polkadot",
+        contract_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+        harness_path: os.homedir(),
+        match_test: "test_selector_collision",
+      },
+    }));
+    const finding = JSON.parse(readFindings({ target_domain: domain })).findings[0];
+    assert.equal(finding.capability_pack, "smart_contract_substrate");
+    assert.equal(finding.hunter_agent, "hunter-substrate-agent");
+    assert.equal(finding.brief_profile, "smart_contract_substrate");
+  });
+});
+
+test("normalizeFindingRecord backfills capability_pack metadata for legacy web rows", () => {
+  // Old findings.jsonl rows from before routing-metadata existed did not
+  // carry capability_pack. Read-side derives the pack triple from
+  // surface_type so downstream consumers never see null and don't need to
+  // re-implement the surface_type→pack mapping.
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  const legacyFinding = normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "Legacy IDOR",
+    severity: "high",
+    endpoint: "/api/x",
+    description: "Legacy row written by an older Bob version.",
+    proof_of_concept: "curl ...",
+    validated: true,
+    wave: "w1",
+    agent: "a1",
+    surface_id: "surface-a",
+    surface_type: "web",
+  });
+  assert.equal(legacyFinding.capability_pack, "web");
+  assert.equal(legacyFinding.hunter_agent, "hunter-agent");
+  assert.equal(legacyFinding.brief_profile, "web");
+  assert.equal(legacyFinding.surface_type, "web");
+});
+
+test("normalizeFindingRecord backfills capability_pack metadata for legacy SC rows from chain_family", () => {
+  // Legacy SC findings carry sc_evidence.chain_family. Backfill must derive
+  // the right pack — smart_contract_evm for chain_family="evm",
+  // smart_contract_substrate for chain_family="substrate", etc.
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  const legacyEvm = normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "Legacy reentrancy",
+    severity: "high",
+    endpoint: "0x" + "ab".repeat(20) + ":withdraw()",
+    description: "Pre-Phase-C SC row.",
+    proof_of_concept: "See harness",
+    validated: true,
+    wave: "w1",
+    agent: "a1",
+    surface_id: "surface-evm",
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "evm",
+      chain_id: 1,
+      contract_address: "0x" + "ab".repeat(20),
+      harness_path: os.homedir(),
+      match_test: "test_reentrancy",
+    },
+  });
+  assert.equal(legacyEvm.capability_pack, "smart_contract_evm");
+  assert.equal(legacyEvm.hunter_agent, "hunter-evm-agent");
+  assert.equal(legacyEvm.brief_profile, "smart_contract_evm");
+
+  const legacySvm = normalizeFindingRecord({
+    id: "F-2",
+    target_domain: "example.com",
+    title: "Legacy SVM",
+    severity: "medium",
+    endpoint: "Programs:11111111111111111111111111111111:transfer",
+    description: "Pre-Phase-C SVM row.",
+    proof_of_concept: "See harness",
+    validated: true,
+    wave: "w1",
+    agent: "a2",
+    surface_id: "surface-svm",
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "svm",
+      chain_id: "mainnet-beta",
+      contract_address: "11111111111111111111111111111111",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  });
+  assert.equal(legacySvm.capability_pack, "smart_contract_svm");
+  assert.equal(legacySvm.hunter_agent, "hunter-svm-agent");
+  assert.equal(legacySvm.brief_profile, "smart_contract_svm");
+});
+
+test("bounty_record_finding rejects sc_evidence in the no-wave/no-agent path so SC findings stay routed", () => {
+  // The no-wave path hardcodes the web pack triple. If a future caller
+  // tries to record SC evidence without wave/agent, the routed pack would
+  // silently be web — downstream verifier/evidence dispatch would route to
+  // hunter-agent for an SC finding. Local assert keeps the invariant honest
+  // at the call site.
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT" });
+    seedAttackSurfaces(domain, [
+      { id: "surface-evm", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" },
+    ]);
+    assert.throws(() => recordFinding({
+      target_domain: domain,
+      title: "SC finding via no-wave",
+      severity: "high",
+      cwe: "CWE-841",
+      endpoint: "0x" + "ab".repeat(20) + ":withdraw()",
+      description: "should be rejected",
+      proof_of_concept: "x",
+      response_evidence: "x",
+      impact: "x",
+      validated: true,
+      sc_evidence: {
+        chain_family: "evm",
+        chain_id: 1,
+        contract_address: "0x" + "ab".repeat(20),
+        harness_path: os.homedir(),
+        match_test: "test_x",
+      },
+    }), /sc_evidence findings must be recorded with wave and agent/);
+  });
+});
+
+test("classifySurfaceCapability throws on smart_contract surface with missing or unsupported chain_family", () => {
+  // Pre-fix the router silently fell back to the web pack for SC surfaces
+  // with no chain_family, producing surface_type="smart_contract" routed to
+  // hunter-agent (a contradiction). Now the router fails loudly so the
+  // operator either fixes the surface or registers the missing pack.
+  const { classifySurfaceCapability } = require("../mcp/lib/capability-packs.js");
+  assert.throws(
+    () => classifySurfaceCapability({ id: "surface-mystery", surface_type: "smart_contract" }),
+    /missing chain_family/,
+  );
+  assert.throws(
+    () => classifySurfaceCapability({ id: "surface-near", surface_type: "smart_contract", chain_family: "near" }),
+    /unsupported chain_family/,
+  );
+});
+
+test("normalizeAssignmentRouteMetadata throws on smart_contract assignment without route metadata", () => {
+  // The all-null shortcut used to silently substitute web defaults for any
+  // assignment lacking the triple. That meant a smart_contract assignment
+  // whose route metadata had been dropped (forged file, half-rolled-back
+  // upgrade, etc.) got rubber-stamped as web. Fail loudly instead.
+  const { normalizeAssignmentRouteMetadata } = require("../mcp/lib/capability-packs.js");
+  assert.throws(
+    () => normalizeAssignmentRouteMetadata({
+      agent: "a1",
+      surface_id: "surface-evm",
+      surface_type: "smart_contract",
+    }),
+    /surface_type=smart_contract is missing capability_pack/,
+  );
+  // Web assignment with no route metadata still legitimately defaults to web.
+  const webMeta = normalizeAssignmentRouteMetadata({
+    agent: "a1",
+    surface_id: "surface-web",
+    surface_type: "api",
+  });
+  assert.equal(webMeta.capability_pack, "web");
+});
+
+test("findings.md mirror surfaces the routed capability pack for triage", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-evm", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" },
+    ]);
+    seedAssignments(domain, 1, [{
+      agent: "a1",
+      surface_id: "surface-evm",
+      capability_pack: "smart_contract_evm",
+      hunter_agent: "hunter-evm-agent",
+      brief_profile: "smart_contract_evm",
+    }]);
+    JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "EVM reentrancy",
+      severity: "critical",
+      cwe: "CWE-841",
+      endpoint: "0x" + "ab".repeat(20) + ":withdraw()",
+      description: "Reentrancy on withdraw.",
+      proof_of_concept: "See harness",
+      response_evidence: "Drained.",
+      impact: "Funds loss.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-evm",
+      sc_evidence: {
+        chain_family: "evm",
+        chain_id: 1,
+        contract_address: "0x" + "ab".repeat(20),
+        harness_path: os.homedir(),
+        match_test: "test_reentrancy",
+      },
+    }));
+    const md = fs.readFileSync(findingsMarkdownPath(domain), "utf8");
+    assert.match(md, /Capability Pack:\*\* smart_contract_evm \(hunter-evm-agent\)/);
+  });
+});
+
+test("normalizeFindingRecord forbids sc_evidence on legacy null-surface rows (back-compat smuggling)", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // A legacy row may have surface_type=null. The original guard forbade
+  // sc_evidence only on surface_type="web", so a malicious or buggy row
+  // could carry SC replay data while being routed as web by verifiers.
+  // sc_evidence is now allowed only when surface_type === "smart_contract".
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "Looks web",
+    severity: "low",
+    cwe: null,
+    endpoint: "/x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: null,
+    sc_evidence: {
+      chain_id: 1,
+      contract_address: "0x" + "11".repeat(20),
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /sc_evidence is only allowed on smart_contract findings/);
+});
+
+test("bounty_record_finding rejects sc_evidence with a symlink that escapes $HOME (realpath check)", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-sc", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-sc" }]);
+    // Plant $HOME/escape -> /tmp/outside-home (a directory outside the
+    // ephemeral $HOME). Lexical containment passes; realpath escapes.
+    const home = os.homedir();
+    const tmpRoot = path.join(os.tmpdir(), "bob-symlink-bypass-" + Math.random().toString(36).slice(2));
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    const linkPath = path.join(home, "escape-link");
+    try { fs.unlinkSync(linkPath); } catch {}
+    fs.symlinkSync(tmpRoot, linkPath, "dir");
+    try {
+      assert.throws(() => recordFinding({
+        target_domain: domain,
+        title: "Reentrancy",
+        severity: "high",
+        endpoint: "0x" + "11".repeat(20) + ":borrow",
+        description: "x",
+        proof_of_concept: "y",
+        validated: true,
+        wave: "w1",
+        agent: "a1",
+        surface_id: "surface-sc",
+        sc_evidence: {
+          chain_id: 1,
+          contract_address: "0x" + "11".repeat(20),
+          harness_path: linkPath,
+          match_test: "test_x",
+        },
+      }), /must live under the user home directory/);
+    } finally {
+      try { fs.unlinkSync(linkPath); } catch {}
+      try { fs.rmdirSync(tmpRoot); } catch {}
+    }
+  });
+});
+
+test("bounty_record_finding rejects sc_evidence with harness_path outside the user home", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-sc", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "evm" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-sc" }]);
+    assert.throws(() => recordFinding({
+      target_domain: domain,
+      title: "Reentrancy",
+      severity: "high",
+      endpoint: "0x" + "11".repeat(20) + ":borrow",
+      description: "x",
+      proof_of_concept: "y",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-sc",
+      sc_evidence: {
+        chain_id: 1,
+        contract_address: "0x" + "11".repeat(20),
+        harness_path: "/etc",
+        match_test: "test_x",
+      },
+    }), /harness_path must live under the user home directory/);
+  });
+});
+
+test("bounty_record_finding accepts SVM sc_evidence with chain_family='svm' and base58 program id", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-svm", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "svm" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-svm" }]);
+    // System Program 11111111111111111111111111111111 is the canonical short
+    // base58 32-byte all-zero pubkey — useful as a deterministic fixture.
+    const programId = "11111111111111111111111111111111";
+    const result = JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "Missing signer check on Vault.withdraw",
+      severity: "high",
+      cwe: "CWE-862",
+      endpoint: programId + ":withdraw",
+      description: "Withdraw instruction does not require the vault authority signer.",
+      proof_of_concept: "anchor test --grep withdraw_unauthorized",
+      response_evidence: "Drained 1000 SOL via missing signer check",
+      impact: "Permanent loss of all vault deposits.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-svm",
+      sc_evidence: {
+        chain_family: "svm",
+        chain_id: "mainnet-beta",
+        contract_address: programId,
+        harness_path: os.homedir(),
+        match_test: "withdraw_unauthorized",
+        fork_block: 250_000_000,
+        function_signature: "Withdraw{amount: u64}",
+      },
+    }));
+    assert.equal(result.recorded, true);
+    const rows = JSON.parse(readFindings({ target_domain: domain })).findings;
+    const svmFinding = rows.find((f) => f.id === result.finding_id);
+    assert.equal(svmFinding.surface_type, "smart_contract");
+    assert.equal(svmFinding.sc_evidence.chain_family, "svm");
+    assert.equal(svmFinding.sc_evidence.chain_id, "mainnet-beta");
+    // base58 is case-sensitive — verbatim preservation
+    assert.equal(svmFinding.sc_evidence.contract_address, programId);
+    assert.equal(svmFinding.sc_evidence.fork_block, 250_000_000);
+  });
+});
+
+test("sc_evidence rejects chain_family='svm' with EVM-style 0x address", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "svm",
+      chain_id: "mainnet-beta",
+      contract_address: "0x" + "11".repeat(20),
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /contract_address must be a base58 32-44 char Solana program id/);
+});
+
+test("sc_evidence rejects chain_family='evm' with base58 svm pubkey", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "evm",
+      chain_id: 1,
+      contract_address: "11111111111111111111111111111111",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /contract_address must be a 0x-prefixed 40-hex EVM address/);
+});
+
+test("sc_evidence rejects chain_family='svm' with unknown cluster", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "svm",
+      chain_id: "rogue-cluster",
+      contract_address: "11111111111111111111111111111111",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /chain_id must be one of: mainnet-beta, devnet, testnet/);
+});
+
+test("sc_evidence rejects chain_family='svm' with base58 alphabet violation (0/O/I/l)", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // "0" is not in the base58 alphabet — a pubkey that contains it must be rejected.
+  // System Program prefix with one '0' substituted in.
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "svm",
+      chain_id: "mainnet-beta",
+      contract_address: "0111111111111111111111111111111", // contains '0' (invalid in base58)
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /contract_address must be a base58 32-44 char Solana program id/);
+});
+
+test("sc_evidence rejects unknown chain_family value", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "tron",
+      chain_id: 1,
+      contract_address: "0x" + "11".repeat(20),
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /chain_family must be one of: evm, svm, aptos, sui, substrate, cosmwasm/);
+});
+
+test("sc_evidence chain_family defaults to 'evm' when omitted (back-compat)", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // A legacy row may have no chain_family field at all. The normalizer
+  // defaults to 'evm' so existing findings.jsonl rows keep validating.
+  const finding = normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "Reentrancy",
+    severity: "high",
+    cwe: "CWE-841",
+    endpoint: "0x" + "11".repeat(20) + ":borrow",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      // no chain_family
+      chain_id: 1,
+      contract_address: "0x" + "AB".repeat(20),
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  });
+  assert.equal(finding.sc_evidence.chain_family, "evm");
+  assert.equal(finding.sc_evidence.chain_id, 1);
+  assert.equal(finding.sc_evidence.contract_address, "0x" + "ab".repeat(20));
+});
+
+test("foundry runner translates Success/Failure to Pass/Fail and caps tests[] at 100", () => {
+  const { summarizeForgeJson } = require("../mcp/lib/foundry-runner.js");
+  // Two suites, mix of statuses including unknown.
+  const result = summarizeForgeJson({
+    "Vault.t.sol:VaultTest": {
+      test_results: {
+        "test_borrow_reentrancy": { status: "Success", reason: null },
+        "test_repay_revert": { status: "Failure", reason: "expected revert" },
+        "test_skip_branch": { status: "Skipped" },
+      },
+    },
+  });
+  assert.equal(result.total, 3);
+  assert.equal(result.passed, 1);
+  assert.equal(result.failed, 2);
+  assert.equal(result.tests[0].status, "Pass");
+  assert.equal(result.tests[0].status_raw, "Success");
+  assert.equal(result.tests[1].status, "Fail");
+  assert.equal(result.tests[1].status_raw, "Failure");
+  assert.equal(result.tests[2].status, "Skipped");
+  assert.equal(result.truncated, false);
+
+  // Synthesize 150 tests in a single suite to assert cap + truncated flag.
+  const big = { "Big.t.sol:BigTest": { test_results: {} } };
+  for (let i = 0; i < 150; i += 1) {
+    big["Big.t.sol:BigTest"].test_results[`test_${i}`] = { status: "Success" };
+  }
+  const capped = summarizeForgeJson(big);
+  assert.equal(capped.total, 150);
+  assert.equal(capped.passed, 150);
+  assert.equal(capped.tests.length, 100, "tests[] must be capped at 100");
+  assert.equal(capped.truncated, true);
+});
+
+test("sc_evidence svm pubkey rejects strings that pass alphabet but decode to <32 bytes", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // 32 chars of valid base58 alphabet that are NOT leading-1s decode to ~23 bytes
+  // (32 * log2(58) / 8 ≈ 23.4). The alphabet+length regex passes; the decode-length
+  // check must catch it. Use a deterministic 32-char string with no leading "1".
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "svm",
+      chain_id: "mainnet-beta",
+      contract_address: "AaBbCcDdEeFfGgHhJjKkMmNnPpQqRrSs", // 32 chars no leading 1
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /must base58-decode to exactly 32 bytes/);
+});
+
+test("bounty_record_finding accepts Aptos sc_evidence with chain_family='aptos' and 0x64-hex module address", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-aptos", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "aptos" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-aptos" }]);
+    const moduleAddr = "0x" + "ab".repeat(32); // 64 hex chars
+    const result = JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "Capability leak in CoinStore::deposit",
+      severity: "high",
+      cwe: "CWE-862",
+      endpoint: moduleAddr + "::CoinStore::deposit",
+      description: "Capability acquire happens outside has_capability gate.",
+      proof_of_concept: "aptos move test --filter test_capability_leak",
+      response_evidence: "Drained 1000 APT via missing capability check",
+      impact: "Permanent loss of all CoinStore deposits.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-aptos",
+      sc_evidence: {
+        chain_family: "aptos",
+        chain_id: "mainnet",
+        contract_address: moduleAddr,
+        harness_path: os.homedir(),
+        match_test: "test_capability_leak",
+        fork_block: 1_500_000,
+        function_signature: "CoinStore::deposit",
+      },
+    }));
+    assert.equal(result.recorded, true);
+    const rows = JSON.parse(readFindings({ target_domain: domain })).findings;
+    const aptosFinding = rows.find((f) => f.id === result.finding_id);
+    assert.equal(aptosFinding.surface_type, "smart_contract");
+    assert.equal(aptosFinding.sc_evidence.chain_family, "aptos");
+    assert.equal(aptosFinding.sc_evidence.chain_id, "mainnet");
+    assert.equal(aptosFinding.sc_evidence.contract_address, moduleAddr);
+    assert.equal(aptosFinding.sc_evidence.fork_block, 1_500_000);
+  });
+});
+
+test("bounty_record_finding accepts Sui sc_evidence with chain_family='sui' and 0x64-hex package id", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-sui", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "sui" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-sui" }]);
+    const packageId = "0x" + "cd".repeat(32);
+    const result = JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "Object ownership violation in Vault::withdraw",
+      severity: "critical",
+      cwe: "CWE-863",
+      endpoint: packageId + "::vault::withdraw",
+      description: "Public entry function transfers Coin without verifying owner.",
+      proof_of_concept: "sui move test --filter test_object_ownership",
+      response_evidence: "Drained 1M SUI via wrong-owner withdrawal",
+      impact: "Permanent loss of all vault deposits.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-sui",
+      sc_evidence: {
+        chain_family: "sui",
+        chain_id: "mainnet",
+        contract_address: packageId,
+        harness_path: os.homedir(),
+        match_test: "test_object_ownership",
+        fork_block: 67_000_000,
+        function_signature: "vault::withdraw",
+      },
+    }));
+    assert.equal(result.recorded, true);
+    const rows = JSON.parse(readFindings({ target_domain: domain })).findings;
+    const suiFinding = rows.find((f) => f.id === result.finding_id);
+    assert.equal(suiFinding.surface_type, "smart_contract");
+    assert.equal(suiFinding.sc_evidence.chain_family, "sui");
+    assert.equal(suiFinding.sc_evidence.chain_id, "mainnet");
+    assert.equal(suiFinding.sc_evidence.contract_address, packageId);
+    assert.equal(suiFinding.sc_evidence.fork_block, 67_000_000);
+  });
+});
+
+test("sc_evidence normalizes Move shorthand address (0x1) to canonical 64-hex form", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // Aptos prints framework addresses as shorthand: "0x1" is the std lib,
+  // canonically "0x000...001". The normalizer must left-pad so two findings
+  // recorded against "0x1" and "0x0000...0001" share the same dedupe key.
+  const finding = normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "aptos",
+      chain_id: "mainnet",
+      contract_address: "0x1",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  });
+  // 0x + 63 zeros + "1"
+  assert.equal(finding.sc_evidence.contract_address, "0x" + "0".repeat(63) + "1");
+});
+
+test("sc_evidence rejects chain_family='aptos' with unknown network", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "aptos",
+      chain_id: "rogue-net",
+      contract_address: "0x" + "ab".repeat(32),
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /chain_id must be one of: mainnet, testnet, devnet/);
+});
+
+test("sc_evidence rejects chain_family='sui' with unknown network", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "sui",
+      chain_id: "rogue-net",
+      contract_address: "0x" + "ab".repeat(32),
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /chain_id must be one of: mainnet, testnet, devnet, localnet/);
+});
+
+test("sc_evidence rejects Move family with non-hex address", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // Aptos hunter accidentally pasted a base58 svm pubkey. Move normalizer
+  // must reject because address fails the 0x+hex regex.
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "aptos",
+      chain_id: "mainnet",
+      contract_address: "11111111111111111111111111111111",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /contract_address must be a 0x-prefixed hex address \(1-64 hex chars\) when chain_family='aptos'/);
+});
+
+test("sc_evidence rejects Move family with empty 0x address (no hex chars)", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // 0x with zero hex chars is technically not a Move address (Aptos shorthand
+  // requires at least one hex char). Regex {1,64} prevents the empty case.
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "sui",
+      chain_id: "mainnet",
+      contract_address: "0x",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /contract_address must be a 0x-prefixed hex address \(1-64 hex chars\) when chain_family='sui'/);
+});
+
+test("sc_evidence rejects chain_family='aptos' with integer chain_id (must be string network)", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // Aptos has an integer chain_id (1 = mainnet) used for replay protection,
+  // but our schema keys RPC pools by network NAME. Reject integers to avoid
+  // ambiguity with EVM chain_id integer convention.
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "aptos",
+      chain_id: 1,
+      contract_address: "0x" + "ab".repeat(32),
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /chain_id must be one of: mainnet, testnet, devnet/);
+});
+
+test("bounty_record_finding accepts Substrate sc_evidence with chain_family='substrate' and SS58 address", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-substrate", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "substrate" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-substrate" }]);
+    // Alice's well-known generic-substrate SS58 address (prefix 42).
+    const alice = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
+    const result = JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "Reentrancy via cross-contract call in ink! marketplace",
+      severity: "high",
+      cwe: "CWE-841",
+      endpoint: alice + "::buy",
+      description: "Cross-contract call to buyer-supplied receiver enables reentrancy.",
+      proof_of_concept: "cargo test --features e2e-tests test_reentrancy",
+      response_evidence: "Drained 100 DOT after recursive buy()",
+      impact: "Drain of marketplace escrow.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-substrate",
+      sc_evidence: {
+        chain_family: "substrate",
+        chain_id: "polkadot",
+        contract_address: alice,
+        harness_path: os.homedir(),
+        match_test: "test_reentrancy",
+        fork_block: 19_000_000,
+        function_signature: "marketplace::buy",
+      },
+    }));
+    assert.equal(result.recorded, true);
+    const rows = JSON.parse(readFindings({ target_domain: domain })).findings;
+    const subFinding = rows.find((f) => f.id === result.finding_id);
+    assert.equal(subFinding.surface_type, "smart_contract");
+    assert.equal(subFinding.sc_evidence.chain_family, "substrate");
+    assert.equal(subFinding.sc_evidence.chain_id, "polkadot");
+    assert.equal(subFinding.sc_evidence.contract_address, alice); // case preserved
+    assert.equal(subFinding.sc_evidence.fork_block, 19_000_000);
+  });
+});
+
+test("bounty_record_finding accepts CosmWasm sc_evidence with chain_family='cosmwasm' and bech32 address", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedAttackSurfaces(domain, [
+      { id: "surface-cosmwasm", hosts: [`https://${domain}`], surface_type: "smart_contract", chain_family: "cosmwasm" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-cosmwasm" }]);
+    // Generated bech32 with HRP=osmo and 32-byte content; verifies the polymod
+    // checksum so this is a valid bech32 string. Real osmosis governance and
+    // CW contract addresses share this shape.
+    const osmoAddr = "osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusq4z5ese";
+    const result = JSON.parse(recordFinding({
+      target_domain: domain,
+      title: "Sub-message reply allows balance overwrite",
+      severity: "critical",
+      cwe: "CWE-841",
+      endpoint: osmoAddr + "/execute",
+      description: "Reply handler trusts attacker-supplied result without re-checking caller.",
+      proof_of_concept: "cargo test test_reply_overwrite",
+      response_evidence: "User balance set to attacker_value",
+      impact: "Drain via crafted sub-message reply.",
+      validated: true,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-cosmwasm",
+      sc_evidence: {
+        chain_family: "cosmwasm",
+        chain_id: "osmosis",
+        contract_address: osmoAddr,
+        harness_path: os.homedir(),
+        match_test: "test_reply_overwrite",
+        fork_block: 14_500_000,
+        function_signature: "execute::Withdraw",
+      },
+    }));
+    assert.equal(result.recorded, true);
+    const rows = JSON.parse(readFindings({ target_domain: domain })).findings;
+    const cwFinding = rows.find((f) => f.id === result.finding_id);
+    assert.equal(cwFinding.surface_type, "smart_contract");
+    assert.equal(cwFinding.sc_evidence.chain_family, "cosmwasm");
+    assert.equal(cwFinding.sc_evidence.chain_id, "osmosis");
+    assert.equal(cwFinding.sc_evidence.contract_address, osmoAddr); // already lowercase
+    assert.equal(cwFinding.sc_evidence.fork_block, 14_500_000);
+  });
+});
+
+test("sc_evidence rejects chain_family='substrate' with unknown network", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "substrate",
+      chain_id: "ethereum",
+      contract_address: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /chain_id must be one of: polkadot, kusama, astar, shiden, rococo, westend, localnet/);
+});
+
+test("sc_evidence rejects chain_family='cosmwasm' with unknown network", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "cosmwasm",
+      chain_id: "kusama",
+      contract_address: "osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusq4z5ese",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /chain_id must be one of: osmosis, juno, neutron, archway, sei, stargaze, terra, kava, localnet/);
+});
+
+test("sc_evidence rejects chain_family='substrate' with EVM 0x... address (alphabet violation)", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // SS58 alphabet excludes 0/O/I/l, so an EVM address fails the base58 check.
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "substrate",
+      chain_id: "polkadot",
+      contract_address: "0x" + "ab".repeat(20),
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /contract_address must be a valid SS58-encoded substrate address/);
+});
+
+test("sc_evidence rejects chain_family='substrate' with too-short SS58", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // 30 chars is below the 45-char SS58 length floor.
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "substrate",
+      chain_id: "polkadot",
+      contract_address: "5Grwvaef5zxb26fz9rcqpdws57",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /contract_address must be a valid SS58-encoded substrate address/);
+});
+
+test("sc_evidence rejects chain_family='cosmwasm' with bad bech32 checksum", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // Last 6 chars of valid bech32 mutated to break the polymod checksum.
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "cosmwasm",
+      chain_id: "osmosis",
+      contract_address: "osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqaaaaaa",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /contract_address must be a valid bech32-encoded CosmWasm address/);
+});
+
+test("sc_evidence rejects chain_family='cosmwasm' with EVM 0x... address (no bech32 separator)", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "cosmwasm",
+      chain_id: "osmosis",
+      contract_address: "0x" + "ab".repeat(20),
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /contract_address must be a valid bech32-encoded CosmWasm address/);
+});
+
+test("sc_evidence rejects chain_family='cosmwasm' with mixed-case bech32 (spec violation)", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // BIP-0173 explicitly forbids mixed-case in bech32; either fully lowercase
+  // or fully uppercase is allowed, but never both. We mirror that rule.
+  assert.throws(() => normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "cosmwasm",
+      chain_id: "osmosis",
+      contract_address: "Osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusq4z5ese",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  }), /contract_address must be a valid bech32-encoded CosmWasm address/);
+});
+
+test("sc_evidence svm pubkey accepts the 32-char System Program (all-zero pubkey)", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // 11111111111111111111111111111111 — 32 chars, base58-decodes to 32 zero
+  // bytes. The System Program is a legitimate Solana pubkey at 32 chars.
+  // The new decode-length check must not regress on this fixture.
+  const finding = normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "svm",
+      chain_id: "mainnet-beta",
+      contract_address: "11111111111111111111111111111111",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  });
+  assert.equal(finding.sc_evidence.contract_address, "11111111111111111111111111111111");
+});
+
+test("anchor runner classifies cargo/solana/yarn missing as anchor_dependency_missing", () => {
+  const { classifyAnchorFailure } = require("../mcp/lib/anchor-runner.js");
+  const cargoMissing = classifyAnchorFailure(
+    { ok: false, exit_code: 127, stderr: "/bin/sh: cargo: command not found", stdout: "" },
+    false,
+  );
+  assert.equal(cargoMissing, "anchor_dependency_missing");
+
+  const solanaMissing = classifyAnchorFailure(
+    { ok: false, exit_code: 127, stderr: "anchor: solana command not found in PATH", stdout: "" },
+    false,
+  );
+  assert.equal(solanaMissing, "anchor_dependency_missing");
+
+  const validatorMissing = classifyAnchorFailure(
+    { ok: false, exit_code: 127, stderr: "Error: solana-test-validator: No such file or directory", stdout: "" },
+    false,
+  );
+  assert.equal(validatorMissing, "anchor_dependency_missing");
+
+  const yarnMissing = classifyAnchorFailure(
+    { ok: false, exit_code: 127, stderr: "/bin/sh: yarn: command not found", stdout: "" },
+    false,
+  );
+  assert.equal(yarnMissing, "anchor_dependency_missing");
+
+  // No deps mentioned, just a generic shell error → unclassified (returns null)
+  const generic = classifyAnchorFailure(
+    { ok: false, exit_code: 1, stderr: "Error: build failed", stdout: "" },
+    false,
+  );
+  assert.equal(generic, null);
+
+  // ok=true → no classification needed
+  const success = classifyAnchorFailure({ ok: true, stderr: "", stdout: "{...}" }, true);
+  assert.equal(success, null);
+});
+
+test("anchor runner classifies jest/ts-mocha config as anchor_test_runner_unknown", () => {
+  const { classifyAnchorFailure } = require("../mcp/lib/anchor-runner.js");
+  const jestRunner = classifyAnchorFailure(
+    { ok: false, exit_code: 1, stderr: "Running test command: jest --testPathPattern=...", stdout: "" },
+    false, // parseResult.ok = false (no mocha JSON)
+  );
+  assert.equal(jestRunner, "anchor_test_runner_unknown");
+
+  const tsMocha = classifyAnchorFailure(
+    { ok: false, exit_code: 2, stderr: "ts-mocha: cannot find ts file", stdout: "" },
+    false,
+  );
+  assert.equal(tsMocha, "anchor_test_runner_unknown");
+
+  const customRunner = classifyAnchorFailure(
+    { ok: false, exit_code: 1, stderr: "Cannot find module './reporter/json'", stdout: "" },
+    false,
+  );
+  assert.equal(customRunner, "anchor_test_runner_unknown");
+
+  // dependency-missing wins over runner-unknown when both patterns match
+  const both = classifyAnchorFailure(
+    { ok: false, exit_code: 127, stderr: "yarn: command not found\nts-mocha: missing", stdout: "" },
+    false,
+  );
+  assert.equal(both, "anchor_dependency_missing");
+
+  // If parseResult.ok is true (mocha JSON present), runner-unknown does not fire.
+  const parsedFine = classifyAnchorFailure(
+    { ok: false, exit_code: 1, stderr: "ts-mocha hint", stdout: "{stats:...}" },
+    true,
+  );
+  assert.equal(parsedFine, null);
+});
+
+test("anchor runner summarizes mocha JSON Pass/Fail and caps tests[] at 100", () => {
+  const { summarizeAnchorMochaJson } = require("../mcp/lib/anchor-runner.js");
+  // Mocha JSON shape: stats + tests array. err empty = passed; err present = failed.
+  const result = summarizeAnchorMochaJson({
+    stats: { tests: 3, passes: 1, failures: 1, pending: 1 },
+    tests: [
+      { title: "drains the vault", fullTitle: "Vault drains the vault", duration: 412, err: {} },
+      { title: "rejects unauthorized signer", fullTitle: "Vault rejects unauthorized signer", duration: 89, err: { message: "AssertionError: expected revert" } },
+      { title: "skipped when feature flag is off", fullTitle: "Vault skipped when feature flag is off", duration: 0, err: {}, pending: true },
+    ],
+  });
+  assert.equal(result.total, 3);
+  assert.equal(result.passed, 1);
+  assert.equal(result.failed, 1);
+  assert.equal(result.tests[0].status, "Pass");
+  assert.equal(result.tests[0].status_raw, "success");
+  assert.equal(result.tests[1].status, "Fail");
+  assert.equal(result.tests[1].status_raw, "failure");
+  assert.equal(result.tests[1].reason, "AssertionError: expected revert");
+  assert.equal(result.tests[2].status, "Skipped");
+  assert.equal(result.truncated, false);
+
+  // 150 passing tests → capped at 100, truncated flag.
+  const big = { stats: { tests: 150 }, tests: [] };
+  for (let i = 0; i < 150; i += 1) {
+    big.tests.push({ title: `t_${i}`, fullTitle: `Suite t_${i}`, duration: 1, err: {} });
+  }
+  const capped = summarizeAnchorMochaJson(big);
+  assert.equal(capped.total, 150);
+  assert.equal(capped.passed, 150);
+  assert.equal(capped.tests.length, 100, "tests[] must be capped at 100");
+  assert.equal(capped.truncated, true);
+});
+
+test("anchor runner rejects extra_args not in the allowlist", async () => {
+  const { runAnchorTest } = require("../mcp/lib/anchor-runner.js");
+  // Use os.homedir() as the workdir (real, under-home, exists). The args
+  // validator runs before subprocess spawn, so this assertion fires without
+  // requiring anchor in PATH.
+  await assert.rejects(async () => runAnchorTest({
+    workdir: os.homedir(),
+    matchTest: "test_x",
+    cluster: "mainnet-beta",
+    extraArgs: ["--provider.cluster", "https://malicious.example/rpc"],
+    timeoutMs: 5000,
+  }), /not in the anchor allowlist/);
+});
+
+test("anchor runner rejects symlink-escaping harness paths", async () => {
+  const { runAnchorTest } = require("../mcp/lib/anchor-runner.js");
+  const home = os.homedir();
+  const tmpRoot = path.join(os.tmpdir(), "bob-anchor-symlink-" + Math.random().toString(36).slice(2));
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  const linkPath = path.join(home, "anchor-escape-link");
+  try { fs.unlinkSync(linkPath); } catch {}
+  fs.symlinkSync(tmpRoot, linkPath, "dir");
+  try {
+    await assert.rejects(async () => runAnchorTest({
+      workdir: linkPath,
+      matchTest: "test_x",
+      cluster: "mainnet-beta",
+      timeoutMs: 5000,
+    }), /must live under the user home directory/);
+  } finally {
+    try { fs.unlinkSync(linkPath); } catch {}
+    try { fs.rmdirSync(tmpRoot); } catch {}
+  }
+});
+
+test("svm rpc pool resolves cluster ladders and rejects private hosts", () => {
+  const { resolveSvmRpcEndpoints, isPublicHttpsUrl } = require("../mcp/lib/svm-rpc-pool.js");
+  const mainnet = resolveSvmRpcEndpoints("mainnet-beta");
+  assert.ok(Array.isArray(mainnet) && mainnet.length >= 2, "mainnet-beta has multiple endpoints");
+  assert.ok(mainnet.every((url) => url.startsWith("https://")), "all endpoints are https");
+  const devnet = resolveSvmRpcEndpoints("devnet");
+  assert.ok(devnet.length >= 1, "devnet has at least one endpoint");
+  assert.equal(isPublicHttpsUrl("https://api.mainnet-beta.solana.com"), true);
+  assert.equal(isPublicHttpsUrl("http://localhost:8899"), false);
+  assert.equal(isPublicHttpsUrl("https://192.168.1.1:8899"), false);
+});
+
+test("svm rpc pool env override is read with the dashed-cluster key shape", () => {
+  const { resolveSvmRpcEndpoints, envKeyForCluster } = require("../mcp/lib/svm-rpc-pool.js");
+  // mainnet-beta should map to BOB_SVM_RPCS_MAINNET_BETA
+  assert.equal(envKeyForCluster("mainnet-beta"), "BOB_SVM_RPCS_MAINNET_BETA");
+  const previous = process.env.BOB_SVM_RPCS_MAINNET_BETA;
+  process.env.BOB_SVM_RPCS_MAINNET_BETA = "https://override.example.com/rpc";
+  try {
+    const result = resolveSvmRpcEndpoints("mainnet-beta");
+    assert.equal(result[0], "https://override.example.com/rpc", "env override is tried first");
+  } finally {
+    if (previous === undefined) delete process.env.BOB_SVM_RPCS_MAINNET_BETA;
+    else process.env.BOB_SVM_RPCS_MAINNET_BETA = previous;
+  }
+});
+
+test("svm-fetch-program parses BPFLoaderUpgradeable Program account discriminator", () => {
+  const svmFetchProgram = require("../mcp/lib/tools/svm-fetch-program.js");
+  const { parseProgramAccount, parseProgramDataAccount, base58Encode } = svmFetchProgram._internals;
+  // System Program zeroed pubkey (32 bytes).
+  const sysProgramBytes = Buffer.alloc(32, 0);
+  const programDataPubkeyB58 = base58Encode(sysProgramBytes);
+  // Program account: discriminator=2 little-endian + 32 bytes programdata addr.
+  const programData = Buffer.alloc(36);
+  programData.writeUInt32LE(2, 0);
+  sysProgramBytes.copy(programData, 4);
+  const parsed = parseProgramAccount(programData);
+  assert.equal(parsed.kind, "program");
+  assert.equal(parsed.programdata_address, programDataPubkeyB58);
+
+  // ProgramData account: discriminator=3 + slot u64 + option(1) + Pubkey(32).
+  // Use upgrade authority = 32 bytes of 0x11.
+  const authBytes = Buffer.alloc(32, 0x11);
+  const pdData = Buffer.alloc(45);
+  pdData.writeUInt32LE(3, 0);
+  pdData.writeBigUInt64LE(123456n, 4);
+  pdData.writeUInt8(1, 12); // option Some
+  authBytes.copy(pdData, 13);
+  const pdParsed = parseProgramDataAccount(pdData);
+  assert.equal(pdParsed.kind, "programdata");
+  assert.equal(pdParsed.deployed_slot, 123456);
+  assert.equal(pdParsed.upgrade_authority, base58Encode(authBytes));
+
+  // Frozen ProgramData (option=None).
+  const frozenData = Buffer.alloc(13);
+  frozenData.writeUInt32LE(3, 0);
+  frozenData.writeBigUInt64LE(99n, 4);
+  frozenData.writeUInt8(0, 12); // option None
+  const frozenParsed = parseProgramDataAccount(frozenData);
+  assert.equal(frozenParsed.upgrade_authority, null);
+  assert.equal(frozenParsed.deployed_slot, 99);
+});
+
+test("svm tools register with verifier and evidence role bundles (so balanced/brutalist/final + evidence-agent can re-run SVM PoCs)", () => {
+  const tools = ["bounty_svm_fetch_account", "bounty_svm_fetch_program", "bounty_anchor_run"];
+  for (const name of tools) {
+    const meta = TOOL_MANIFEST[name];
+    assert.ok(meta, `${name} is in TOOL_MANIFEST`);
+    assert.deepEqual(meta.role_bundles, ["hunter-svm", "verifier", "evidence"], `${name} exposes role_bundles=[hunter-svm, verifier, evidence]`);
+    assert.equal(meta.network_access, true, `${name} declares network_access`);
+  }
+});
+
+// ----------------------------------------------------------------------
+// Move (Aptos + Sui) primitives
+// ----------------------------------------------------------------------
+
+test("aptos rpc pool resolves network ladders and rejects private hosts", () => {
+  const { resolveAptosRpcEndpoints, isPublicHttpsUrl } = require("../mcp/lib/aptos-rpc-pool.js");
+  const mainnet = resolveAptosRpcEndpoints("mainnet");
+  assert.ok(Array.isArray(mainnet) && mainnet.length >= 1, "mainnet has at least one endpoint");
+  assert.ok(mainnet.every((url) => url.startsWith("https://")), "all endpoints are https");
+  // Aptos URLs include /v1 in the suffix because the REST API is path-anchored.
+  assert.ok(mainnet.every((url) => url.endsWith("/v1")), "Aptos endpoints carry /v1 suffix");
+  const testnet = resolveAptosRpcEndpoints("testnet");
+  assert.ok(testnet.length >= 1, "testnet has at least one endpoint");
+  assert.equal(isPublicHttpsUrl("https://api.mainnet.aptoslabs.com/v1"), true);
+  assert.equal(isPublicHttpsUrl("http://localhost:8080"), false);
+  assert.equal(isPublicHttpsUrl("https://192.168.1.1/v1"), false);
+});
+
+test("aptos rpc pool env override is read with BOB_APTOS_RPCS_<NETWORK>", () => {
+  const { resolveAptosRpcEndpoints, envKeyForNetwork } = require("../mcp/lib/aptos-rpc-pool.js");
+  assert.equal(envKeyForNetwork("mainnet"), "BOB_APTOS_RPCS_MAINNET");
+  const previous = process.env.BOB_APTOS_RPCS_MAINNET;
+  process.env.BOB_APTOS_RPCS_MAINNET = "https://override.example.com/v1";
+  try {
+    const result = resolveAptosRpcEndpoints("mainnet");
+    assert.equal(result[0], "https://override.example.com/v1", "env override is tried first");
+  } finally {
+    if (previous === undefined) delete process.env.BOB_APTOS_RPCS_MAINNET;
+    else process.env.BOB_APTOS_RPCS_MAINNET = previous;
+  }
+});
+
+test("sui rpc pool resolves network ladders and rejects private hosts", () => {
+  const { resolveSuiRpcEndpoints, isPublicHttpsUrl } = require("../mcp/lib/sui-rpc-pool.js");
+  const mainnet = resolveSuiRpcEndpoints("mainnet");
+  assert.ok(Array.isArray(mainnet) && mainnet.length >= 1, "mainnet has at least one endpoint");
+  assert.ok(mainnet.every((url) => url.startsWith("https://")), "all endpoints are https");
+  const testnet = resolveSuiRpcEndpoints("testnet");
+  assert.ok(testnet.length >= 1, "testnet has at least one endpoint");
+  // localnet has empty default — operators set BOB_SUI_RPCS_LOCALNET. The
+  // resolve function should still return [] without throwing.
+  const localnet = resolveSuiRpcEndpoints("localnet");
+  assert.deepEqual(localnet, []);
+  assert.equal(isPublicHttpsUrl("https://fullnode.mainnet.sui.io:443"), true);
+  assert.equal(isPublicHttpsUrl("http://localhost:9000"), false);
+});
+
+test("sui rpc pool env override is read with BOB_SUI_RPCS_<NETWORK>", () => {
+  const { resolveSuiRpcEndpoints, envKeyForNetwork } = require("../mcp/lib/sui-rpc-pool.js");
+  assert.equal(envKeyForNetwork("mainnet"), "BOB_SUI_RPCS_MAINNET");
+  const previous = process.env.BOB_SUI_RPCS_LOCALNET;
+  process.env.BOB_SUI_RPCS_LOCALNET = "https://localnet-override.example.com:9000";
+  try {
+    const result = resolveSuiRpcEndpoints("localnet");
+    assert.equal(result[0], "https://localnet-override.example.com:9000", "env override populates the empty localnet ladder");
+  } finally {
+    if (previous === undefined) delete process.env.BOB_SUI_RPCS_LOCALNET;
+    else process.env.BOB_SUI_RPCS_LOCALNET = previous;
+  }
+});
+
+test("parseMoveTestStdout parses Move unit test output line-by-line", () => {
+  const { parseMoveTestStdout } = require("../mcp/lib/move-test-output.js");
+  const stdout = [
+    "Running Move unit tests",
+    "[ PASS    ] 0x42::vault::test_deposit_ok",
+    "[ FAIL    ] 0x42::vault::test_withdraw_unauthorized",
+    "        ┌── test_withdraw_unauthorized ──────",
+    "        │ error[E11001]: aborted with code 100",
+    "        └────────────────────────────────────",
+    "[ TIMEOUT ] 0x42::vault::test_loop",
+    "Test result: FAILED. Total tests: 3; passed: 1; failed: 2",
+  ].join("\n");
+  const r = parseMoveTestStdout(stdout);
+  assert.equal(r.ok, true);
+  assert.equal(r.total, 3);
+  assert.equal(r.passed, 1);
+  assert.equal(r.failed, 2);
+  assert.equal(r.timed_out, 1);
+  assert.equal(r.tests[0].test_id, "0x42::vault::test_deposit_ok");
+  assert.equal(r.tests[0].status, "Pass");
+  assert.equal(r.tests[1].status, "Fail");
+  assert.equal(r.tests[1].test_id, "0x42::vault::test_withdraw_unauthorized");
+  // Diagnostic line follows [ FAIL ] — captured as reason.
+  assert.match(r.tests[1].reason || "", /aborted with code 100|error\[E11001\]/);
+  // TIMEOUT normalizes to status=Fail (so verifier sees the assertion held).
+  assert.equal(r.tests[2].status, "Fail");
+  assert.equal(r.tests[2].status_raw, "TIMEOUT");
+});
+
+test("parseMoveTestStdout captures inline failure reason from Sui-style '; ABORTED at code N' suffix", () => {
+  const { parseMoveTestStdout } = require("../mcp/lib/move-test-output.js");
+  // Sui adds the abort code/module on the same line as [ FAIL ].
+  const stdout = [
+    "Running Move unit tests",
+    "[ PASS    ] 0x0::game::test_play",
+    "[ FAIL    ] 0x0::game::test_replay; ABORTED at code 100 in module game",
+    "Test result: FAILED. Total tests: 2; passed: 1; failed: 1",
+  ].join("\n");
+  const r = parseMoveTestStdout(stdout);
+  assert.equal(r.ok, true);
+  assert.equal(r.tests[1].status, "Fail");
+  assert.match(r.tests[1].reason || "", /ABORTED at code 100/);
+});
+
+test("parseMoveTestStdout caps tests[] at 100 and sets truncated", () => {
+  const { parseMoveTestStdout, MOVE_TESTS_CAP } = require("../mcp/lib/move-test-output.js");
+  assert.equal(MOVE_TESTS_CAP, 100);
+  const lines = ["Running Move unit tests"];
+  for (let i = 0; i < 150; i += 1) {
+    lines.push(`[ PASS    ] 0x42::big::test_${i}`);
+  }
+  lines.push("Test result: OK. Total tests: 150; passed: 150; failed: 0");
+  const r = parseMoveTestStdout(lines.join("\n"));
+  assert.equal(r.total, 150);
+  assert.equal(r.tests.length, 100);
+  assert.equal(r.truncated, true);
+});
+
+test("parseMoveTestStdout returns ok=false when the stdout has no test lines or result line", () => {
+  const { parseMoveTestStdout } = require("../mcp/lib/move-test-output.js");
+  // Compiler crash output — no [ PASS ]/[ FAIL ] and no "Test result:".
+  const stdout = "error[E04001]: ...build failed\nCompilation aborted.\n";
+  const r = parseMoveTestStdout(stdout);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "no_test_lines");
+});
+
+test("aptos runner classifies cargo/move-cli missing as aptos_dependency_missing", () => {
+  const { classifyAptosFailure } = require("../mcp/lib/aptos-runner.js");
+  const cargoMissing = classifyAptosFailure(
+    { ok: false, exit_code: 127, stderr: "/bin/sh: cargo: command not found", stdout: "" },
+    false,
+  );
+  assert.equal(cargoMissing, "aptos_dependency_missing");
+  const moveMissing = classifyAptosFailure(
+    { ok: false, exit_code: 127, stderr: "Error: move-cli: No such file or directory", stdout: "" },
+    false,
+  );
+  assert.equal(moveMissing, "aptos_dependency_missing");
+});
+
+test("aptos runner classifies Move compilation errors as move_compile_failed", () => {
+  const { classifyAptosFailure } = require("../mcp/lib/aptos-runner.js");
+  const compilerErr = classifyAptosFailure(
+    { ok: false, exit_code: 1, stderr: "", stdout: "error[E04001]: name not in scope" },
+    false,
+  );
+  assert.equal(compilerErr, "move_compile_failed");
+  // Generic exit-1 with no compile signal → unclassified.
+  const generic = classifyAptosFailure(
+    { ok: false, exit_code: 1, stderr: "Error: misc", stdout: "" },
+    false,
+  );
+  assert.equal(generic, null);
+});
+
+test("sui runner classifies cargo/move-cli missing as sui_dependency_missing", () => {
+  const { classifySuiFailure } = require("../mcp/lib/sui-runner.js");
+  const cargoMissing = classifySuiFailure(
+    { ok: false, exit_code: 127, stderr: "/bin/sh: cargo: command not found", stdout: "" },
+    false,
+  );
+  assert.equal(cargoMissing, "sui_dependency_missing");
+});
+
+test("aptos runner rejects extra_args not in the allowlist", async () => {
+  const { runAptosTest } = require("../mcp/lib/aptos-runner.js");
+  await assert.rejects(async () => runAptosTest({
+    workdir: os.homedir(),
+    matchTest: "test_x",
+    network: "mainnet",
+    extraArgs: ["--profile", "/etc/passwd"],
+    timeoutMs: 5000,
+  }), /not in the aptos allowlist/);
+});
+
+test("sui runner rejects extra_args not in the allowlist", async () => {
+  const { runSuiTest } = require("../mcp/lib/sui-runner.js");
+  await assert.rejects(async () => runSuiTest({
+    workdir: os.homedir(),
+    matchTest: "test_x",
+    network: "mainnet",
+    extraArgs: ["--client.config", "/etc/passwd"],
+    timeoutMs: 5000,
+  }), /not in the sui allowlist/);
+});
+
+test("aptos runner rejects symlink-escaping harness paths", async () => {
+  const { runAptosTest } = require("../mcp/lib/aptos-runner.js");
+  const home = os.homedir();
+  const tmpRoot = path.join(os.tmpdir(), "bob-aptos-symlink-" + Math.random().toString(36).slice(2));
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  const linkPath = path.join(home, "aptos-escape-link");
+  try { fs.unlinkSync(linkPath); } catch {}
+  fs.symlinkSync(tmpRoot, linkPath, "dir");
+  try {
+    await assert.rejects(async () => runAptosTest({
+      workdir: linkPath,
+      matchTest: "test_x",
+      network: "mainnet",
+      timeoutMs: 5000,
+    }), /must live under the user home directory/);
+  } finally {
+    try { fs.unlinkSync(linkPath); } catch {}
+    try { fs.rmdirSync(tmpRoot); } catch {}
+  }
+});
+
+test("aptos-client normalizes Move shorthand 0x1 to canonical 64-hex form", () => {
+  const { normalizeMoveAddress, isMoveAddress } = require("../mcp/lib/aptos-client.js");
+  assert.equal(isMoveAddress("0x1"), true);
+  assert.equal(isMoveAddress("0x"), false);
+  assert.equal(isMoveAddress("11111111111111111111111111111111"), false);
+  assert.equal(normalizeMoveAddress("0x1"), "0x" + "0".repeat(63) + "1");
+  assert.equal(normalizeMoveAddress("0xABCD"), "0x" + "0".repeat(60) + "abcd");
+});
+
+test("sui-client normalizes Move shorthand 0x2 to canonical 64-hex form", () => {
+  const { normalizeMoveAddress, isMoveAddress } = require("../mcp/lib/sui-client.js");
+  assert.equal(isMoveAddress("0x2"), true);
+  assert.equal(normalizeMoveAddress("0x2"), "0x" + "0".repeat(63) + "2");
+});
+
+test("hunter-brief summarizeRpcPoolForBrief dispatches to aptos and sui pool summaries", () => {
+  const { summarizeRpcPoolForBrief } = require("../mcp/lib/evm-rpc-pool.js");
+  const aptos = summarizeRpcPoolForBrief("aptos", "mainnet");
+  assert.equal(aptos.chain_family, "aptos");
+  assert.equal(aptos.network, "mainnet");
+  assert.ok(Array.isArray(aptos.endpoints) && aptos.endpoints.length >= 1, "aptos mainnet pool surfaces endpoints");
+  const sui = summarizeRpcPoolForBrief("sui", "mainnet");
+  assert.equal(sui.chain_family, "sui");
+  assert.equal(sui.network, "mainnet");
+  assert.ok(Array.isArray(sui.endpoints) && sui.endpoints.length >= 1, "sui mainnet pool surfaces endpoints");
+});
+
+test("hunter-brief summarizeRpcPoolForBrief dispatches to substrate and cosmwasm pool summaries", () => {
+  const { summarizeRpcPoolForBrief } = require("../mcp/lib/evm-rpc-pool.js");
+  const substrate = summarizeRpcPoolForBrief("substrate", "polkadot");
+  assert.equal(substrate.chain_family, "substrate");
+  assert.equal(substrate.network, "polkadot");
+  assert.ok(Array.isArray(substrate.endpoints) && substrate.endpoints.length >= 1, "substrate polkadot pool surfaces endpoints");
+  const cosmwasm = summarizeRpcPoolForBrief("cosmwasm", "osmosis");
+  assert.equal(cosmwasm.chain_family, "cosmwasm");
+  assert.equal(cosmwasm.network, "osmosis");
+  assert.ok(Array.isArray(cosmwasm.endpoints) && cosmwasm.endpoints.length >= 1, "cosmwasm osmosis pool surfaces endpoints");
+});
+
+test("parseCargoTestStdout parses cargo unit test output line-by-line", () => {
+  const { parseCargoTestStdout } = require("../mcp/lib/cargo-test-output.js");
+  const stdout = [
+    "running 4 tests",
+    "test tests::works ... ok",
+    "test tests::fails_assert ... FAILED",
+    "test slow_test ... ignored",
+    "test tests::passes_too ... ok",
+    "",
+    "failures:",
+    "",
+    "---- tests::fails_assert stdout ----",
+    "thread (tests::fails_assert) panicked at assertion failed: x == 5",
+    "",
+    "test result: FAILED. 2 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+  ].join("\n");
+  const r = parseCargoTestStdout(stdout);
+  assert.equal(r.ok, true);
+  assert.equal(r.total, 4);
+  assert.equal(r.passed, 2);
+  assert.equal(r.failed, 1);
+  assert.equal(r.ignored, 1);
+  assert.equal(r.tests[0].test_id, "tests::works");
+  assert.equal(r.tests[0].status, "Pass");
+  assert.equal(r.tests[1].status, "Fail");
+  assert.match(r.tests[1].reason || "", /panicked at assertion failed/);
+  assert.equal(r.tests[2].status, "Skipped");
+  assert.equal(r.tests[2].status_raw, "ignored");
+});
+
+test("parseCargoTestStdout caps tests[] at 100 and sets truncated", () => {
+  const { parseCargoTestStdout, CARGO_TESTS_CAP } = require("../mcp/lib/cargo-test-output.js");
+  assert.equal(CARGO_TESTS_CAP, 100);
+  const lines = ["running 150 tests"];
+  for (let i = 0; i < 150; i += 1) {
+    lines.push(`test mod::test_${i} ... ok`);
+  }
+  lines.push("test result: ok. 150 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s");
+  const r = parseCargoTestStdout(lines.join("\n"));
+  assert.equal(r.total, 150);
+  assert.equal(r.tests.length, 100);
+  assert.equal(r.truncated, true);
+});
+
+test("parseCargoTestStdout returns ok=false when stdout has no test lines or result line", () => {
+  const { parseCargoTestStdout } = require("../mcp/lib/cargo-test-output.js");
+  const stdout = "error[E0432]: unresolved import\nCompilation aborted.\n";
+  const r = parseCargoTestStdout(stdout);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "no_test_lines");
+});
+
+test("substrate runner classifies cargo missing as substrate_dependency_missing", () => {
+  const { classifySubstrateFailure } = require("../mcp/lib/substrate-runner.js");
+  const cargoMissing = classifySubstrateFailure(
+    { ok: false, exit_code: 127, stderr: "/bin/sh: cargo: command not found", stdout: "" },
+    false,
+  );
+  assert.equal(cargoMissing, "substrate_dependency_missing");
+  // CLI usage error (older cargo rejecting --exact)
+  const cliErr = classifySubstrateFailure(
+    { ok: false, exit_code: 2, stderr: "error: Found argument '--exact' which wasn't expected", stdout: "" },
+    false,
+  );
+  assert.equal(cliErr, "substrate_dependency_missing");
+  // Compile error from rustc
+  const compileErr = classifySubstrateFailure(
+    { ok: false, exit_code: 1, stderr: "", stdout: "error[E0432]: unresolved import" },
+    false,
+  );
+  assert.equal(compileErr, "cargo_compile_failed");
+});
+
+test("cosmwasm runner classifies cargo missing as cosmwasm_dependency_missing", () => {
+  const { classifyCosmwasmFailure } = require("../mcp/lib/cosmwasm-runner.js");
+  const cargoMissing = classifyCosmwasmFailure(
+    { ok: false, exit_code: 127, stderr: "/bin/sh: cargo: command not found", stdout: "" },
+    false,
+  );
+  assert.equal(cargoMissing, "cosmwasm_dependency_missing");
+  const wasmdMissing = classifyCosmwasmFailure(
+    { ok: false, exit_code: 127, stderr: "wasmd: command not found", stdout: "" },
+    false,
+  );
+  assert.equal(wasmdMissing, "cosmwasm_dependency_missing");
+  const compileErr = classifyCosmwasmFailure(
+    { ok: false, exit_code: 1, stderr: "", stdout: "error[E0599]: no method named foo" },
+    false,
+  );
+  assert.equal(compileErr, "cargo_compile_failed");
+});
+
+test("substrate runner rejects extra_args not in the cargo allowlist", async () => {
+  const { runSubstrateTest } = require("../mcp/lib/substrate-runner.js");
+  // Need a real Cargo.toml to pass the harness path check. Use a temp dir.
+  const tmpRoot = path.join(os.homedir(), "bob-substrate-allowlist-test-" + Math.random().toString(36).slice(2));
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  fs.writeFileSync(path.join(tmpRoot, "Cargo.toml"), "[package]\nname = \"test\"\nversion = \"0.1.0\"\n");
+  try {
+    await assert.rejects(async () => runSubstrateTest({
+      workdir: tmpRoot,
+      matchTest: "test_x",
+      network: null,
+      extraArgs: ["--release"],
+      timeoutMs: 5000,
+    }), /not in the substrate cargo allowlist/);
+    // --workspace is intentionally NOT allowlisted; running tests across
+    // every workspace member compounds compile-time blast radius.
+    await assert.rejects(async () => runSubstrateTest({
+      workdir: tmpRoot,
+      matchTest: "test_x",
+      network: null,
+      extraArgs: ["--workspace"],
+      timeoutMs: 5000,
+    }), /not in the substrate cargo allowlist/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("cosmwasm runner rejects extra_args not in the cargo allowlist", async () => {
+  const { runCosmwasmTest } = require("../mcp/lib/cosmwasm-runner.js");
+  const tmpRoot = path.join(os.homedir(), "bob-cosmwasm-allowlist-test-" + Math.random().toString(36).slice(2));
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  fs.writeFileSync(path.join(tmpRoot, "Cargo.toml"), "[package]\nname = \"test\"\nversion = \"0.1.0\"\n");
+  try {
+    await assert.rejects(async () => runCosmwasmTest({
+      workdir: tmpRoot,
+      matchTest: "test_x",
+      network: null,
+      extraArgs: ["--target=wasm32-unknown-unknown"],
+      timeoutMs: 5000,
+    }), /not in the cosmwasm cargo allowlist/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("substrate runner rejects harness without Cargo.toml at root", async () => {
+  const { runSubstrateTest } = require("../mcp/lib/substrate-runner.js");
+  const tmpRoot = path.join(os.homedir(), "bob-substrate-no-cargo-" + Math.random().toString(36).slice(2));
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  try {
+    await assert.rejects(async () => runSubstrateTest({
+      workdir: tmpRoot,
+      matchTest: "test_x",
+      network: null,
+      timeoutMs: 5000,
+    }), /must contain Cargo.toml at the root/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("cosmwasm runner rejects harness without Cargo.toml at root", async () => {
+  const { runCosmwasmTest } = require("../mcp/lib/cosmwasm-runner.js");
+  const tmpRoot = path.join(os.homedir(), "bob-cosmwasm-no-cargo-" + Math.random().toString(36).slice(2));
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  try {
+    await assert.rejects(async () => runCosmwasmTest({
+      workdir: tmpRoot,
+      matchTest: "test_x",
+      network: null,
+      timeoutMs: 5000,
+    }), /must contain Cargo.toml at the root/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("bech32 mixed-case rejection happens at findings layer with stable error shape", () => {
+  const { normalizeBech32Address } = require("../mcp/lib/findings.js");
+  // BIP-0173 forbids mixed-case bech32 — the spec is explicit. We test the
+  // normalizer directly so it's clear which layer enforces this.
+  assert.equal(normalizeBech32Address("Osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusq4z5ese"), null);
+  assert.equal(normalizeBech32Address("OSMO1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusq4z5ese"), null);
+  // All-uppercase is accepted (BIP-0173 allows it; we lowercase for dedup).
+  assert.equal(
+    normalizeBech32Address("OSMO1QYPQXPQ9QCRSSZG2PVXQ6RS0ZQG3YYC5Z5TPWXQERGD3C8G7RUSQ4Z5ESE"),
+    "osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusq4z5ese",
+  );
+  // Internal whitespace is rejected: bech32 chars are ASCII 33..126, space=32.
+  assert.equal(normalizeBech32Address("osmo1qypq xpq9"), null);
+});
+
+test("substrate-client rejects malformed SS58", () => {
+  const { isSs58Address } = require("../mcp/lib/substrate-client.js");
+  assert.equal(isSs58Address("5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"), true);
+  assert.equal(isSs58Address("0x" + "ab".repeat(20)), false);
+  assert.equal(isSs58Address("osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5"), false);
+  assert.equal(isSs58Address("short"), false);
+  assert.equal(isSs58Address(""), false);
+});
+
+test("cosmwasm-client rejects malformed bech32", () => {
+  const { isBech32Address } = require("../mcp/lib/cosmwasm-client.js");
+  assert.equal(isBech32Address("osmo1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusq4z5ese"), true);
+  assert.equal(isBech32Address("0x" + "ab".repeat(20)), false);
+  assert.equal(isBech32Address("5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"), false);
+  assert.equal(isBech32Address("noseparator"), false);
+});
+
+test("sc_evidence rejects EVM-canonical 40-hex address when chain_family is aptos or sui", () => {
+  const { normalizeFindingRecord } = require("../mcp/lib/findings.js");
+  // A hunter pastes Vitalik's address (or any 0x + 40 hex EVM address) into a
+  // Move-family sc_evidence. Without the EVM-shape rejection, the address
+  // would silently be left-padded to 64 hex and stored as a Move address
+  // belonging to the wrong family. The new check refuses 0x + 40 hex.
+  const evmAddress = "0x742d35Cc6634C0532925a3b844Bc9e7595f7AbCD";
+  for (const family of ["aptos", "sui"]) {
+    const networkValue = family === "aptos" ? "mainnet" : "mainnet";
+    assert.throws(() => normalizeFindingRecord({
+      id: "F-1",
+      target_domain: "example.com",
+      title: "x",
+      severity: "low",
+      cwe: null,
+      endpoint: "x",
+      description: "x",
+      proof_of_concept: "y",
+      response_evidence: null,
+      impact: null,
+      validated: true,
+      wave: null,
+      agent: null,
+      surface_id: null,
+      surface_type: "smart_contract",
+      sc_evidence: {
+        chain_family: family,
+        chain_id: networkValue,
+        contract_address: evmAddress,
+        harness_path: os.homedir(),
+        match_test: "test_x",
+      },
+    }), /looks like a canonical EVM address.*chain_family='/, `Move family '${family}' must reject EVM 40-hex shape`);
+  }
+  // Real Move addresses with 12 leading zero bytes are still accepted in
+  // canonical 64-hex form.
+  const finding = normalizeFindingRecord({
+    id: "F-1",
+    target_domain: "example.com",
+    title: "x",
+    severity: "low",
+    cwe: null,
+    endpoint: "x",
+    description: "x",
+    proof_of_concept: "y",
+    response_evidence: null,
+    impact: null,
+    validated: true,
+    wave: null,
+    agent: null,
+    surface_id: null,
+    surface_type: "smart_contract",
+    sc_evidence: {
+      chain_family: "aptos",
+      chain_id: "mainnet",
+      contract_address: "0x" + "0".repeat(24) + "742d35cc6634c0532925a3b844bc9e7595f7abcd",
+      harness_path: os.homedir(),
+      match_test: "test_x",
+    },
+  });
+  assert.equal(
+    finding.sc_evidence.contract_address,
+    "0x" + "0".repeat(24) + "742d35cc6634c0532925a3b844bc9e7595f7abcd",
+    "canonical 64-hex address with 12 leading zero bytes is still accepted",
+  );
+});
+
+test("aptos runner classifies CLI usage errors as aptos_dependency_missing", () => {
+  const { classifyAptosFailure } = require("../mcp/lib/aptos-runner.js");
+  // Old aptos CLI (pre-1.0) doesn't support --package-dir.
+  const oldPackageDir = classifyAptosFailure(
+    { ok: false, exit_code: 1, stderr: "error: unrecognized argument --package-dir", stdout: "" },
+    false,
+  );
+  assert.equal(oldPackageDir, "aptos_dependency_missing");
+  const wrongFlag = classifyAptosFailure(
+    { ok: false, exit_code: 1, stderr: "error: Found argument '--filter' which wasn't expected, or isn't valid in this context", stdout: "" },
+    false,
+  );
+  assert.equal(wrongFlag, "aptos_dependency_missing");
+  const missingPositional = classifyAptosFailure(
+    { ok: false, exit_code: 1, stderr: "error: The following required arguments were not provided:\n  <PACKAGE_PATH>", stdout: "" },
+    false,
+  );
+  assert.equal(missingPositional, "aptos_dependency_missing");
+});
+
+test("sui runner classifies CLI usage errors as sui_dependency_missing", () => {
+  const { classifySuiFailure } = require("../mcp/lib/sui-runner.js");
+  // Older sui CLIs may not accept --filter / --path.
+  const oldFilter = classifySuiFailure(
+    { ok: false, exit_code: 1, stderr: "error: unrecognized argument --filter", stdout: "" },
+    false,
+  );
+  assert.equal(oldFilter, "sui_dependency_missing");
+  const oldPath = classifySuiFailure(
+    { ok: false, exit_code: 1, stderr: "error: unexpected argument '--path' found", stdout: "" },
+    false,
+  );
+  assert.equal(oldPath, "sui_dependency_missing");
+});
+
+test("Move tools register with verifier and evidence role bundles (so balanced/brutalist/final + evidence-agent can re-run Aptos/Sui PoCs)", () => {
+  const tools = [
+    "bounty_aptos_fetch_resource",
+    "bounty_aptos_fetch_module",
+    "bounty_aptos_run",
+    "bounty_sui_fetch_object",
+    "bounty_sui_fetch_package",
+    "bounty_sui_run",
+  ];
+  for (const name of tools) {
+    const meta = TOOL_MANIFEST[name];
+    assert.ok(meta, `${name} is in TOOL_MANIFEST`);
+    assert.deepEqual(meta.role_bundles, ["hunter-move", "verifier", "evidence"], `${name} exposes role_bundles=[hunter-move, verifier, evidence]`);
+    assert.equal(meta.network_access, true, `${name} declares network_access`);
+  }
+});
+
+test("bounty_record_finding tolerates legacy findings.jsonl rows with no surface_type or sc_evidence", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    const findingsPath = findingsJsonlPath(domain);
+    fs.mkdirSync(path.dirname(findingsPath), { recursive: true });
+    // Hand-write a legacy row representing findings without surface_type.
+    const legacy = {
+      id: "F-1",
+      target_domain: domain,
+      title: "IDOR",
+      severity: "high",
+      cwe: "CWE-639",
+      endpoint: "/api/export",
+      description: "Cross-account PII",
+      proof_of_concept: "curl ...",
+      response_evidence: null,
+      impact: null,
+      validated: true,
+      wave: null,
+      agent: null,
+      surface_id: null,
+      auth_profile: null,
+      dedupe_key: "deadbeef".repeat(3),
+    };
+    fs.writeFileSync(findingsPath, JSON.stringify(legacy) + "\n");
+    const out = JSON.parse(readFindings({ target_domain: domain }));
+    assert.equal(out.findings.length, 1);
+    assert.equal(out.findings[0].surface_type, null);
+    assert.equal(out.findings[0].sc_evidence, null);
   });
 });
 
@@ -5153,7 +8152,7 @@ test("bounty_read_findings, bounty_list_findings, and bounty_wave_status return 
         recent: [],
       },
       traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
-      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, note: null },
+      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, note: null },
       surface_leads: { total: 0, high_confidence_unpromoted: 0, promoted: 0 },
       findings_summary: [],
     });
@@ -5248,7 +8247,7 @@ test("bounty_list_findings and bounty_wave_status keep their external shapes whi
         recent: [],
       },
       traffic: { total: 0, shown: 0, omitted: 0, cap: 0, authenticated_count: 0, by_status_class: { "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, other: 0 }, recent: [] },
-      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, note: null },
+      circuit_breaker: { threshold: 3, tripped_hosts: [], tripped_count: 0, below_threshold_hosts: [], below_threshold_count: 0, note: null },
       surface_leads: { total: 0, high_confidence_unpromoted: 0, promoted: 0 },
       findings_summary: [
         {
@@ -6285,6 +9284,51 @@ test("bounty_http_scan resolves auth by explicit target_domain and first-party s
       assert.deepEqual(requestedUrls, ["https://api.target.com/private"]);
     });
   });
+});
+
+test("bounty_evm_call resolves the latest block via eth_blockNumber and returns block_used", async () => {
+  const originalFetch = global.fetch;
+  try {
+    let callCount = 0;
+    global.fetch = async (_url, opts) => {
+      callCount += 1;
+      const body = JSON.parse(opts.body);
+      if (body.method === "eth_call") {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ jsonrpc: "2.0", id: body.id, result: "0x" + "00".repeat(31) + "01" }),
+          body: null,
+        };
+      }
+      if (body.method === "eth_blockNumber") {
+        // Return decimal 19_500_000 in hex
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({ jsonrpc: "2.0", id: body.id, result: "0x129a8c0" }),
+          body: null,
+        };
+      }
+      return { ok: false, status: 500, text: async () => "" };
+    };
+
+    const result = await executeTool("bounty_evm_call", {
+      chain_id: 1,
+      to: "0x" + "11".repeat(20),
+      data: "0x70a08231" + "00".repeat(32),
+      endpoints: ["https://eth.llamarpc.com"],
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.data.block, "latest");
+    // Hex 0x129a8c0 = 19_507_392
+    assert.equal(result.data.block_used, 19_507_392);
+    assert.ok(callCount >= 2, "expected at least one eth_call and one eth_blockNumber");
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 // ── bounty_temp_email tests ──
@@ -7421,6 +10465,97 @@ test("circuit breaker summary marks repeated failures per host without blocking 
   });
 });
 
+test("buildCircuitBreakerSummary surfaces below-threshold per-host failures in below_threshold_hosts", () => {
+  // The veda.tech regression: 2 internal errors + 2 network-unreachable
+  // events on the same host produced no tripped breaker (below the
+  // ≥3-per-host threshold) and no near-threshold visibility either.
+  // Operators looking at a session with errors but no warnings could not
+  // tell whether the threshold was reached and suppressed or never crossed.
+  // below_threshold_hosts surfaces that data without false escalation.
+  const records = [
+    {
+      version: 1,
+      ts: "2026-05-02T00:00:00.000Z",
+      target_domain: "example.com",
+      method: "GET",
+      url: "https://api.example.com/x",
+      host: "api.example.com",
+      status: 200,
+      error: null,
+      scope_decision: "allowed",
+    },
+    {
+      version: 1,
+      ts: "2026-05-02T00:00:01.000Z",
+      target_domain: "example.com",
+      method: "GET",
+      url: "https://api.example.com/x",
+      host: "api.example.com",
+      status: 403,
+      error: null,
+      scope_decision: "allowed",
+    },
+    {
+      version: 1,
+      ts: "2026-05-02T00:00:02.000Z",
+      target_domain: "example.com",
+      method: "GET",
+      url: "https://api.example.com/y",
+      host: "api.example.com",
+      status: null,
+      error: "timeout after 5000ms",
+      scope_decision: "request_error",
+    },
+    // A host with 3 failures — crosses the threshold and should appear in
+    // tripped_hosts, NOT in below_threshold_hosts.
+    {
+      version: 1,
+      ts: "2026-05-02T00:00:03.000Z",
+      target_domain: "example.com",
+      method: "GET",
+      url: "https://hot.example.com/z",
+      host: "hot.example.com",
+      status: 429,
+      error: null,
+      scope_decision: "allowed",
+    },
+    {
+      version: 1,
+      ts: "2026-05-02T00:00:04.000Z",
+      target_domain: "example.com",
+      method: "GET",
+      url: "https://hot.example.com/z",
+      host: "hot.example.com",
+      status: 429,
+      error: null,
+      scope_decision: "allowed",
+    },
+    {
+      version: 1,
+      ts: "2026-05-02T00:00:05.000Z",
+      target_domain: "example.com",
+      method: "GET",
+      url: "https://hot.example.com/z",
+      host: "hot.example.com",
+      status: 403,
+      error: null,
+      scope_decision: "allowed",
+    },
+  ];
+
+  const summary = buildCircuitBreakerSummary(records);
+  assert.equal(summary.tripped_count, 1);
+  assert.equal(summary.tripped_hosts[0].host, "hot.example.com");
+  assert.equal(summary.below_threshold_count, 1);
+  assert.equal(summary.below_threshold_hosts[0].host, "api.example.com");
+  assert.equal(summary.below_threshold_hosts[0].failures, 2);
+  // No host appears in both lists.
+  assert.equal(
+    summary.below_threshold_hosts.some((item) => item.host === "hot.example.com"),
+    false,
+  );
+});
+
 test("pipeline analytics surfaces egress and geofence warnings from HTTP audit", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -7662,8 +10797,192 @@ test("bounty_read_hunter_brief returns surface, exclusions, and valid IDs", () =
     assert.equal(brief.auth_hint, undefined);
     assert.match(brief.auth_profiles_hint, /bounty_list_auth_profiles/);
     assert.doesNotMatch(JSON.stringify(brief), /auth\.json/i);
+    // Web brief shape: include the HTTP-flavored intel fields, omit SC-only fields.
+    assert.ok(Object.prototype.hasOwnProperty.call(brief, "bypass_table"), "web brief must expose bypass_table");
+    assert.ok(Object.prototype.hasOwnProperty.call(brief, "techniques"), "web brief must expose techniques");
+    assert.ok(Object.prototype.hasOwnProperty.call(brief, "payload_hints"), "web brief must expose payload_hints");
+    assert.ok(Object.prototype.hasOwnProperty.call(brief, "knowledge_summary"), "web brief must expose knowledge_summary");
+    assert.ok(Object.prototype.hasOwnProperty.call(brief, "traffic_summary"), "web brief must expose traffic_summary");
+    assert.ok(Object.prototype.hasOwnProperty.call(brief, "audit_summary"), "web brief must expose audit_summary");
+    assert.ok(Object.prototype.hasOwnProperty.call(brief, "circuit_breaker_summary"), "web brief must expose circuit_breaker_summary");
+    assert.ok(Object.prototype.hasOwnProperty.call(brief, "intel_hints"), "web brief must expose intel_hints");
+    assert.ok(Object.prototype.hasOwnProperty.call(brief, "static_scan_hints"), "web brief must expose static_scan_hints");
     assert.strictEqual(brief.bob_spec_status, undefined);
     assert.strictEqual(brief.rpc_pool, undefined);
+  });
+});
+
+test("bounty_read_hunter_brief uses smart_contract_evm shape when the assignment routes to that pack", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      hunt_wave: 1,
+      pending_wave: 1,
+      dead_ends: [],
+      waf_blocked_endpoints: [],
+    });
+    seedAttackSurfaces(domain, [{
+      id: "surface-evm-1",
+      surface_type: "smart_contract",
+      chain_family: "evm",
+      chain_id: "1",
+      hosts: [`https://${domain}`],
+      foundry_harness_path: "/tmp/harness/evm",
+    }]);
+    seedAssignments(domain, 1, [{
+      agent: "a1",
+      surface_id: "surface-evm-1",
+      capability_pack: "smart_contract_evm",
+      hunter_agent: "hunter-evm-agent",
+      brief_profile: "smart_contract_evm",
+    }]);
+
+    const brief = JSON.parse(readHunterBrief({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+    }));
+
+    assert.equal(brief.run_context.capability_pack, "smart_contract_evm");
+    assert.equal(brief.run_context.brief_profile, "smart_contract_evm");
+    assert.equal(brief.run_context.hunter_agent, "hunter-evm-agent");
+
+    // SC profile must expose typed bob_spec_status and rpc_pool, not just
+    // a present-but-undefined slot. hasOwnProperty + null-guard catches
+    // the regression where dispatch returns the wrong shape.
+    assert.ok(brief.bob_spec_status, "smart-contract brief must expose bob_spec_status");
+    assert.equal(typeof brief.bob_spec_status, "object");
+    assert.equal(typeof brief.bob_spec_status.present, "boolean");
+    assert.ok(Object.prototype.hasOwnProperty.call(brief, "rpc_pool"), "smart-contract brief must expose rpc_pool");
+    assert.equal(typeof brief.rpc_pool, "object");
+    assert.ok(Array.isArray(brief.rpc_pool.endpoints) || brief.rpc_pool.endpoints == null);
+    assert.equal(brief.surface.foundry_harness_path, "/tmp/harness/evm",
+      "EVM hunter must receive its foundry_harness_path scalar");
+
+    // SC profile: omit the web-flavored fields the SC hunter doesn't have tools for.
+    for (const webField of [
+      "bypass_table",
+      "techniques",
+      "payload_hints",
+      "knowledge_summary",
+      "traffic_summary",
+      "audit_summary",
+      "circuit_breaker_summary",
+      "intel_hints",
+      "static_scan_hints",
+      "auth_profiles_hint",
+    ]) {
+      assert.ok(
+        !Object.prototype.hasOwnProperty.call(brief, webField),
+        `smart-contract brief must omit ${webField} (web-flavored)`,
+      );
+    }
+
+    // Cross-cutting fields stay in both profiles.
+    for (const sharedField of [
+      "run_context",
+      "target_url",
+      "wave",
+      "agent",
+      "surface",
+      "surface_limits",
+      "valid_surface_ids",
+      "dead_ends",
+      "waf_blocked_endpoints",
+      "exclusions_summary",
+      "coverage_summary",
+      "ranking_summary",
+    ]) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(brief, sharedField),
+        `smart-contract brief must keep cross-cutting ${sharedField}`,
+      );
+    }
+  });
+});
+
+test("bounty_read_hunter_brief preserves per-chain harness paths for every smart-contract pack", () => {
+  // slimSurfaceForBrief whitelists each chain's harness_path scalar.
+  // SVM/Move/Substrate/CosmWasm hunter prompts read anchor_harness_path /
+  // move_harness_path / ink_harness_path / cargo_harness_path /
+  // cosmwasm_harness_path; if those get stripped, hunters falsely report
+  // missing harnesses and write partial handoffs.
+  const cases = [
+    { pack: "smart_contract_svm",       chain_family: "svm",       agent: "hunter-svm-agent",       field: "anchor_harness_path",   value: "/tmp/harness/svm" },
+    { pack: "smart_contract_aptos",     chain_family: "aptos",     agent: "hunter-move-agent",      field: "move_harness_path",     value: "/tmp/harness/aptos" },
+    { pack: "smart_contract_sui",       chain_family: "sui",       agent: "hunter-move-agent",      field: "move_harness_path",     value: "/tmp/harness/sui" },
+    { pack: "smart_contract_substrate", chain_family: "substrate", agent: "hunter-substrate-agent", field: "ink_harness_path",      value: "/tmp/harness/ink" },
+    { pack: "smart_contract_substrate", chain_family: "substrate", agent: "hunter-substrate-agent", field: "cargo_harness_path",    value: "/tmp/harness/cargo" },
+    { pack: "smart_contract_cosmwasm",  chain_family: "cosmwasm",  agent: "hunter-cosmwasm-agent",  field: "cosmwasm_harness_path", value: "/tmp/harness/cw" },
+  ];
+  for (const { pack, chain_family, agent, field, value } of cases) {
+    withTempHome(() => {
+      const domain = "example.com";
+      seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+      seedAttackSurfaces(domain, [{
+        id: "sc-1",
+        surface_type: "smart_contract",
+        chain_family,
+        chain_id: "1",
+        hosts: [`https://${domain}`],
+        [field]: value,
+      }]);
+      seedAssignments(domain, 1, [{
+        agent: "a1",
+        surface_id: "sc-1",
+        capability_pack: pack,
+        hunter_agent: agent,
+        brief_profile: pack,
+      }]);
+      const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+      assert.equal(brief.surface[field], value, `${pack} hunter must receive ${field}`);
+    });
+  }
+});
+
+test("bounty_read_hunter_brief throws on an unsupported brief_profile rather than fail-open to smart-contract", () => {
+  // Regression guard for fail-open: the dispatch must reject profiles the
+  // capability-pack registry never declared, even if route metadata is
+  // forged on disk.
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurface(domain, ["surface-a"]);
+    // We can't get an unsupported profile through normalizeAssignmentRouteMetadata
+    // because that itself validates against the pack registry. So we forge the
+    // assignment file directly to reach the dispatch.
+    const dir = sessionDir(domain);
+    const assignmentsPath = path.join(dir, "wave-1-assignments.json");
+    fs.writeFileSync(assignmentsPath, JSON.stringify({
+      wave_number: 1,
+      assignments: [{
+        agent: "a1",
+        surface_id: "surface-a",
+        capability_pack: "smart_contract_evm",
+        hunter_agent: "hunter-evm-agent",
+        brief_profile: "smart_contract_evm",
+      }],
+    }));
+    // Sanity: this assignment is valid and produces an SC brief.
+    JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+    // Mutate the on-disk assignment to a profile no pack declares. The
+    // route-metadata validator rejects it before dispatch, which is the
+    // correct fail-loud behavior.
+    fs.writeFileSync(assignmentsPath, JSON.stringify({
+      wave_number: 1,
+      assignments: [{
+        agent: "a1",
+        surface_id: "surface-a",
+        capability_pack: "experimental_mobile",
+        hunter_agent: "mobile-hunter-agent",
+        brief_profile: "mobile_api",
+      }],
+    }));
+    assert.throws(
+      () => readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }),
+      /unknown capability_pack|Unsupported brief profile/,
+    );
   });
 });
 
@@ -7862,6 +11181,85 @@ test("bounty_read_hunter_brief rejects unassigned agent", () => {
       /Agent a9 is not assigned/,
     );
   });
+});
+
+test("runtime resource resolution prefers neutral env paths and preserves Claude fallback", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-resources-"));
+  try {
+    const neutralResources = path.join(root, "neutral-resources");
+    const claudeProject = path.join(root, "claude-project");
+    fs.mkdirSync(path.join(neutralResources, "knowledge"), { recursive: true });
+    fs.mkdirSync(path.join(claudeProject, ".claude", "knowledge"), { recursive: true });
+    fs.writeFileSync(path.join(neutralResources, "knowledge", "source.txt"), "neutral\n", "utf8");
+    fs.writeFileSync(path.join(claudeProject, ".claude", "knowledge", "source.txt"), "claude\n", "utf8");
+
+    withEnv({
+      BOB_CLIENT: "codex",
+      BOB_PROJECT_DIR: path.join(root, "bob-project"),
+      BOB_RESOURCE_DIR: neutralResources,
+      CLAUDE_PROJECT_DIR: claudeProject,
+    }, () => {
+      assert.equal(runtimeClient(), "codex");
+      assert.equal(readResourceText("knowledge", "source.txt"), "neutral\n");
+      assert.equal(resolveResourcePath("knowledge", "source.txt"), path.join(neutralResources, "knowledge", "source.txt"));
+    });
+
+    withEnv({
+      BOB_CLIENT: undefined,
+      BOB_PROJECT_DIR: undefined,
+      BOB_RESOURCE_DIR: undefined,
+      CLAUDE_PROJECT_DIR: claudeProject,
+    }, () => {
+      assert.equal(runtimeClient(), "claude");
+      assert.equal(readResourceText("knowledge", "source.txt"), "claude\n");
+      assert.equal(resolveResourcePath("knowledge", "source.txt"), path.join(claudeProject, ".claude", "knowledge", "source.txt"));
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bounty_read_hunter_brief loads knowledge and bypass tables from BOB_RESOURCE_DIR", () => {
+  const resources = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-resource-dir-"));
+  try {
+    fs.mkdirSync(path.join(resources, "knowledge"), { recursive: true });
+    fs.mkdirSync(path.join(resources, "bypass-tables"), { recursive: true });
+    fs.writeFileSync(path.join(resources, "bypass-tables", "rest-api.txt"), "CUSTOM REST BYPASS TABLE\n", "utf8");
+    fs.writeFileSync(path.join(resources, "knowledge", "hunter-techniques.json"), `${JSON.stringify({
+      version: 1,
+      entries: [{
+        id: "acmecms",
+        title: "AcmeCMS custom guidance",
+        match: { tech: ["acmecms"] },
+        techniques: ["Use the adapter-provided knowledge directory for AcmeCMS checks."],
+        payload_hints: ["/acme/admin/export"],
+      }],
+    }, null, 2)}\n`, "utf8");
+
+    withTempHome(() => withEnv({
+      BOB_RESOURCE_DIR: resources,
+      BOB_PROJECT_DIR: undefined,
+      CLAUDE_PROJECT_DIR: undefined,
+    }, () => {
+      const domain = "example.com";
+      seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+      seedAttackSurfaces(domain, [{
+        id: "surface-custom",
+        hosts: [`https://${domain}`],
+        tech_stack: ["AcmeCMS"],
+        endpoints: ["/acme"],
+        interesting_params: ["id"],
+      }]);
+      seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-custom" }]);
+
+      const brief = JSON.parse(readHunterBrief({ target_domain: domain, wave: "w1", agent: "a1" }));
+      assert.equal(brief.bypass_table, "CUSTOM REST BYPASS TABLE");
+      assert.deepEqual(brief.techniques.map((entry) => entry.id), ["acmecms"]);
+      assert.match(JSON.stringify(brief.payload_hints), /\/acme\/admin\/export/);
+    }));
+  } finally {
+    fs.rmSync(resources, { recursive: true, force: true });
+  }
 });
 
 test("bounty_read_hunter_brief includes WordPress-specific curated guidance", () => {
@@ -8290,6 +11688,66 @@ test("context budget and technique-pack MCP tools are deterministic and bounded"
     const envelope = await executeTool("bounty_read_technique_pack", { pack_id: "unknown-pack", mode: "summary" });
     assert.equal(envelope.ok, false);
     assert.equal(envelope.error.code, "NOT_FOUND");
+  });
+});
+
+test("bounty_read_technique_pack full mode enforces per-assignment read budget", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 1, pending_wave: 1 });
+    seedAttackSurfaces(domain, [{
+      id: "surface-graphql",
+      surface_type: "graphql",
+      hosts: [`https://${domain}`],
+      tech_stack: ["GraphQL", "REST API", "WordPress"],
+      endpoints: ["/graphql", "/api/v1/users", "/wp-json/wp/v2/users"],
+      interesting_params: ["query", "id", "author"],
+    }]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-graphql" }]);
+
+    const summary = await executeTool("bounty_read_technique_pack", { pack_id: "graphql", mode: "summary" });
+    assert.equal(summary.ok, true);
+    assert.equal(fs.existsSync(techniquePackReadsJsonlPath(domain)), false);
+
+    const missingContext = await executeTool("bounty_read_technique_pack", { pack_id: "graphql", mode: "full" });
+    assert.equal(missingContext.ok, false);
+    assert.equal(missingContext.error.code, "INVALID_ARGUMENTS");
+    assert.match(missingContext.error.message, /full_pack_read_limit/);
+
+    const context = {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-graphql",
+      mode: "full",
+    };
+
+    const first = await executeTool("bounty_read_technique_pack", { ...context, pack_id: "graphql" });
+    assert.equal(first.ok, true);
+    assert.equal(first.data.full_read_budget.full_pack_read_limit, 2);
+    assert.equal(first.data.full_read_budget.full_packs_read, 1);
+    assert.equal(first.data.full_read_budget.remaining_full_pack_reads, 1);
+    assert.equal(first.data.full_read_budget.already_read, false);
+    assert.equal(first.data.full_read_budget.log_path, techniquePackReadsJsonlPath(domain));
+
+    const second = await executeTool("bounty_read_technique_pack", { ...context, pack_id: "generic-rest-api" });
+    assert.equal(second.ok, true);
+    assert.equal(second.data.full_read_budget.full_packs_read, 2);
+    assert.equal(second.data.full_read_budget.remaining_full_pack_reads, 0);
+
+    const reread = await executeTool("bounty_read_technique_pack", { ...context, pack_id: "graphql" });
+    assert.equal(reread.ok, true);
+    assert.equal(reread.data.full_read_budget.already_read, true);
+    assert.equal(reread.data.full_read_budget.full_packs_read, 2);
+
+    const records = readTechniquePackReadRecordsFromJsonl(domain);
+    assert.deepEqual(records.map((record) => record.pack_id), ["graphql", "generic-rest-api"]);
+
+    const third = await executeTool("bounty_read_technique_pack", { ...context, pack_id: "wordpress" });
+    assert.equal(third.ok, false);
+    assert.equal(third.error.code, "INVALID_ARGUMENTS");
+    assert.match(third.error.message, /full_pack_read_limit/);
+    assert.equal(readTechniquePackReadRecordsFromJsonl(domain).length, 2);
   });
 });
 
@@ -8808,14 +12266,16 @@ test("bounty_wave_status coverage_pct is 100 when all surfaces are LOW", () => {
 test("bounty_wave_status returns open requeue coverage surface ids and transition blockers", () => {
   withTempHome(() => {
     const domain = "example.com";
+    // surface-a has unfinished coverage and is NOT in `explored`, so the
+    // surface is genuinely still open and the gate must block.
     seedSessionState(domain, {
       phase: "HUNT",
       hunt_wave: 1,
       pending_wave: null,
-      explored: ["surface-a"],
+      explored: [],
     });
     seedAttackSurfaces(domain, [
-      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "MEDIUM" },
     ]);
     seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
     logCoverage({
@@ -8836,6 +12296,50 @@ test("bounty_wave_status returns open requeue coverage surface ids and transitio
     assert.deepEqual(result.coverage.open_requeue_surface_ids, ["surface-a"]);
     assert.deepEqual(result.coverage.unexplored_high_surface_ids, []);
     assert.equal(result.transition_blockers.some((item) => item.code === "open_requeue_coverage"), true);
+  });
+});
+
+test("bounty_wave_status excludes explored surfaces from open_requeue_surface_ids", () => {
+  // The veda.tech regression: a surface had a `requeue` coverage row from
+  // an earlier wave, then was closed by a `surface_status: complete`
+  // handoff in a later wave (which populated state.explored). wave_status
+  // used to keep the surface in open_requeue_surface_ids forever because
+  // no later coverage row was written for the same (endpoint, bug_class)
+  // tuple. The complete handoff is the authoritative "surface is closed"
+  // signal — coverage rows are endpoint-level history, not surface state.
+  withTempHome(() => {
+    const domain = "explored-stale-coverage.example.com";
+    seedSessionState(domain, {
+      phase: "HUNT",
+      hunt_wave: 2,
+      pending_wave: null,
+      explored: ["surface-a"],
+    });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "MEDIUM" },
+    ]);
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+    seedAssignments(domain, 2, [{ agent: "a1", surface_id: "surface-a" }]);
+    logCoverage({
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      entries: [{
+        endpoint: "/api/legacy",
+        method: "GET",
+        bug_class: "idor",
+        status: "requeue",
+        evidence_summary: "endpoint-level requeue from earlier wave",
+      }],
+    });
+
+    const result = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.deepEqual(result.coverage.open_requeue_surface_ids, []);
+    assert.equal(
+      result.transition_blockers.some((item) => item.code === "open_requeue_coverage"),
+      false,
+    );
   });
 });
 

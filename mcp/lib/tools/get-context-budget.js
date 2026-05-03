@@ -16,7 +16,7 @@ module.exports = Object.freeze({
     required: ["capability_pack"],
   },
   handler: getContextBudget,
-  role_bundles: ["hunter", "hunter-web", "orchestrator", "router"],
+  role_bundles: ["hunter-shared", "orchestrator"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

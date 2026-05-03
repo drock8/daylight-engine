@@ -40,7 +40,7 @@ Latest-session detection must pick the newest target directory by `pipeline-even
 ## Read Order
 First, read the passive update cache if the helper is installed:
 ```
-node "${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/bob-update.js" status "${CLAUDE_PROJECT_DIR:-$PWD}" --json
+node "$CLAUDE_PROJECT_DIR/.claude/hooks/bob-update.js" status "$CLAUDE_PROJECT_DIR" --json
 ```
 This command must only read the local update cache. Do not run network update checks from `/bob-status`.
 
@@ -56,10 +56,11 @@ Then use the following only if needed for concise status fields:
 - `bounty_read_wave_handoffs({ target_domain })` when a wave is pending or wave health is unclear.
 - `bounty_read_findings({ target_domain })` for finding IDs/severity counts when analytics is incomplete.
 - `bounty_read_verification_round({ target_domain, round: "final" })` for reportable survivor count.
-- `bounty_read_evidence_packs({ target_domain })` only when `bounty_read_pipeline_analytics.data.sessions[0].evidence` is missing/incomplete or evidence details need confirmation.
 - `bounty_read_grade_verdict({ target_domain })` for grade verdict and report readiness.
 
 If MCP reads are unavailable, say `Status fallback mode: MCP reads unavailable or incomplete.` Do not read protected raw session artifacts directly; use file presence and mtimes only for locator fields and label uncertain fields as unknown.
+
+Optional: call `bounty_read_evidence_packs({ target_domain })` only when `bounty_read_pipeline_analytics.data.sessions[0].evidence` is missing/incomplete or evidence details need confirmation.
 
 ## Evidence Status
 Surface evidence status from `bounty_read_pipeline_analytics.data.sessions[0].evidence` whenever available. Print exactly one of:

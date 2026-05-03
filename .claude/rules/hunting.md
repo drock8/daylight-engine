@@ -19,3 +19,5 @@ Report only verified impact. Severity follows the demonstrated outcome, not the 
 Prefer assigned, high-value surfaces first: auth, admin, user data, money movement, uploads, key material, and real observed traffic from the hunter brief.
 
 Respect MCP safety feedback. Coverage, dead ends, WAF blocks, audit summaries, and circuit-breaker summaries exist to avoid duplicate testing and unsafe request loops.
+
+Smart-contract surfaces require an exploit hypothesis before stopping. "Audit reports this fixed", "function is admin/role/governance-gated", "trusted relayer/DVN/oracle handles this", and "existing test passes" are starting points, not termination conditions. The MCP server rejects `surface_status: complete` on a `smart_contract` surface unless a finding is recorded for that surface or `bypass_attempts[]` has at least one entry citing a `trust_assumptions[*].bypass_conditions` condition. If a needed harness is unavailable, record it in `blocked_harness_runs[]` with a `kind` and set `surface_status: partial`.

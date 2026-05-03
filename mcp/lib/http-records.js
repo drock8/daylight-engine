@@ -288,8 +288,7 @@ function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCU
     }
   }
 
-  const tripped = Array.from(byHost.values())
-    .filter((item) => item.failures >= threshold)
+  const sortedItems = Array.from(byHost.values())
     .map((item) => ({
       ...item,
       egress_profiles: Array.from(item.egress_profiles).sort(),
@@ -298,11 +297,22 @@ function buildCircuitBreakerSummary(records, { surface = null, threshold = CIRCU
       if (b.failures !== a.failures) return b.failures - a.failures;
       return a.host.localeCompare(b.host);
     });
+  const tripped = sortedItems.filter((item) => item.failures >= threshold);
+  // Hosts with at least one failure but still below threshold. Operators
+  // looking at a session that had errors but no warnings need to see this
+  // — otherwise they cannot tell whether the threshold was reached and
+  // suppressed, or never crossed. Threshold is the action gate; the
+  // reporting gate sits at the first failure.
+  const belowThreshold = sortedItems.filter(
+    (item) => item.failures > 0 && item.failures < threshold,
+  );
 
   return {
     threshold,
     tripped_hosts: tripped,
     tripped_count: tripped.length,
+    below_threshold_hosts: belowThreshold,
+    below_threshold_count: belowThreshold.length,
     note: tripped.length
       ? "Repeated 403/429/timeout results on these hosts. Prefer fewer replay variants, authenticated traffic-derived requests, or a different surface."
       : null,

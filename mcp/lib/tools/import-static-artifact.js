@@ -43,7 +43,7 @@ module.exports = Object.freeze({
     ]
   },
   handler: importStaticArtifact,
-  role_bundles: ["hunter", "hunter-web"],
+  role_bundles: ["hunter-web"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

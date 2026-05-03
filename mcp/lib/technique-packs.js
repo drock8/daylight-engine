@@ -1,11 +1,11 @@
 "use strict";
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const {
   TECHNIQUE_ATTEMPT_LOG_MAX_RECORDS,
   TECHNIQUE_ATTEMPT_STATUS_VALUES,
+  TECHNIQUE_PACK_READ_LOG_MAX_RECORDS,
 } = require("./constants.js");
 const {
   assertEnumValue,
@@ -25,6 +25,7 @@ const {
 } = require("./assignments.js");
 const {
   techniqueAttemptsJsonlPath,
+  techniquePackReadsJsonlPath,
   surfaceRoutesPath,
 } = require("./paths.js");
 const {
@@ -41,8 +42,15 @@ const {
 const {
   safeAppendPipelineEventDirect,
 } = require("./pipeline-analytics.js");
+const {
+  resourceCandidatePaths,
+} = require("./runtime-resources.js");
+const {
+  ERROR_CODES,
+  ToolError,
+} = require("./envelope.js");
 
-const HUNTER_KNOWLEDGE_FILE = path.join(".claude", "knowledge", "hunter-techniques.json");
+const HUNTER_KNOWLEDGE_FILE = Object.freeze(["knowledge", "hunter-techniques.json"]);
 const HUNTER_KNOWLEDGE_DEFAULT_ID = "generic-rest-api";
 const HUNTER_KNOWLEDGE_MAX_ENTRIES = 4;
 const HUNTER_KNOWLEDGE_MAX_CHARS = 4500;
@@ -56,13 +64,7 @@ const TECHNIQUE_FULL_ITEM_MAX_CHARS = 900;
 const TECHNIQUE_SELECTION_MAX_CHARS = 6000;
 
 function hunterKnowledgeCandidatePaths() {
-  const candidates = [];
-  if (process.env.CLAUDE_PROJECT_DIR) {
-    candidates.push(path.join(process.env.CLAUDE_PROJECT_DIR, HUNTER_KNOWLEDGE_FILE));
-  }
-  candidates.push(path.join(__dirname, "..", "..", HUNTER_KNOWLEDGE_FILE));
-  candidates.push(path.join(os.homedir(), HUNTER_KNOWLEDGE_FILE));
-  return candidates;
+  return resourceCandidatePaths(...HUNTER_KNOWLEDGE_FILE);
 }
 
 function loadHunterKnowledge() {
@@ -478,6 +480,171 @@ function readTechniquePack(packId, { mode = "summary" } = {}) {
   };
 }
 
+function normalizeTechniquePackReadRecord(record, { expectedDomain = null, lineNumber = null } = {}) {
+  if (record == null || typeof record !== "object" || Array.isArray(record)) {
+    throw new Error(lineNumber == null
+      ? "technique pack read record must be an object"
+      : `Malformed technique-pack-reads.jsonl at line ${lineNumber}: expected object`);
+  }
+
+  try {
+    const read = {
+      version: record.version == null
+        ? 1
+        : assertInteger(record.version, "version", { min: 1, max: 1 }),
+      ts: assertNonEmptyString(record.ts, "ts"),
+      target_domain: assertNonEmptyString(record.target_domain, "target_domain"),
+      wave: parseWaveId(record.wave),
+      agent: parseAgentId(record.agent),
+      surface_id: assertNonEmptyString(record.surface_id, "surface_id"),
+      pack_id: normalizeTechniquePackId(record.pack_id),
+      mode: assertEnumValue(record.mode, ["full"], "mode"),
+    };
+    if (expectedDomain != null && read.target_domain !== expectedDomain) {
+      throw new Error("target_domain mismatch");
+    }
+    return read;
+  } catch (error) {
+    if (lineNumber == null) {
+      throw error;
+    }
+    throw new Error(`Malformed technique-pack-reads.jsonl at line ${lineNumber}: ${error.message || String(error)}`);
+  }
+}
+
+function readTechniquePackReadRecordsFromJsonl(domain) {
+  const filePath = techniquePackReadsJsonlPath(domain);
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  const content = fs.readFileSync(filePath, "utf8");
+  if (!content.trim()) {
+    return [];
+  }
+
+  const records = [];
+  const lines = content.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim()) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch (error) {
+      throw new Error(`Malformed technique-pack-reads.jsonl at line ${index + 1}: ${error.message || String(error)}`);
+    }
+    records.push(normalizeTechniquePackReadRecord(parsed, {
+      expectedDomain: domain,
+      lineNumber: index + 1,
+    }));
+  }
+  return records;
+}
+
+function assertFullReadContext(args) {
+  const domain = normalizeOptionalText(args.target_domain, "target_domain");
+  const wave = normalizeOptionalText(args.wave, "wave");
+  const agent = normalizeOptionalText(args.agent, "agent");
+  const surfaceId = normalizeOptionalText(args.surface_id, "surface_id");
+  const missing = [];
+  if (!domain) missing.push("target_domain");
+  if (!wave) missing.push("wave");
+  if (!agent) missing.push("agent");
+  if (!surfaceId) missing.push("surface_id");
+  if (missing.length > 0) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `mode=full requires ${missing.join(", ")} so full_pack_read_limit can be enforced`,
+    );
+  }
+  return {
+    domain,
+    wave: parseWaveId(wave),
+    agent: parseAgentId(agent),
+    surface_id: surfaceId,
+  };
+}
+
+function assertPackMatchesAssignment(packResult, assignment) {
+  const capabilityPacks = packResult
+    && packResult.technique_pack
+    && Array.isArray(packResult.technique_pack.capability_packs)
+    ? packResult.technique_pack.capability_packs
+    : [];
+  if (!capabilityPacks.includes(assignment.capability_pack)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `technique pack ${packResult.technique_pack.id} is not compatible with capability_pack ${assignment.capability_pack}`,
+    );
+  }
+}
+
+function readTechniquePackForTool(args) {
+  const mode = args.mode || "summary";
+  if (mode !== "full") {
+    return JSON.stringify(readTechniquePack(args.pack_id, { mode }));
+  }
+
+  const context = assertFullReadContext(args);
+  const packId = normalizeTechniquePackId(args.pack_id);
+  const assignment = validateAssignedWaveAgentSurface(
+    context.domain,
+    context.wave,
+    context.agent,
+    context.surface_id,
+  );
+  const full = readTechniquePack(packId, { mode: "full" });
+  assertPackMatchesAssignment(full, assignment);
+
+  return withSessionLock(context.domain, () => {
+    const existingRecords = readTechniquePackReadRecordsFromJsonl(context.domain);
+    const matchingRecords = existingRecords.filter((record) =>
+      record.wave === context.wave
+      && record.agent === context.agent
+      && record.surface_id === context.surface_id
+      && record.mode === "full",
+    );
+    const readPackIds = new Set(matchingRecords.map((record) => record.pack_id));
+    const alreadyRead = readPackIds.has(packId);
+    const limit = assignment.context_budget.full_pack_read_limit;
+    if (!alreadyRead && readPackIds.size >= limit) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `full_pack_read_limit reached for ${context.wave}/${context.agent}/${context.surface_id}: ${readPackIds.size}/${limit}`,
+      );
+    }
+
+    if (!alreadyRead) {
+      appendJsonlLine(techniquePackReadsJsonlPath(context.domain), normalizeTechniquePackReadRecord({
+        version: 1,
+        ts: new Date().toISOString(),
+        target_domain: context.domain,
+        wave: context.wave,
+        agent: context.agent,
+        surface_id: context.surface_id,
+        pack_id: packId,
+        mode: "full",
+      }, { expectedDomain: context.domain }), { maxRecords: TECHNIQUE_PACK_READ_LOG_MAX_RECORDS });
+      readPackIds.add(packId);
+    }
+
+    return JSON.stringify({
+      ...full,
+      full_read_budget: {
+        target_domain: context.domain,
+        wave: context.wave,
+        agent: context.agent,
+        surface_id: context.surface_id,
+        full_pack_read_limit: limit,
+        full_packs_read: readPackIds.size,
+        remaining_full_pack_reads: Math.max(0, limit - readPackIds.size),
+        already_read: alreadyRead,
+        log_path: techniquePackReadsJsonlPath(context.domain),
+      },
+    });
+  });
+}
+
 function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack = null) {
   const routesPath = surfaceRoutesPath(domain);
   let route = null;
@@ -784,12 +951,15 @@ module.exports = {
   TECHNIQUE_SELECTION_MAX_CHARS,
   TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
   TECHNIQUE_SUMMARY_ITEMS_PER_KIND,
+  hunterKnowledgeCandidatePaths,
   loadHunterKnowledge,
   loadTechniqueRegistry,
   logTechniqueAttempt,
   normalizeTechniqueAttemptRecord,
   readTechniqueAttemptRecordsFromJsonl,
   readTechniquePack,
+  readTechniquePackForTool,
+  readTechniquePackReadRecordsFromJsonl,
   resolveHunterKnowledge,
   scoreTechniqueEntry,
   selectTechniquePacks,

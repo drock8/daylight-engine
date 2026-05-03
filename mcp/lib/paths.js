@@ -74,6 +74,10 @@ function techniqueAttemptsJsonlPath(domain) {
   return path.join(sessionDir(domain), "technique-attempts.jsonl");
 }
 
+function techniquePackReadsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "technique-pack-reads.jsonl");
+}
+
 function chainAttemptsJsonlPath(domain) {
   return path.join(sessionDir(domain), "chain-attempts.jsonl");
 }
@@ -92,6 +96,10 @@ function trafficJsonlPath(domain) {
 
 function publicIntelPath(domain) {
   return path.join(sessionDir(domain), "public-intel.json");
+}
+
+function bobSpecPath(domain) {
+  return path.join(sessionDir(domain), "bob-spec.json");
 }
 
 function assertStaticArtifactId(artifactId) {
@@ -153,6 +161,7 @@ module.exports = {
   assertSafeDomain,
   assertStaticArtifactId,
   attackSurfacePath,
+  bobSpecPath,
   chainAttemptsJsonlPath,
   coverageJsonlPath,
   evidencePackPaths,
@@ -171,6 +180,7 @@ module.exports = {
   surfaceLeadsPath,
   surfaceRoutesPath,
   techniqueAttemptsJsonlPath,
+  techniquePackReadsJsonlPath,
   staticArtifactImportDir,
   staticArtifactPath,
   staticArtifactsJsonlPath,

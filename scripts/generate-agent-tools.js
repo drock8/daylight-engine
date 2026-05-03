@@ -6,7 +6,12 @@ const path = require("path");
 const {
   mcpPermissionForTool,
   permissionsForRoleBundle,
-} = require("../mcp/lib/claude-config.js");
+} = require("../adapters/claude/config.js");
+const {
+  CLAUDE_ROLE_SPECS,
+  claudeAllowedToolsForRole,
+  updateClaudeRoleFile,
+} = require("./lib/claude-role-renderer.js");
 
 const ROOT = path.join(__dirname, "..");
 const AGENTS_DIR = path.join(ROOT, ".claude", "agents");
@@ -25,18 +30,21 @@ const AGENT_TOOL_SPECS = Object.freeze({
     extras: ["Read", "mcp__bountyagent__bounty_route_surfaces"],
   },
   "hunter-agent.md": {
-    roleBundles: ["hunter-web"],
+    roleBundles: ["hunter-shared", "hunter-web"],
     extras: ["Bash", "Read", "Grep", "Glob"],
   },
   "brutalist-verifier.md": {
+    roleId: "brutalist-verifier",
     roleBundles: ["verifier"],
     extras: ["Bash", "Read"],
   },
   "balanced-verifier.md": {
+    roleId: "balanced-verifier",
     roleBundles: ["verifier"],
     extras: ["Bash", "Read"],
   },
   "final-verifier.md": {
+    roleId: "final-verifier",
     roleBundles: ["verifier"],
     extras: ["Bash"],
   },
@@ -45,14 +53,17 @@ const AGENT_TOOL_SPECS = Object.freeze({
     extras: [],
   },
   "grader.md": {
+    roleId: "grader",
     roleBundles: ["grader"],
     extras: [],
   },
   "chain-builder.md": {
+    roleId: "chain",
     roleBundles: ["chain"],
     extras: [],
   },
   "report-writer.md": {
+    roleId: "reporter",
     roleBundles: ["reporter"],
     extras: ["Write"],
   },
@@ -63,6 +74,9 @@ function uniqueStrings(values) {
 }
 
 function toolsForSpec(spec) {
+  if (spec.roleId && CLAUDE_ROLE_SPECS[spec.roleId]) {
+    return claudeAllowedToolsForRole(spec.roleId);
+  }
   return uniqueStrings([
     ...spec.extras,
     ...spec.roleBundles.flatMap((roleBundle) => permissionsForRoleBundle(roleBundle)),
@@ -86,6 +100,9 @@ function replaceToolsLine(document, tools) {
 }
 
 function updateAgentFile(fileName, { check = false } = {}) {
+  const roleId = AGENT_TOOL_SPECS[fileName] && AGENT_TOOL_SPECS[fileName].roleId;
+  if (roleId) return updateClaudeRoleFile(roleId, { check, root: ROOT });
+
   const filePath = path.join(AGENTS_DIR, fileName);
   const document = fs.readFileSync(filePath, "utf8");
   const nextDocument = replaceToolsLine(document, toolsForSpec(AGENT_TOOL_SPECS[fileName]));

@@ -6,9 +6,62 @@ const os = require("node:os");
 const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
-const ALIAS_ROOT = path.join(ROOT, "packages", "hacker-bob");
 const PACKAGE_VERSION = require("../package.json").version;
-const ALIAS_VERSION = require("../packages/hacker-bob/package.json").version;
+const WRAPPER_PACKAGES = Object.freeze([
+  {
+    name: "hacker-bob-cc",
+    root: path.join(ROOT, "packages", "hacker-bob-cc"),
+    bin: "bin/hacker-bob-cc.js",
+    adapter: "claude",
+  },
+  {
+    name: "hacker-bob-codex",
+    root: path.join(ROOT, "packages", "hacker-bob-codex"),
+    bin: "bin/hacker-bob-codex.js",
+    adapter: "codex",
+  },
+]);
+
+function sourceTreeFiles(relativeDir) {
+  const root = path.join(ROOT, relativeDir);
+  if (!fs.existsSync(root)) return [];
+  const files = [];
+  const visit = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        visit(full);
+      } else if (entry.isFile()) {
+        files.push(path.relative(ROOT, full).split(path.sep).join("/"));
+      }
+    }
+  };
+  visit(root);
+  return files.sort();
+}
+
+function expectedCanonicalFiles() {
+  return Array.from(new Set([
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "DISCLAIMER.md",
+    "SECURITY.md",
+    "install.sh",
+    ...sourceTreeFiles(".hacker-bob"),
+    ...sourceTreeFiles(".claude"),
+    ...sourceTreeFiles("adapters"),
+    ...sourceTreeFiles("bin"),
+    ...sourceTreeFiles("docs"),
+    ...sourceTreeFiles("mcp"),
+    ...sourceTreeFiles("prompts"),
+    ...sourceTreeFiles("scripts"),
+  ])).sort();
+}
 
 test("npm package contains runtime surfaces and excludes test/cache artifacts", () => {
   const npmCache = fs.mkdtempSync(path.join(os.tmpdir(), "bob-npm-cache-"));
@@ -22,37 +75,13 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
     const [pack] = JSON.parse(output);
     const files = new Set(pack.files.map((file) => file.path));
 
-    for (const expected of [
-      "package.json",
-      "README.md",
-      "LICENSE",
-      "NOTICE",
-      "CHANGELOG.md",
-      "install.sh",
-      "bin/hacker-bob.js",
-      "docs/hacker-bob.png",
-      "docs/TROUBLESHOOTING.md",
-      "docs/releases/v1.1.0.md",
-      ".claude/bob/egress-profiles.example.json",
-      ".claude/commands/bob-egress.md",
-      ".claude/commands/bob-update.md",
-      ".claude/hooks/bob-egress.js",
-      ".claude/hooks/bob-update.js",
-      ".claude/hooks/bob-check-update.js",
-      "mcp/server.js",
-      "mcp/lib/egress-profiles.js",
-      "mcp/lib/tools/index.js",
-      "scripts/install.js",
-      "scripts/lifecycle.js",
-      "scripts/merge-claude-config.js",
-      "testing/policy-replay/replay.mjs",
-      "testing/policy-replay/tune.mjs",
-      "testing/policy-replay/cases/sample-hunter-refusal.json",
-    ]) {
+    assert.equal(pack.name, "hacker-bob");
+    assert.equal(pack.version, PACKAGE_VERSION);
+    for (const expected of expectedCanonicalFiles()) {
       assert.ok(files.has(expected), `${expected} missing from npm pack output`);
     }
 
-    assert.ok(pack.size < 1500000, `npm pack size ${pack.size} exceeds 1.5 MB threshold`);
+    assert.ok(pack.size < 2000000, `npm pack size ${pack.size} exceeds 2.0 MB threshold`);
 
     for (const file of files) {
       assert.ok(!file.startsWith("test/"), `${file} should not be packed`);
@@ -65,6 +94,7 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
       }
       assert.ok(!file.startsWith(".github/"), `${file} should not be packed`);
       assert.ok(!file.startsWith("packages/"), `${file} should not be packed in canonical package`);
+      assert.notEqual(file, ".claude/hooks/bob-update-lib.js", "hook-local update library should not be packed");
       assert.ok(!file.includes("bounty-agent-sessions"), `${file} should not be packed`);
       assert.ok(!file.includes(".cache/"), `${file} should not be packed`);
     }
@@ -73,28 +103,49 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
   }
 });
 
-test("alias package version matches canonical package", () => {
-  assert.equal(ALIAS_VERSION, PACKAGE_VERSION);
-});
+for (const wrapper of WRAPPER_PACKAGES) {
+  test(`${wrapper.name} package version matches canonical package`, () => {
+    const wrapperVersion = require(path.join(wrapper.root, "package.json")).version;
+    assert.equal(wrapperVersion, PACKAGE_VERSION);
+  });
 
-test("alias package packs only wrapper and manifest", () => {
-  const npmCache = fs.mkdtempSync(path.join(os.tmpdir(), "bob-alias-npm-cache-"));
-  try {
-    const output = execFileSync("npm", ["pack", "--dry-run", "--json"], {
-      cwd: ALIAS_ROOT,
-      env: { ...process.env, npm_config_cache: npmCache },
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const [pack] = JSON.parse(output);
-    assert.equal(pack.name, "hacker-bob");
-    assert.equal(pack.version, PACKAGE_VERSION);
-    assert.deepEqual(
-      pack.files.map((file) => file.path).sort(),
-      ["bin/hacker-bob.js", "package.json"],
-    );
-    assert.ok(pack.size < 3000, `alias pack size ${pack.size} exceeds 3 KB threshold`);
-  } finally {
-    fs.rmSync(npmCache, { recursive: true, force: true });
-  }
-});
+  test(`${wrapper.name} package declares bin ${wrapper.name} -> ${wrapper.bin}`, () => {
+    const wrapperPackage = require(path.join(wrapper.root, "package.json"));
+    assert.deepEqual(wrapperPackage.bin, { [wrapper.name]: wrapper.bin });
+    assert.deepEqual(wrapperPackage.files, [wrapper.bin]);
+    assert.equal(wrapperPackage.dependencies && wrapperPackage.dependencies["hacker-bob"], PACKAGE_VERSION);
+  });
+
+  test(`${wrapper.name} bin script pins --adapter ${wrapper.adapter} when none is supplied`, () => {
+    const binSource = fs.readFileSync(path.join(wrapper.root, wrapper.bin), "utf8");
+    assert.match(binSource, /process\.argv\.push\(\s*"--adapter"\s*,/);
+    assert.match(binSource, new RegExp(`"${wrapper.adapter}"`));
+    // Explicit --adapter must be respected: the wrapper only injects when
+    // the operator has not already supplied one. Catches a regression that
+    // would force every install through the wrapper's pinned adapter.
+    assert.match(binSource, /arg === "--adapter" \|\| arg\.startsWith\("--adapter="\)/);
+    assert.match(binSource, /require\("hacker-bob\/bin\/hacker-bob\.js"\)/);
+  });
+
+  test(`${wrapper.name} package packs only wrapper and manifest`, () => {
+    const npmCache = fs.mkdtempSync(path.join(os.tmpdir(), `bob-${wrapper.name}-npm-cache-`));
+    try {
+      const output = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+        cwd: wrapper.root,
+        env: { ...process.env, npm_config_cache: npmCache },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const [pack] = JSON.parse(output);
+      assert.equal(pack.name, wrapper.name);
+      assert.equal(pack.version, PACKAGE_VERSION);
+      assert.deepEqual(
+        pack.files.map((file) => file.path).sort(),
+        [wrapper.bin, "package.json"],
+      );
+      assert.ok(pack.size < 3000, `${wrapper.name} pack size ${pack.size} exceeds 3 KB threshold`);
+    } finally {
+      fs.rmSync(npmCache, { recursive: true, force: true });
+    }
+  });
+}

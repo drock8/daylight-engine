@@ -7,6 +7,11 @@ site/dist/
 .env
 .env.local
 .mcp.json
+!adapters/codex/hacker-bob/.mcp.json
+.codex/
+.agents/
+.hacker-bob/VERSION
+.hacker-bob/install.json
 .claude/bob/VERSION
 .claude/bob/install.json
 .claude/bob/egress-profiles.json

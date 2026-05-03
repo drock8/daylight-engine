@@ -18,7 +18,7 @@ module.exports = Object.freeze({
     required: ["target_domain", "surface_id"],
   },
   handler: selectTechniquePacks,
-  role_bundles: ["hunter", "hunter-web", "orchestrator"],
+  role_bundles: ["hunter-web", "orchestrator"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

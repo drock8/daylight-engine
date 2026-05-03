@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "bountyagent": {
+      "command": "node",
+      "args": [
+        "../../../mcp/server.js"
+      ]
+    },
+    "brutalist": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@brutalist/mcp@latest"
+      ]
+    }
+  }
+}

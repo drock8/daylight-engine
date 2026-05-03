@@ -22,6 +22,7 @@ MCP_OWNED_EXACT = {
     "state.json",
     "coverage.jsonl",
     "technique-attempts.jsonl",
+    "technique-pack-reads.jsonl",
     "chain-attempts.jsonl",
     "findings.jsonl",
     "findings.md",

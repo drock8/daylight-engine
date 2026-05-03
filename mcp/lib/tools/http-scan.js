@@ -39,7 +39,7 @@ module.exports = Object.freeze({
     required: ["method", "url", "target_domain"],
   },
   handler: httpScan,
-  role_bundles: ["hunter", "hunter-web", "verifier", "auth", "chain", "evidence"],
+  role_bundles: ["hunter-web", "verifier", "auth", "chain", "evidence"],
   mutating: true,
   global_preapproval: true,
   network_access: true,

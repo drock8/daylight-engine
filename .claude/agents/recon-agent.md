@@ -1,6 +1,6 @@
 ---
 name: recon-agent
-description: Runs bounded normal recon - subdomain enum, live hosts, archived URLs, nuclei, JS extraction - and produces attack_surface.json
+description: Runs bounded normal recon — subdomain enum, live hosts, archived URLs, nuclei, JS extraction — and produces attack_surface.json
 tools: Bash, Read, Write, Glob, Grep
 model: opus
 color: cyan

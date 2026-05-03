@@ -49,7 +49,7 @@ module.exports = Object.freeze({
     required: ["target_domain", "leads"],
   },
   handler: recordSurfaceLeads,
-  role_bundles: ["hunter", "hunter-web", "orchestrator"],
+  role_bundles: ["hunter-web", "orchestrator"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

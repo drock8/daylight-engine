@@ -198,7 +198,154 @@ function normalizeChainNotes(value) {
   return notes;
 }
 
-function validateWaveHandoffPayload(payload, { targetDomain, wave, agent, surfaceId }) {
+// Phase E/F: enum mirrors the bounty_write_wave_handoff JSON schema and the
+// renderer's BLOCKED_HARNESS_RUN_KINDS constant. Mismatch here would cause
+// SVM/Move/Substrate/CosmWasm hunters to fail finalization even though the
+// schema accepted their handoff. capability-packs-rendering.js exports a
+// schema-vs-renderer parity test; this mirror is the runtime side of that
+// invariant.
+const BLOCKED_HARNESS_KIND_VALUES = Object.freeze([
+  "foundry_fork",
+  "anchor_fork",
+  "aptos_fork",
+  "sui_fork",
+  "substrate_fork",
+  "cosmwasm_fork",
+  "rpc_endpoint",
+  "fuzzer",
+  "symbolic_solver",
+  "mock_dependency",
+  "external_api",
+  "other",
+]);
+
+const BYPASS_ATTEMPT_OUTCOME_VALUES = Object.freeze([
+  "no_finding",
+  "partial_evidence",
+  "finding_recorded",
+  "blocked",
+]);
+
+function normalizeBlockedHarnessRuns(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "blocked_harness_runs must be an array");
+  }
+  if (value.length > 20) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "blocked_harness_runs must contain at most 20 entries");
+  }
+  return value.map((entry, index) => {
+    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `blocked_harness_runs[${index}] must be an object`);
+    }
+    const kind = assertNonEmptyString(entry.kind, `blocked_harness_runs[${index}].kind`);
+    if (!BLOCKED_HARNESS_KIND_VALUES.includes(kind)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `blocked_harness_runs[${index}].kind must be one of ${BLOCKED_HARNESS_KIND_VALUES.join(", ")}`);
+    }
+    const harness = assertNonEmptyString(entry.harness, `blocked_harness_runs[${index}].harness`);
+    const reason = assertNonEmptyString(entry.reason, `blocked_harness_runs[${index}].reason`);
+    if (harness.length > 120) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `blocked_harness_runs[${index}].harness must be at most 120 characters`);
+    }
+    if (reason.length > 240) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `blocked_harness_runs[${index}].reason must be at most 240 characters`);
+    }
+    const normalized = { kind, harness, reason };
+    if (entry.needed_for != null) {
+      const neededFor = assertNonEmptyString(entry.needed_for, `blocked_harness_runs[${index}].needed_for`);
+      if (neededFor.length > 200) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `blocked_harness_runs[${index}].needed_for must be at most 200 characters`);
+      }
+      normalized.needed_for = neededFor;
+    }
+    return normalized;
+  });
+}
+
+const BYPASS_ATTEMPT_CONDITION_MIN_CHARS = 4;
+const BYPASS_ATTEMPT_SUMMARY_MIN_CHARS = 30;
+
+function normalizeBypassAttempts(value, { findingIds = null } = {}) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "bypass_attempts must be an array");
+  }
+  if (value.length > 30) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "bypass_attempts must contain at most 30 entries");
+  }
+  return value.map((entry, index) => {
+    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `bypass_attempts[${index}] must be an object`);
+    }
+    const condition = assertNonEmptyString(entry.condition, `bypass_attempts[${index}].condition`);
+    if (condition.length < BYPASS_ATTEMPT_CONDITION_MIN_CHARS) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `bypass_attempts[${index}].condition must be at least ${BYPASS_ATTEMPT_CONDITION_MIN_CHARS} characters`);
+    }
+    if (condition.length > 120) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `bypass_attempts[${index}].condition must be at most 120 characters`);
+    }
+    const attemptSummary = assertNonEmptyString(entry.attempt_summary, `bypass_attempts[${index}].attempt_summary`);
+    if (attemptSummary.length < BYPASS_ATTEMPT_SUMMARY_MIN_CHARS) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `bypass_attempts[${index}].attempt_summary must be at least ${BYPASS_ATTEMPT_SUMMARY_MIN_CHARS} characters; describe the concrete state machine or payload you exercised`);
+    }
+    if (attemptSummary.length > 500) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `bypass_attempts[${index}].attempt_summary must be at most 500 characters`);
+    }
+    const outcome = assertNonEmptyString(entry.outcome, `bypass_attempts[${index}].outcome`);
+    if (!BYPASS_ATTEMPT_OUTCOME_VALUES.includes(outcome)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `bypass_attempts[${index}].outcome must be one of ${BYPASS_ATTEMPT_OUTCOME_VALUES.join(", ")}`);
+    }
+    const normalized = { condition, attempt_summary: attemptSummary, outcome };
+    if (entry.finding_id != null) {
+      const findingId = assertNonEmptyString(entry.finding_id, `bypass_attempts[${index}].finding_id`);
+      if (!/^F-([1-9]\d*)$/.test(findingId)) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `bypass_attempts[${index}].finding_id must match F-N pattern`);
+      }
+      if (findingIds && !findingIds.has(findingId)) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `bypass_attempts[${index}].finding_id ${findingId} does not match any recorded finding for this run`);
+      }
+      normalized.finding_id = findingId;
+    }
+    if (outcome === "finding_recorded" && !normalized.finding_id) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `bypass_attempts[${index}].finding_id is required when outcome is "finding_recorded"`);
+    }
+    return normalized;
+  });
+}
+
+function assertBlockedHarnessConsistency(surfaceStatus, blockedHarnessRuns) {
+  if (surfaceStatus === "complete" && blockedHarnessRuns.length > 0) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "surface_status cannot be 'complete' when blocked_harness_runs is non-empty; set surface_status to 'partial' or resolve the blocked harnesses first",
+    );
+  }
+}
+
+function assertSmartContractCompletionEvidence({
+  surfaceType,
+  surfaceStatus,
+  bypassAttempts,
+  findingCount,
+}) {
+  if (surfaceType !== "smart_contract") return;
+  if (surfaceStatus !== "complete") return;
+  if (findingCount > 0) return;
+  if (bypassAttempts.length > 0) return;
+  throw new ToolError(
+    ERROR_CODES.INVALID_ARGUMENTS,
+    "smart_contract surfaces cannot be marked 'complete' without evidence of attempted invariant breaks: record at least one finding for this surface, or supply at least one bypass_attempts entry citing a trust_assumptions[*].bypass_conditions condition that was tested. Set surface_status to 'partial' if no attempt was made.",
+  );
+}
+
+function validateWaveHandoffPayload(payload, {
+  targetDomain,
+  wave,
+  agent,
+  surfaceId,
+  effectiveSurfaceType,
+  findingsForRun,
+}) {
   if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff payload must be an object");
   }
@@ -216,15 +363,116 @@ function validateWaveHandoffPayload(payload, { targetDomain, wave, agent, surfac
   if (payloadAgent !== agent) throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff agent does not match assignment");
   if (payloadSurfaceId !== surfaceId) throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "handoff surface_id does not match assignment");
 
+  const findingsForCheck = Array.isArray(findingsForRun)
+    ? findingsForRun
+    : readFindingsFromJsonl(targetDomain).filter((finding) => (
+      finding.wave === wave &&
+      finding.agent === agent &&
+      finding.surface_id === surfaceId
+    ));
+  const findingIdSet = new Set(findingsForCheck.map((finding) => finding.id));
+
+  const blockedHarnessRuns = normalizeBlockedHarnessRuns(payload.blocked_harness_runs);
+  const bypassAttempts = normalizeBypassAttempts(payload.bypass_attempts, { findingIds: findingIdSet });
+  assertBlockedHarnessConsistency(surfaceStatus, blockedHarnessRuns);
+
+  // Authoritative source for surface_type is the MCP-owned assignment file
+  // (captured at start_wave time). Callers from active wave paths
+  // (mergeWaveHandoffsInternal, buildWaveHandoffsDocument, writeWaveHandoff)
+  // pass effectiveSurfaceType from the assignment. The payload.surface_type
+  // fallback is defensive for legacy callers and is consistent with the
+  // stored value (which itself was sourced from the assignment).
+  const surfaceTypeFallback = typeof payload.surface_type === "string" && payload.surface_type.trim() !== ""
+    ? payload.surface_type.trim()
+    : null;
+  const surfaceType = effectiveSurfaceType !== undefined
+    ? effectiveSurfaceType
+    : surfaceTypeFallback;
+  assertSmartContractCompletionEvidence({
+    surfaceType,
+    surfaceStatus,
+    bypassAttempts,
+    findingCount: findingsForCheck.length,
+  });
+
   return {
+    surface_type: surfaceType,
     summary: normalizeHandoffSummary(payload),
     chain_notes: normalizeChainNotes(payload.chain_notes),
+    blocked_harness_runs: blockedHarnessRuns,
+    bypass_attempts: bypassAttempts,
     dead_ends: normalizeStringArray(payload.dead_ends, "dead_ends"),
     waf_blocked_endpoints: normalizeStringArray(payload.waf_blocked_endpoints, "waf_blocked_endpoints"),
     lead_surface_ids: normalizeStringArray(payload.lead_surface_ids, "lead_surface_ids"),
     surface_lead_ids: normalizeStringArray(payload.surface_lead_ids, "surface_lead_ids"),
     surface_status: surfaceStatus,
   };
+}
+
+function groupBlockedHarnessRuns(entries) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const key = `${entry.kind} ${entry.harness}`;
+    if (!groups.has(key)) {
+      groups.set(key, { kind: entry.kind, harness: entry.harness, count: 0, agents: new Set(), surface_ids: new Set() });
+    }
+    const group = groups.get(key);
+    group.count += 1;
+    if (entry.agent) group.agents.add(entry.agent);
+    if (entry.surface_id) group.surface_ids.add(entry.surface_id);
+  }
+  return Array.from(groups.values()).map((group) => ({
+    kind: group.kind,
+    harness: group.harness,
+    count: group.count,
+    agents: Array.from(group.agents).sort(compareAgentLabels),
+    surface_ids: Array.from(group.surface_ids).sort(),
+  }));
+}
+
+function groupBypassAttempts(entries) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const key = `${entry.condition} ${entry.outcome}`;
+    if (!groups.has(key)) {
+      groups.set(key, { condition: entry.condition, outcome: entry.outcome, count: 0, agents: new Set(), surface_ids: new Set() });
+    }
+    const group = groups.get(key);
+    group.count += 1;
+    if (entry.agent) group.agents.add(entry.agent);
+    if (entry.surface_id) group.surface_ids.add(entry.surface_id);
+  }
+  return Array.from(groups.values()).map((group) => ({
+    condition: group.condition,
+    outcome: group.outcome,
+    count: group.count,
+    agents: Array.from(group.agents).sort(compareAgentLabels),
+    surface_ids: Array.from(group.surface_ids).sort(),
+  }));
+}
+
+function buildSuspicionFlags({ smartContractCompletedSurfaceIds, bypassAttemptsForCompletedSurfaces, recordedFindingsBySurface }) {
+  const flags = [];
+  for (const surfaceId of smartContractCompletedSurfaceIds) {
+    const findings = recordedFindingsBySurface.get(surfaceId) || [];
+    const attempts = bypassAttemptsForCompletedSurfaces.get(surfaceId) || [];
+    if (findings.length > 0) continue;
+    if (attempts.length === 0) continue;
+    // Flag SC complete with no finding when no attempt yielded substantive
+    // evidence. "no_finding" alone or "blocked" alone indicates structural
+    // attestation without recorded evidence; only partial_evidence or
+    // finding_recorded outcomes signal that a real attempt produced something.
+    const hasSubstantiveOutcome = attempts.some((attempt) => (
+      attempt.outcome === "partial_evidence" || attempt.outcome === "finding_recorded"
+    ));
+    if (hasSubstantiveOutcome) continue;
+    flags.push({
+      flag: "sc_complete_with_zero_evidence",
+      surface_id: surfaceId,
+      reason: "smart_contract surface marked complete with no recorded finding and no bypass_attempts entry produced partial_evidence or finding_recorded; review for low-effort attestation",
+    });
+  }
+  return flags;
 }
 
 function mergeWaveHandoffsInternal(domain, waveNumber) {
@@ -239,6 +487,8 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
   const deadEnds = [];
   const wafBlockedEndpoints = [];
   const leadSurfaceIds = [];
+  const blockedHarnessRuns = [];
+  const bypassAttempts = [];
   const provenance = {
     verified_agents: [],
     legacy_unverified_agents: [],
@@ -248,6 +498,24 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
   const wafSet = new Set();
   const leadSet = new Set();
 
+  // Pre-read findings once and index by (wave, agent, surface_id) so per-handoff
+  // validation does not re-parse findings.jsonl O(handoffs × findings) times.
+  const allFindings = readFindingsFromJsonl(domain);
+  const findingsByRun = new Map();
+  const recordedFindingsBySurface = new Map();
+  for (const finding of allFindings) {
+    if (finding.wave === artifacts.wave) {
+      const runKey = `${finding.wave} ${finding.agent} ${finding.surface_id}`;
+      if (!findingsByRun.has(runKey)) findingsByRun.set(runKey, []);
+      findingsByRun.get(runKey).push(finding);
+      if (!recordedFindingsBySurface.has(finding.surface_id)) recordedFindingsBySurface.set(finding.surface_id, []);
+      recordedFindingsBySurface.get(finding.surface_id).push(finding);
+    }
+  }
+
+  const smartContractCompletedSurfaceIds = [];
+  const bypassAttemptsForCompletedSurfaces = new Map();
+
   for (const assignment of artifacts.assignments) {
     const filePath = artifacts.handoffPathByAgent.get(assignment.agent);
     if (!filePath) {
@@ -256,13 +524,19 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
     }
 
     try {
-      const payload = validateWaveHandoffPayload(readJsonFile(filePath), {
+      const handoffJson = readJsonFile(filePath);
+      const runKey = `${artifacts.wave} ${assignment.agent} ${assignment.surface_id}`;
+      const findingsForRun = findingsByRun.get(runKey) || [];
+      const effectiveSurfaceType = assignment.surface_type || null;
+      const payload = validateWaveHandoffPayload(handoffJson, {
         targetDomain: domain,
         wave: artifacts.wave,
         agent: assignment.agent,
         surfaceId: assignment.surface_id,
+        effectiveSurfaceType,
+        findingsForRun,
       });
-      const provenanceStatus = validateHandoffProvenance(readJsonFile(filePath), assignment);
+      const provenanceStatus = validateHandoffProvenance(handoffJson, assignment);
 
       receivedAgents.push(assignment.agent);
       if (provenanceStatus === "verified") {
@@ -272,16 +546,32 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
       }
       if (payload.surface_status === "complete") {
         completedSurfaceIds.push(assignment.surface_id);
+        if (effectiveSurfaceType === "smart_contract") {
+          smartContractCompletedSurfaceIds.push(assignment.surface_id);
+          bypassAttemptsForCompletedSurfaces.set(assignment.surface_id, payload.bypass_attempts || []);
+        }
       } else {
         partialSurfaceIds.push(assignment.surface_id);
       }
       pushUnique(deadEnds, deadEndSet, payload.dead_ends);
       pushUnique(wafBlockedEndpoints, wafSet, payload.waf_blocked_endpoints);
       pushUnique(leadSurfaceIds, leadSet, payload.lead_surface_ids);
+      for (const entry of payload.blocked_harness_runs || []) {
+        blockedHarnessRuns.push({ ...entry, agent: assignment.agent, surface_id: assignment.surface_id });
+      }
+      for (const entry of payload.bypass_attempts || []) {
+        bypassAttempts.push({ ...entry, agent: assignment.agent, surface_id: assignment.surface_id });
+      }
     } catch {
       invalidAgents.push(assignment.agent);
     }
   }
+
+  const suspicionFlags = buildSuspicionFlags({
+    smartContractCompletedSurfaceIds,
+    bypassAttemptsForCompletedSurfaces,
+    recordedFindingsBySurface,
+  });
 
   for (const assignment of artifacts.assignments) {
     const logPath = path.join(artifacts.dir, `live-dead-ends-${artifacts.wave}-${assignment.agent}.jsonl`);
@@ -319,6 +609,11 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
       dead_ends: deadEnds,
       waf_blocked_endpoints: wafBlockedEndpoints,
       lead_surface_ids: leadSurfaceIds,
+      blocked_harness_runs: blockedHarnessRuns,
+      blocked_harness_runs_grouped: groupBlockedHarnessRuns(blockedHarnessRuns),
+      bypass_attempts: bypassAttempts,
+      bypass_attempts_grouped: groupBypassAttempts(bypassAttempts),
+      suspicion_flags: suspicionFlags,
       provenance,
     },
   };
@@ -426,12 +721,22 @@ function startWave(args) {
     }
 
     const attackSurface = readAttackSurfaceStrict(domain);
+    const surfaceTypeById = new Map();
+    for (const surface of attackSurface.document.surfaces || []) {
+      if (!surface || typeof surface !== "object" || Array.isArray(surface)) continue;
+      const surfaceTypeRaw = typeof surface.surface_type === "string" ? surface.surface_type.trim() : "";
+      surfaceTypeById.set(surface.id, surfaceTypeRaw !== "" ? surfaceTypeRaw : null);
+    }
     for (const assignment of assignments) {
       if (!attackSurface.surface_id_set.has(assignment.surface_id)) {
         throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `Unknown surface_id in assignments: ${assignment.surface_id}`);
       }
     }
 
+    // Capture surface_type from attack_surface.json AT WAVE START into the
+    // immutable, MCP-owned assignment file. This makes the smart_contract
+    // completion gate tamper-resistant — hunters cannot disable enforcement
+    // by mutating attack_surface.json mid-wave.
     const routedSurfaces = routeSurfacesInternal(domain, { attackSurfaceInfo: attackSurface });
     const routeBySurfaceId = new Map(
       routedSurfaces.document.routes.map((route) => [route.surface_id, route]),
@@ -442,11 +747,13 @@ function startWave(args) {
       }
     }
 
+
     const persistedAssignments = assignments.map((assignment) => {
       const token = generateHandoffToken();
       const route = routeBySurfaceId.get(assignment.surface_id);
       return {
         ...assignment,
+        surface_type: surfaceTypeById.get(assignment.surface_id) || null,
         capability_pack: route.capability_pack,
         capability_pack_version: route.capability_pack_version,
         hunter_agent: route.hunter_agent,
@@ -584,10 +891,17 @@ function applyWaveMerge(args) {
       : { promoted_surface_ids: [] };
     const attackSurface = readAttackSurfaceStrict(domain);
 
+    // The structured handoff's `surface_status: complete` is the contract;
+    // coverage rows are endpoint-level advisory history. A hunter that wrote
+    // `complete` and ALSO wrote some unfinished coverage rows during the same
+    // wave is internally inconsistent, but the right place to catch that is
+    // either the hunter prompt or a server-side handoff validator — not a
+    // silent downgrade that strands the surface in HUNT forever. Trust the
+    // handoff and add to explored unconditionally.
     pushUnique(
       explored,
       new Set(explored),
-      merge.completed_surface_ids.filter((surfaceId) => !requeueSurfaceIdSet.has(surfaceId)),
+      merge.completed_surface_ids,
     );
     pushUnique(deadEnds, new Set(deadEnds), merge.dead_ends);
     pushUnique(wafBlockedEndpoints, new Set(wafBlockedEndpoints), merge.waf_blocked_endpoints);
@@ -647,6 +961,11 @@ function applyWaveMerge(args) {
         new_dead_ends_count: merge.dead_ends.length,
         new_waf_blocked_count: merge.waf_blocked_endpoints.length,
         lead_surface_ids: merge.lead_surface_ids,
+        blocked_harness_runs: merge.blocked_harness_runs,
+        blocked_harness_runs_grouped: merge.blocked_harness_runs_grouped,
+        bypass_attempts: merge.bypass_attempts,
+        bypass_attempts_grouped: merge.bypass_attempts_grouped,
+        suspicion_flags: merge.suspicion_flags,
         ...(state.deep_mode === true ? { deep_promoted_surface_ids: deepPromotion.promoted_surface_ids || [] } : {}),
         provenance: merge.provenance,
       },
@@ -717,6 +1036,21 @@ function logDeadEnds(args) {
   });
 }
 
+// Reserved for future paths that need to consult attack_surface.json directly.
+// The smart_contract completion gate does NOT use this — it reads from the
+// MCP-owned, tamper-resistant assignment file (captured at start_wave time
+// in mcp/lib/waves.js startWave). Reading from attack_surface.json would
+// allow a hunter with Bash access to mutate the file and disable enforcement.
+function lookupSurfaceType(domain, surfaceId) {
+  const attackSurface = readAttackSurfaceStrict(domain);
+  const surface = (attackSurface.document.surfaces || []).find((entry) => entry && entry.id === surfaceId);
+  if (!surface) return null;
+  if (typeof surface.surface_type === "string" && surface.surface_type.trim() !== "") {
+    return surface.surface_type.trim();
+  }
+  return null;
+}
+
 function writeWaveHandoff(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const wave = parseWaveId(args.wave);
@@ -725,6 +1059,7 @@ function writeWaveHandoff(args) {
   const surfaceStatus = parseSurfaceStatus(args.surface_status);
   const summary = normalizeHandoffSummary(args, { requireStructuredSummary: true });
   const chainNotes = normalizeChainNotes(args.chain_notes);
+  const blockedHarnessRuns = normalizeBlockedHarnessRuns(args.blocked_harness_runs);
 
   if (typeof args.content !== "string") {
     throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "content must be a string");
@@ -740,15 +1075,37 @@ function writeWaveHandoff(args) {
       source_surface_id: surfaceId,
     });
 
+    // Read surface_type from the immutable, MCP-owned assignment file (captured
+    // at start_wave time). Reading from agent-writable attack_surface.json would
+    // let a hunter disable the smart_contract gate via Bash mutation.
+    const surfaceType = assignment.surface_type || null;
+    const findingsForRun = readFindingsFromJsonl(domain).filter((finding) => (
+      finding.wave === wave &&
+      finding.agent === agent &&
+      finding.surface_id === surfaceId
+    ));
+    const findingIdSet = new Set(findingsForRun.map((finding) => finding.id));
+    const bypassAttempts = normalizeBypassAttempts(args.bypass_attempts, { findingIds: findingIdSet });
+    assertBlockedHarnessConsistency(surfaceStatus, blockedHarnessRuns);
+    assertSmartContractCompletionEvidence({
+      surfaceType,
+      surfaceStatus,
+      bypassAttempts,
+      findingCount: findingsForRun.length,
+    });
+
     const handoff = {
       target_domain: domain,
       wave,
       agent,
       surface_id: surfaceId,
+      surface_type: surfaceType,
       surface_status: surfaceStatus,
       provenance,
       summary,
       chain_notes: chainNotes,
+      blocked_harness_runs: blockedHarnessRuns,
+      bypass_attempts: bypassAttempts,
       dead_ends: normalizeStringArray(args.dead_ends, "dead_ends"),
       waf_blocked_endpoints: normalizeStringArray(args.waf_blocked_endpoints, "waf_blocked_endpoints"),
       lead_surface_ids: normalizeStringArray(args.lead_surface_ids, "lead_surface_ids"),
@@ -796,6 +1153,11 @@ function mergeWaveHandoffs(args) {
     dead_ends: merge.dead_ends,
     waf_blocked_endpoints: merge.waf_blocked_endpoints,
     lead_surface_ids: merge.lead_surface_ids,
+    blocked_harness_runs: merge.blocked_harness_runs,
+    blocked_harness_runs_grouped: merge.blocked_harness_runs_grouped,
+    bypass_attempts: merge.bypass_attempts,
+    bypass_attempts_grouped: merge.bypass_attempts_grouped,
+    suspicion_flags: merge.suspicion_flags,
     provenance: merge.provenance,
   });
 }
@@ -812,16 +1174,20 @@ function listWaveAssignmentNumbers(domain) {
     .sort((a, b) => a - b);
 }
 
-function readWaveHandoffs(args) {
-  const domain = assertNonEmptyString(args.target_domain, "target_domain");
-  const waveNumbers = args.wave_number == null
-    ? listWaveAssignmentNumbers(domain)
-    : [parseWaveNumber(args.wave_number)];
-
+function buildWaveHandoffsDocument(domain, waveNumbers) {
   const handoffs = [];
   const missingHandoffs = [];
   const invalidHandoffs = [];
   const unexpectedHandoffs = [];
+
+  // Pre-read findings once per call, not per handoff.
+  const allFindings = readFindingsFromJsonl(domain);
+  const findingsByRun = new Map();
+  for (const finding of allFindings) {
+    const runKey = `${finding.wave} ${finding.agent} ${finding.surface_id}`;
+    if (!findingsByRun.has(runKey)) findingsByRun.set(runKey, []);
+    findingsByRun.get(runKey).push(finding);
+  }
 
   for (const waveNumber of waveNumbers) {
     const artifacts = loadWaveArtifacts(domain, waveNumber);
@@ -841,21 +1207,30 @@ function readWaveHandoffs(args) {
       }
 
       try {
-        const payload = validateWaveHandoffPayload(readJsonFile(filePath), {
+        const handoffJson = readJsonFile(filePath);
+        const runKey = `${artifacts.wave} ${assignment.agent} ${assignment.surface_id}`;
+        const findingsForRun = findingsByRun.get(runKey) || [];
+        const effectiveSurfaceType = assignment.surface_type || null;
+        const payload = validateWaveHandoffPayload(handoffJson, {
           targetDomain: domain,
           wave: artifacts.wave,
           agent: assignment.agent,
           surfaceId: assignment.surface_id,
+          effectiveSurfaceType,
+          findingsForRun,
         });
-        const provenance = validateHandoffProvenance(readJsonFile(filePath), assignment);
+        const provenance = validateHandoffProvenance(handoffJson, assignment);
         const handoff = {
           wave: artifacts.wave,
           agent: assignment.agent,
           surface_id: assignment.surface_id,
+          surface_type: payload.surface_type,
           surface_status: payload.surface_status,
           provenance,
           summary: payload.summary,
           chain_notes: payload.chain_notes,
+          blocked_harness_runs: payload.blocked_harness_runs,
+          bypass_attempts: payload.bypass_attempts,
           dead_ends: payload.dead_ends,
           waf_blocked_endpoints: payload.waf_blocked_endpoints,
           lead_surface_ids: payload.lead_surface_ids,
@@ -875,7 +1250,7 @@ function readWaveHandoffs(args) {
     }
   }
 
-  return JSON.stringify({
+  return {
     version: 1,
     target_domain: domain,
     wave_numbers: waveNumbers,
@@ -883,11 +1258,21 @@ function readWaveHandoffs(args) {
     missing_handoffs: missingHandoffs,
     invalid_handoffs: invalidHandoffs,
     unexpected_handoffs: unexpectedHandoffs,
-  });
+  };
+}
+
+function readWaveHandoffs(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const waveNumbers = args.wave_number == null
+    ? listWaveAssignmentNumbers(domain)
+    : [parseWaveNumber(args.wave_number)];
+
+  return JSON.stringify(buildWaveHandoffsDocument(domain, waveNumbers));
 }
 
 module.exports = {
   applyWaveMerge,
+  buildWaveHandoffsDocument,
   logDeadEnds,
   mergeWaveHandoffs,
   readWaveHandoffs,

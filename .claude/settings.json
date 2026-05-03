@@ -16,8 +16,10 @@
       "mcp__bountyagent__bounty_read_evidence_packs",
       "mcp__bountyagent__bounty_write_grade_verdict",
       "mcp__bountyagent__bounty_read_grade_verdict",
+      "mcp__bountyagent__bounty_read_surface_routes",
       "mcp__bountyagent__bounty_read_session_state",
       "mcp__bountyagent__bounty_write_wave_handoff",
+      "mcp__bountyagent__bounty_finalize_hunter_run",
       "mcp__bountyagent__bounty_wave_handoff_status",
       "mcp__bountyagent__bounty_read_wave_handoffs",
       "mcp__bountyagent__bounty_log_dead_ends",
@@ -29,11 +31,26 @@
       "mcp__bountyagent__bounty_list_auth_profiles",
       "mcp__bountyagent__bounty_auto_signup",
       "mcp__bountyagent__bounty_read_state_summary",
+      "mcp__bountyagent__bounty_read_session_summary",
       "mcp__bountyagent__bounty_read_hunter_brief",
       "mcp__bountyagent__bounty_get_context_budget",
       "mcp__bountyagent__bounty_select_technique_packs",
       "mcp__bountyagent__bounty_read_technique_pack",
       "mcp__bountyagent__bounty_log_technique_attempt",
+      "mcp__bountyagent__bounty_evm_call",
+      "mcp__bountyagent__bounty_evm_storage_read",
+      "mcp__bountyagent__bounty_evm_fetch_source",
+      "mcp__bountyagent__bounty_evm_role_table",
+      "mcp__bountyagent__bounty_svm_fetch_account",
+      "mcp__bountyagent__bounty_svm_fetch_program",
+      "mcp__bountyagent__bounty_aptos_fetch_resource",
+      "mcp__bountyagent__bounty_aptos_fetch_module",
+      "mcp__bountyagent__bounty_sui_fetch_object",
+      "mcp__bountyagent__bounty_sui_fetch_package",
+      "mcp__bountyagent__bounty_substrate_fetch_storage",
+      "mcp__bountyagent__bounty_substrate_fetch_runtime",
+      "mcp__bountyagent__bounty_cosmwasm_fetch_contract",
+      "mcp__bountyagent__bounty_cosmwasm_smart_query",
       "mcp__bountyagent__bounty_record_surface_leads",
       "mcp__bountyagent__bounty_read_surface_leads",
       "Bash(mkdir *)",
@@ -49,8 +66,7 @@
       "Bash(echo *)",
       "Read",
       "Glob",
-      "Grep",
-      "mcp__bountyagent__bounty_read_session_summary"
+      "Grep"
     ]
   },
   "hooks": {
@@ -68,6 +84,16 @@
             "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/session-write-guard.sh\"",
             "timeout": 5
           },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/session-read-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/session-read-guard.sh\"",
@@ -114,14 +140,16 @@
             "timeout": 5
           }
         ]
-      },
+      }
+    ],
+    "SessionStart": [
       {
-        "matcher": "Read",
+        "matcher": "startup",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/session-read-guard.sh\"",
-            "timeout": 5
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/bob-check-update.js\" \"${CLAUDE_PROJECT_DIR:-$PWD}\"",
+            "timeout": 2
           }
         ]
       }
@@ -136,16 +164,54 @@
             "timeout": 10
           }
         ]
-      }
-    ],
-    "SessionStart": [
+      },
       {
-        "matcher": "startup",
+        "matcher": "hunter-evm-agent",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/bob-check-update.js\" \"${CLAUDE_PROJECT_DIR:-$PWD}\"",
-            "timeout": 2
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/hunter-subagent-stop.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "hunter-svm-agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/hunter-subagent-stop.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "hunter-move-agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/hunter-subagent-stop.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "hunter-substrate-agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/hunter-subagent-stop.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "hunter-cosmwasm-agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/hunter-subagent-stop.js\"",
+            "timeout": 10
           }
         ]
       }

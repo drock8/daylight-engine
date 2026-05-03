@@ -1269,8 +1269,15 @@ function analyzeSession(targetDomain, { cutoffMs = null, limit = DEFAULT_LIMIT, 
     }));
   }
 
-  if (artifacts.grade.verdict === "HOLD" || artifacts.grade.verdict === "SKIP") {
-    issues.push(issue("grade_hold_skip", "needs_attention", "Grade verdict is not SUBMIT.", {
+  // HOLD is the only verdict that is operator-actionable on its own — the
+  // grader is asking for another HUNT round. SKIP is internally consistent
+  // by construction: writeGradeVerdict rejects any SKIP that does not
+  // satisfy `!hasReportableMedium || total_score < GRADE_HOLD_MIN_SCORE`,
+  // so a SKIP at read time is either "no reportables" or "low-score
+  // reportables below the HOLD threshold." Both are the grader doing its
+  // job, not anomalies.
+  if (artifacts.grade.verdict === "HOLD") {
+    issues.push(issue("grade_hold", "needs_attention", "Grade verdict is HOLD; grader requested another round.", {
       verdict: artifacts.grade.verdict,
       total_score: artifacts.grade.total_score,
     }));
@@ -1439,7 +1446,7 @@ function actionForBottleneck(bottleneck) {
     low_coverage: "Launch another wave for unexplored non-low surfaces before verification.",
     chain_phase_no_attempts: "Run the chain-builder again so it records terminal chain attempts, or transition with an explicit override reason.",
     verification_dropoff: "Review final verification inputs because recorded findings are not surviving as reportable.",
-    grade_hold_skip: "Use grader feedback to decide whether to return to HUNT or stop before report writing.",
+    grade_hold: "Use grader feedback to launch a targeted HUNT wave, then re-run CHAIN -> VERIFY before grading again.",
     missing_verification: "Write a valid final verification round before grading or reporting.",
     missing_evidence: "Run the evidence agent and validate evidence packs before grading or reporting.",
     missing_grade: "Write a valid grade verdict before report completion.",
