@@ -298,9 +298,27 @@ function npmJson(commandArgs, description, options = {}) {
   return { ok: true, value: parseJsonOutput(result, description), result };
 }
 
+function isNpmNotFound(result) {
+  const text = `${String(result && result.stderr || "")}\n${String(result && result.stdout || "")}`;
+  return /\bE404\b/.test(text) || /404 Not Found/.test(text);
+}
+
 function checkPackageRegistry(name, version) {
-  const metadata = npmJson(["view", name, "name", "version", "dist-tags"], `npm view ${name}`);
-  if (!metadata.ok || !metadata.value) return;
+  const metadata = npmJson(
+    ["view", name, "name", "version", "dist-tags"],
+    `npm view ${name}`,
+    { allowFailure: true },
+  );
+  if (!metadata.ok || !metadata.value) {
+    if (isNpmNotFound(metadata.result)) {
+      pass(`${name} is not published yet`);
+      pass(`${name}@${version} is not published yet`);
+      info(`${name} has no latest dist-tag yet; it should become ${version} after first publish`);
+      return;
+    }
+    fail(`${name} registry metadata lookup failed: ${String(metadata.result.stderr || metadata.result.stdout).trim()}`);
+    return;
+  }
 
   pass(`${name} resolves on npm`);
   const latest = metadata.value.version || (metadata.value["dist-tags"] && metadata.value["dist-tags"].latest);
