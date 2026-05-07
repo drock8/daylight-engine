@@ -30,6 +30,8 @@ bounty_read_session_summary({ target_domain })
 ```
 Use `.data` from successful MCP responses. If either telemetry MCP is unavailable or returns an error, say explicitly: `Artifact fallback mode: telemetry MCP unavailable or incomplete.` Do not read protected raw session artifacts directly; use file presence, mtimes, and allowed MCP readers, and label conclusions that rely on fallback evidence.
 
+Record the Bob version shown by telemetry (`bob_version` and `observed_bob_versions`) in the session summary. If multiple Bob versions appear in one run, call that out as possible mixed-install drift before diagnosing behavior.
+
 ## Read-Only Validation
 Use these only when they help confirm a telemetry finding or fill a gap:
 - `bounty_read_state_summary({ target_domain })`

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-05-07
+
+### Telemetry version stamping
+
+- Stamped `bob_version` into MCP tool telemetry, hunter run telemetry, and pipeline analytics events so `/bob-debug` can identify which Bob build produced a run.
+- Added `observed_bob_versions` to telemetry summaries so debug output can flag mixed-install drift before diagnosing target behavior.
+- Updated Bob debug guidance to record the current Bob version and call out multi-version sessions explicitly.
+- Fixed source-checkout version resolution so the package manifest wins over stale source-resource VERSION files, while installed project `.hacker-bob/VERSION` files still override the packaged runtime.
+- Narrowed the canonical npm package include rules so local install metadata under `.claude/bob/` and `.hacker-bob/` is not packed.
+
 ## [1.2.1] - 2026-05-07
 
 ### Public naming cleanup

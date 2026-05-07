@@ -31,6 +31,13 @@ const NPM_CACHE = process.env.HACKER_BOB_RELEASE_NPM_CACHE || path.join(os.tmpdi
 const args = new Set(process.argv.slice(2));
 const registryMode = args.has("--registry");
 const allowPublished = args.has("--allow-published");
+const LOCAL_INSTALL_METADATA_FILES = new Set([
+  ".hacker-bob/VERSION",
+  ".hacker-bob/install.json",
+  ".claude/bob/VERSION",
+  ".claude/bob/install.json",
+  ".claude/bob/egress-profiles.json",
+]);
 
 let failures = 0;
 let warnings = 0;
@@ -95,8 +102,8 @@ function expectedCanonicalFiles() {
     "DISCLAIMER.md",
     "SECURITY.md",
     "install.sh",
-    ...sourceTreeFiles(".hacker-bob"),
-    ...sourceTreeFiles(".claude"),
+    ...sourceTreeFiles(".hacker-bob").filter((file) => !LOCAL_INSTALL_METADATA_FILES.has(file)),
+    ...sourceTreeFiles(".claude").filter((file) => !LOCAL_INSTALL_METADATA_FILES.has(file)),
     ...sourceTreeFiles("adapters"),
     ...sourceTreeFiles("bin"),
     ...sourceTreeFiles("docs"),
@@ -252,6 +259,10 @@ function checkCanonicalPack(rootPackage) {
     if (file === ".claude/hooks/bob-update-lib.js") {
       foundDisallowed = true;
       fail("canonical pack includes deprecated hook-local update library");
+    }
+    if (LOCAL_INSTALL_METADATA_FILES.has(file)) {
+      foundDisallowed = true;
+      fail(`canonical pack includes local install metadata ${file}`);
     }
     if (file.includes("bounty-agent-sessions")) {
       foundDisallowed = true;

@@ -49,6 +49,9 @@ const {
   summarizeToolTelemetryEvents,
 } = require("./tool-telemetry.js");
 const {
+  bobVersion,
+} = require("./runtime-resources.js");
+const {
   requireValidEvidencePacksForFinalReportableFindings,
 } = require("./evidence.js");
 const {
@@ -173,6 +176,7 @@ function normalizePipelineEvent(targetDomain, type, fields = {}) {
 
   const event = {
     version: PIPELINE_EVENT_VERSION,
+    bob_version: capString(fields.bob_version || bobVersion(), 80),
     ts: normalizeIsoTimestamp(fields.ts || fields.now),
     target_domain: domain,
     type: eventType,
@@ -323,6 +327,7 @@ function normalizePipelineEventForRead(record, expectedDomain) {
   if (expectedDomain && targetDomain !== expectedDomain) return null;
   const event = {
     version: PIPELINE_EVENT_VERSION,
+    bob_version: capString(record.bob_version, 80),
     ts: normalizeIsoTimestamp(record.ts),
     target_domain: targetDomain,
     type,
@@ -1134,6 +1139,7 @@ function compactEvent(event) {
   if (!event) return null;
   const compact = {
     ts: event.ts,
+    bob_version: event.bob_version,
     target_domain: event.target_domain,
     type: event.type,
   };

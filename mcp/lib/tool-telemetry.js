@@ -7,6 +7,9 @@ const path = require("path");
 const {
   redactUrlSensitiveValues,
 } = require("../redaction.js");
+const {
+  bobVersion,
+} = require("./runtime-resources.js");
 
 const TOOL_TELEMETRY_VERSION = 1;
 const AGENT_RUN_TELEMETRY_VERSION = 1;
@@ -134,12 +137,23 @@ function safeErrorMessage(message, { errorCode = null, registry = null } = {}) {
   return capString(text, ERROR_MESSAGE_MAX_CHARS);
 }
 
+function currentBobVersion(value = null, env = process.env) {
+  const explicit = capString(value, 80);
+  if (explicit) return explicit;
+  try {
+    return capString(bobVersion(env), 80);
+  } catch {
+    return null;
+  }
+}
+
 function buildToolTelemetryEvent({
   toolName,
   tool,
   args,
   envelope,
   elapsedMs,
+  bob_version: bobVersionInput = null,
   now = new Date(),
 }) {
   const registry = registryMetadata(tool);
@@ -149,6 +163,7 @@ function buildToolTelemetryEvent({
   const context = extractSafeContext(args);
   const event = {
     version: TOOL_TELEMETRY_VERSION,
+    bob_version: currentBobVersion(bobVersionInput),
     ts: now.toISOString(),
     tool: capString(toolName, 120) || "<unknown>",
     ok: !!(envelope && envelope.ok === true),
@@ -261,12 +276,14 @@ function buildAgentRunTelemetryEvent({
   coverage,
   findings,
   telemetry_source: telemetrySource = "hunter-subagent-stop",
+  bob_version: bobVersionInput = null,
   now = new Date(),
 }) {
   const normalizedRunType = runType || runTypeSnake || "hunter";
   const normalizedBlockCode = blockCode == null ? blockCodeSnake : blockCode;
   const event = {
     version: AGENT_RUN_TELEMETRY_VERSION,
+    bob_version: currentBobVersion(bobVersionInput),
     ts: now.toISOString(),
     run_id: null,
     run_type: capString(normalizedRunType, 80) || "hunter",
@@ -325,6 +342,7 @@ function isPlainEvent(event) {
 function normalizeEventForSummary(event) {
   return {
     ts: capString(event.ts, 40),
+    bob_version: capString(event.bob_version, 80),
     tool: capString(event.tool, 120) || "<unknown>",
     ok: event.ok === true,
     elapsed_ms: Number.isFinite(event.elapsed_ms) ? Math.max(0, Math.round(event.elapsed_ms)) : 0,
@@ -358,6 +376,7 @@ function isPlainAgentRunEvent(event) {
 function normalizeAgentRunEventForSummary(event) {
   return {
     ts: capString(event.ts, 40),
+    bob_version: capString(event.bob_version, 80),
     run_id: capString(event.run_id, 80),
     run_type: capString(event.run_type, 80) || "hunter",
     status: event.status === "allowed" ? "allowed" : "blocked",
@@ -486,6 +505,7 @@ function percentile(values, percentileValue) {
 function slimEvent(event) {
   const result = {
     ts: event.ts,
+    bob_version: event.bob_version,
     tool: event.tool,
     ok: event.ok,
     elapsed_ms: event.elapsed_ms,
@@ -546,6 +566,7 @@ function summarizeToolTelemetryEvents(events, { limit = DEFAULT_RECENT_FAILURE_L
     .sort((a, b) => b.calls - a.calls || a.tool.localeCompare(b.tool));
 
   return {
+    observed_bob_versions: observedBobVersions(events),
     totals: summarizeEventGroup("all", events, recentFailureLimit),
     tools,
     recent_failures: events.filter((event) => !event.ok).slice(-recentFailureLimit).reverse().map(slimEvent),
@@ -555,6 +576,7 @@ function summarizeToolTelemetryEvents(events, { limit = DEFAULT_RECENT_FAILURE_L
 function slimAgentRunEvent(event) {
   return {
     ts: event.ts,
+    bob_version: event.bob_version,
     run_id: event.run_id,
     run_type: event.run_type,
     status: event.status,
@@ -575,6 +597,7 @@ function summarizeAgentRunTelemetryEvents(events, {
   limit = DEFAULT_RECENT_FAILURE_LIMIT,
   readResult = null,
   filters = {},
+  env = process.env,
 } = {}) {
   const recentBlockedLimit = normalizeRecentFailureLimit(limit);
   const byStatus = {
@@ -592,6 +615,8 @@ function summarizeAgentRunTelemetryEvents(events, {
 
   return {
     version: AGENT_RUN_TELEMETRY_VERSION,
+    bob_version: currentBobVersion(null, env),
+    observed_bob_versions: observedBobVersions(events),
     enabled: readResult ? readResult.enabled : telemetryEnabled(),
     telemetry_path: readResult ? readResult.telemetry_path : agentRunTelemetryPath(),
     filters,
@@ -622,6 +647,7 @@ function readToolTelemetry(args = {}, { env = process.env } = {}) {
 
   const response = {
     version: TOOL_TELEMETRY_VERSION,
+    bob_version: currentBobVersion(null, env),
     enabled: readResult.enabled,
     telemetry_path: readResult.telemetry_path,
     filters: {
@@ -655,10 +681,19 @@ function readToolTelemetry(args = {}, { env = process.env } = {}) {
       limit,
       readResult: agentRunReadResult,
       filters: agentRunFilters,
+      env,
     });
   }
 
   return response;
+}
+
+function observedBobVersions(events) {
+  return Array.from(new Set(
+    events
+      .map((event) => capString(event.bob_version, 80))
+      .filter(Boolean),
+  )).sort();
 }
 
 module.exports = {

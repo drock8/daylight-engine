@@ -69,12 +69,14 @@ const {
   toolTelemetryPath,
 } = require("../mcp/lib/tool-telemetry.js");
 const {
+  bobVersion,
   readResourceText,
   resolveResourcePath,
   runtimeClient,
 } = require("../mcp/lib/runtime-resources.js");
 
 const ROOT = path.join(__dirname, "..");
+const PACKAGE_VERSION = require("../package.json").version;
 
 const {
   TOOLS,
@@ -1284,6 +1286,7 @@ test("executeTool writes telemetry rows for success and dispatcher failure modes
 
       const rows = readJsonl(toolTelemetryPath());
       assert.equal(rows.length, 5);
+      assert.equal(rows.every((row) => row.bob_version === PACKAGE_VERSION), true);
 
       assert.equal(rows[0].tool, "bounty_list_auth_profiles");
       assert.equal(rows[0].ok, true);
@@ -1422,6 +1425,7 @@ test("tool telemetry reader summarizes at read time and skips malformed lines", 
   try {
     const base = {
       version: 1,
+      bob_version: "1.2.1",
       ts: "2026-04-24T00:00:00.000Z",
       ok: true,
       error_code: null,
@@ -1455,6 +1459,7 @@ test("tool telemetry reader summarizes at read time and skips malformed lines", 
     appendToolTelemetryEvent({
       ...base,
       tool: "bounty_http_scan",
+      bob_version: "1.2.2",
       target_domain: "other.example",
       elapsed_ms: 50,
     }, { env });
@@ -1462,6 +1467,8 @@ test("tool telemetry reader summarizes at read time and skips malformed lines", 
 
     const summary = readToolTelemetry({ target_domain: "example.com", limit: 2 }, { env });
     assert.equal(summary.enabled, true);
+    assert.equal(summary.bob_version, PACKAGE_VERSION);
+    assert.deepEqual(summary.observed_bob_versions, ["1.2.1"]);
     assert.equal(summary.total_events, 4);
     assert.equal(summary.malformed_lines, 1);
     assert.equal(summary.totals.calls, 4);
@@ -1487,6 +1494,7 @@ test("tool telemetry reader summarizes at read time and skips malformed lines", 
 
     const filtered = readToolTelemetry({ tool: "bounty_http_scan" }, { env });
     assert.equal(filtered.total_events, 4);
+    assert.deepEqual(filtered.observed_bob_versions, ["1.2.1", "1.2.2"]);
     assert.equal(filtered.tools.length, 1);
     assert.equal(filtered.tools[0].tool, "bounty_http_scan");
     assert.equal(filtered.tools[0].calls, 4);
@@ -1551,6 +1559,7 @@ test("tool telemetry reader can include filtered hunter run telemetry summaries"
 
     const summary = readToolTelemetry({ include_agent_runs: true, target_domain: "example.com", limit: 2 }, { env });
     assert.equal(summary.total_events, 0);
+    assert.deepEqual(summary.agent_runs.observed_bob_versions, [PACKAGE_VERSION]);
     assert.equal(summary.agent_runs.total_runs, 2);
     assert.equal(summary.agent_runs.malformed_lines, 1);
     assert.deepEqual(summary.agent_runs.totals.by_status, { allowed: 1, blocked: 1 });
@@ -1709,6 +1718,7 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
 
     const rows = readJsonl(pipelineEventsJsonlPath(domain));
     assert.ok(rows.length >= 10);
+    assert.equal(rows.every((row) => row.bob_version === PACKAGE_VERSION), true);
     assert.deepEqual(new Set(rows.map((row) => row.type)), new Set([
       "session_started",
       "phase_transitioned",
@@ -1746,6 +1756,7 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
     assert.equal(analytics.sessions[0].report_present, true);
     assert.equal(analytics.funnel.reached.REPORT, 1);
     assert.equal(analytics.bottlenecks.length, 0);
+    assert.equal(analytics.events.every((event) => event.bob_version === PACKAGE_VERSION), true);
 
     for (const forbidden of [rawPocSecret, rawHandoffSecret, rawCoverageSecret, rawTechniqueSecret, "metadata-only analytics must not copy this evidence", rawEvidenceText]) {
       assert.equal(analyticsText.includes(forbidden), false, `${forbidden} leaked into pipeline analytics`);
@@ -6360,6 +6371,7 @@ test("hunter SubagentStop hook writes metadata-only allowed run telemetry", () =
     assert.equal(rows.length, 1);
     const event = rows[0];
     assert.equal(event.version, 1);
+    assert.equal(event.bob_version, PACKAGE_VERSION);
     assert.match(event.run_id, /^[a-f0-9]{16}$/);
     assert.equal(event.run_type, "hunter");
     assert.equal(event.status, "allowed");
@@ -12434,9 +12446,14 @@ test("runtime resource resolution prefers neutral env paths and preserves Claude
     const neutralResources = path.join(root, "neutral-resources");
     const claudeProject = path.join(root, "claude-project");
     fs.mkdirSync(path.join(neutralResources, "knowledge"), { recursive: true });
+    fs.mkdirSync(path.join(root, "bob-project", ".hacker-bob"), { recursive: true });
     fs.mkdirSync(path.join(claudeProject, ".claude", "knowledge"), { recursive: true });
     fs.writeFileSync(path.join(neutralResources, "knowledge", "source.txt"), "neutral\n", "utf8");
+    fs.writeFileSync(path.join(root, "bob-project", ".hacker-bob", "VERSION"), "9.8.7\n", "utf8");
     fs.writeFileSync(path.join(claudeProject, ".claude", "knowledge", "source.txt"), "claude\n", "utf8");
+
+    assert.equal(bobVersion({ BOB_PROJECT_DIR: path.join(root, "bob-project") }), "9.8.7");
+    assert.equal(runtimeClient({ BOB_CLIENT: "codex" }), "codex");
 
     withEnv({
       BOB_CLIENT: "codex",
@@ -12445,17 +12462,20 @@ test("runtime resource resolution prefers neutral env paths and preserves Claude
       CLAUDE_PROJECT_DIR: claudeProject,
     }, () => {
       assert.equal(runtimeClient(), "codex");
+      assert.equal(bobVersion(), "9.8.7");
       assert.equal(readResourceText("knowledge", "source.txt"), "neutral\n");
       assert.equal(resolveResourcePath("knowledge", "source.txt"), path.join(neutralResources, "knowledge", "source.txt"));
     });
 
     withEnv({
+      BOB_VERSION: "8.8.8",
       BOB_CLIENT: undefined,
       BOB_PROJECT_DIR: undefined,
       BOB_RESOURCE_DIR: undefined,
       CLAUDE_PROJECT_DIR: claudeProject,
     }, () => {
       assert.equal(runtimeClient(), "claude");
+      assert.equal(bobVersion(), "8.8.8");
       assert.equal(readResourceText("knowledge", "source.txt"), "claude\n");
       assert.equal(resolveResourcePath("knowledge", "source.txt"), path.join(claudeProject, ".claude", "knowledge", "source.txt"));
     });

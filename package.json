@@ -1,6 +1,6 @@
 {
   "name": "hacker-bob",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Portable autonomous bug bounty hunting MCP framework with host adapters",
   "license": "Apache-2.0",
   "repository": {
@@ -18,8 +18,15 @@
     "node": ">=20"
   },
   "files": [
-    ".claude/**/*",
-    ".hacker-bob/**/*",
+    ".claude/agents/**/*",
+    ".claude/bob/egress-profiles.example.json",
+    ".claude/commands/**/*",
+    ".claude/hooks/**/*",
+    ".claude/rules/**/*",
+    ".claude/settings.json",
+    ".claude/skills/**/*",
+    ".hacker-bob/bypass-tables/**/*",
+    ".hacker-bob/knowledge/**/*",
     "adapters/**/*",
     "bin/**/*",
     "docs/**/*.md",

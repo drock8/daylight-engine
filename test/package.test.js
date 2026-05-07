@@ -21,6 +21,13 @@ const WRAPPER_PACKAGES = Object.freeze([
     adapter: "codex",
   },
 ]);
+const LOCAL_INSTALL_METADATA_FILES = new Set([
+  ".hacker-bob/VERSION",
+  ".hacker-bob/install.json",
+  ".claude/bob/VERSION",
+  ".claude/bob/install.json",
+  ".claude/bob/egress-profiles.json",
+]);
 
 function sourceTreeFiles(relativeDir) {
   const root = path.join(ROOT, relativeDir);
@@ -52,8 +59,8 @@ function expectedCanonicalFiles() {
     "DISCLAIMER.md",
     "SECURITY.md",
     "install.sh",
-    ...sourceTreeFiles(".hacker-bob"),
-    ...sourceTreeFiles(".claude"),
+    ...sourceTreeFiles(".hacker-bob").filter((file) => !LOCAL_INSTALL_METADATA_FILES.has(file)),
+    ...sourceTreeFiles(".claude").filter((file) => !LOCAL_INSTALL_METADATA_FILES.has(file)),
     ...sourceTreeFiles("adapters"),
     ...sourceTreeFiles("bin"),
     ...sourceTreeFiles("docs"),
@@ -95,6 +102,7 @@ test("npm package contains runtime surfaces and excludes test/cache artifacts", 
       assert.ok(!file.startsWith(".github/"), `${file} should not be packed`);
       assert.ok(!file.startsWith("packages/"), `${file} should not be packed in canonical package`);
       assert.notEqual(file, ".claude/hooks/bob-update-lib.js", "hook-local update library should not be packed");
+      assert.ok(!LOCAL_INSTALL_METADATA_FILES.has(file), `${file} should not be packed`);
       assert.ok(!file.includes("bounty-agent-sessions"), `${file} should not be packed`);
       assert.ok(!file.includes(".cache/"), `${file} should not be packed`);
     }
