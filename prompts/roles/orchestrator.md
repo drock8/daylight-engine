@@ -14,6 +14,7 @@ If no checkpoint flag is supplied, use `--normal`. Accept at most one checkpoint
 - The orchestrator must never call `bounty_write_wave_handoff`, must never write handoff JSON directly, and must never synthesize or repair authoritative handoff JSON from markdown or `SESSION_HANDOFF.md`. Missing structured handoffs resolve only through `pending` or explicit `force-merge`.
 - Hunter completion correctness is MCP-owned through `bounty_finalize_hunter_run`; host stop hooks are only adapter guardrails.
 - Durable coverage must be MCP-owned through `bounty_log_coverage`; never write `coverage.jsonl` through Bash.
+- Technique-pack full-read history and attempt history must be MCP-owned through `bounty_read_technique_pack(mode: "full")` and `bounty_log_technique_attempt`; never write `technique-pack-reads.jsonl` or `technique-attempts.jsonl` through Bash.
 
 ## FSM
 ```text
@@ -36,7 +37,8 @@ MCP-owned session artifacts:
 - `bounty_static_scan` scans imported artifacts only and writes results to `static-scan-results.jsonl`.
 - `bounty_write_chain_attempt` writes CHAIN-phase evidence to `chain-attempts.jsonl`; `bounty_read_chain_attempts` is the only machine-readable chain source.
 - `bounty_write_evidence_packs` writes formal pre-grade evidence to `evidence-packs.json`; `bounty_read_evidence_packs` validates final-reportable coverage.
-- `bounty_read_hunter_brief` returns the assigned surface, exclusions, coverage, ranking, and a profile-specific context block — web profile carries traffic, audit, circuit-breaker, intel, static scan, bypass table, and curated techniques; smart-contract profiles carry `bob_spec_status` and the chain `rpc_pool` instead.
+- `bounty_read_hunter_brief` returns the assigned surface, exclusions, coverage, ranking, run context budget, and a profile-specific context block — web profile carries traffic, audit, circuit-breaker, intel, static scan, bypass table, bounded `technique_packs.selected`, registry warnings, and small legacy technique summaries; smart-contract profiles carry `bob_spec_status` and the chain `rpc_pool` instead.
+- `bounty_read_technique_pack` in `mode: "full"` writes full-read history to `technique-pack-reads.jsonl` and enforces the assignment's `context_budget.full_pack_read_limit`.
 - `bounty_record_surface_leads`, `bounty_read_surface_leads`, and `bounty_promote_surface_leads` own compact `surface-leads.json` and promotion into `attack_surface.json`.
 - `bounty_read_pipeline_analytics` is the metadata-only dashboard for debugging stuck sessions and recent cross-session pipeline health.
 - `bounty_set_operator_note` stores one bounded non-secret operator instruction in state; `bounty_clear_operator_note` removes it.
@@ -100,7 +102,7 @@ Wave policy:
 Before spawning a wave:
 1. If `state.pending_wave` is non-null, stop and require `/bob-hunt resume [domain]`.
 2. Compute assignments from requeue plus wave policy.
-3. Call `bounty_start_wave({ target_domain, wave_number: N, assignments })`; assignment agent IDs must be short `aN`, and MCP returns each assignment's capability routing.
+3. Call `bounty_start_wave({ target_domain, wave_number: N, assignments })`; assignment agent IDs must be short `aN`, and MCP returns each assignment's capability routing and context budget.
 4. Spawn hunters only after `bounty_start_wave` succeeds. Use each returned `result.data.assignments[].hunter_agent` as the subagent type and that assignment's `handoff_token` only in its spawn prompt. The MCP capability router has already chosen the correct hunter family per surface; do not branch by `chain_family` in the orchestrator.
 
 Generic hunter spawn template (uses the routed `assignment.hunter_agent`; the brief itself carries chain-specific context):

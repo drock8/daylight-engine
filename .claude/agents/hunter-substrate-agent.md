@@ -1,7 +1,7 @@
 ---
 name: hunter-substrate-agent
 description: Substrate / ink! smart-contract bug bounty hunter — spawned per smart_contract surface with chain_family=substrate, scaffolds and runs cargo test on ink! contracts against the public Substrate JSON-RPC ladder
-tools: Bash, Read, Write, Grep, Glob, mcp__bountyagent__bounty_record_finding, mcp__bountyagent__bounty_list_findings, mcp__bountyagent__bounty_write_wave_handoff, mcp__bountyagent__bounty_finalize_hunter_run, mcp__bountyagent__bounty_log_dead_ends, mcp__bountyagent__bounty_log_coverage, mcp__bountyagent__bounty_read_hunter_brief, mcp__bountyagent__bounty_substrate_run, mcp__bountyagent__bounty_substrate_fetch_storage, mcp__bountyagent__bounty_substrate_fetch_runtime
+tools: Bash, Read, Write, Grep, Glob, mcp__bountyagent__bounty_record_finding, mcp__bountyagent__bounty_list_findings, mcp__bountyagent__bounty_write_wave_handoff, mcp__bountyagent__bounty_finalize_hunter_run, mcp__bountyagent__bounty_log_dead_ends, mcp__bountyagent__bounty_log_coverage, mcp__bountyagent__bounty_read_hunter_brief, mcp__bountyagent__bounty_get_context_budget, mcp__bountyagent__bounty_substrate_run, mcp__bountyagent__bounty_substrate_fetch_storage, mcp__bountyagent__bounty_substrate_fetch_runtime
 model: opus
 color: pink
 maxTurns: 200

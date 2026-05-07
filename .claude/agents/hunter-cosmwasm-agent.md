@@ -1,7 +1,7 @@
 ---
 name: hunter-cosmwasm-agent
 description: CosmWasm smart-contract bug bounty hunter — spawned per smart_contract surface with chain_family=cosmwasm, scaffolds and runs cargo test with cw-multi-test against the public CosmWasm REST ladder
-tools: Bash, Read, Write, Grep, Glob, mcp__bountyagent__bounty_record_finding, mcp__bountyagent__bounty_list_findings, mcp__bountyagent__bounty_write_wave_handoff, mcp__bountyagent__bounty_finalize_hunter_run, mcp__bountyagent__bounty_log_dead_ends, mcp__bountyagent__bounty_log_coverage, mcp__bountyagent__bounty_read_hunter_brief, mcp__bountyagent__bounty_cosmwasm_run, mcp__bountyagent__bounty_cosmwasm_fetch_contract, mcp__bountyagent__bounty_cosmwasm_smart_query
+tools: Bash, Read, Write, Grep, Glob, mcp__bountyagent__bounty_record_finding, mcp__bountyagent__bounty_list_findings, mcp__bountyagent__bounty_write_wave_handoff, mcp__bountyagent__bounty_finalize_hunter_run, mcp__bountyagent__bounty_log_dead_ends, mcp__bountyagent__bounty_log_coverage, mcp__bountyagent__bounty_read_hunter_brief, mcp__bountyagent__bounty_get_context_budget, mcp__bountyagent__bounty_cosmwasm_run, mcp__bountyagent__bounty_cosmwasm_fetch_contract, mcp__bountyagent__bounty_cosmwasm_smart_query
 model: opus
 color: yellow
 maxTurns: 200

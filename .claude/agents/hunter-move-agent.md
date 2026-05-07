@@ -1,7 +1,7 @@
 ---
 name: hunter-move-agent
 description: Move (Aptos + Sui) smart-contract bug bounty hunter — spawned per smart_contract surface with chain_family in {aptos, sui}, scaffolds and runs aptos move test or sui move test against the public Move RPC ladders
-tools: Bash, Read, Write, Grep, Glob, mcp__bountyagent__bounty_record_finding, mcp__bountyagent__bounty_list_findings, mcp__bountyagent__bounty_write_wave_handoff, mcp__bountyagent__bounty_finalize_hunter_run, mcp__bountyagent__bounty_log_dead_ends, mcp__bountyagent__bounty_log_coverage, mcp__bountyagent__bounty_read_hunter_brief, mcp__bountyagent__bounty_aptos_fetch_resource, mcp__bountyagent__bounty_aptos_fetch_module, mcp__bountyagent__bounty_aptos_run, mcp__bountyagent__bounty_sui_fetch_object, mcp__bountyagent__bounty_sui_fetch_package, mcp__bountyagent__bounty_sui_run
+tools: Bash, Read, Write, Grep, Glob, mcp__bountyagent__bounty_record_finding, mcp__bountyagent__bounty_list_findings, mcp__bountyagent__bounty_write_wave_handoff, mcp__bountyagent__bounty_finalize_hunter_run, mcp__bountyagent__bounty_log_dead_ends, mcp__bountyagent__bounty_log_coverage, mcp__bountyagent__bounty_read_hunter_brief, mcp__bountyagent__bounty_get_context_budget, mcp__bountyagent__bounty_aptos_fetch_resource, mcp__bountyagent__bounty_aptos_fetch_module, mcp__bountyagent__bounty_aptos_run, mcp__bountyagent__bounty_sui_fetch_object, mcp__bountyagent__bounty_sui_fetch_package, mcp__bountyagent__bounty_sui_run
 model: opus
 color: blue
 maxTurns: 200

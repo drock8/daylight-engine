@@ -1,7 +1,4 @@
 "use strict";
-
-const fs = require("fs");
-const path = require("path");
 const {
   assertBoolean,
   assertNonEmptyString,
@@ -50,11 +47,16 @@ const {
 } = require("./scope.js");
 const {
   readResourceText,
-  resourceCandidatePaths,
 } = require("./runtime-resources.js");
 const {
   normalizeAssignmentRouteMetadata,
 } = require("./capability-packs.js");
+const {
+  HUNTER_KNOWLEDGE_MAX_CHARS,
+  hunterKnowledgeCandidatePaths,
+  resolveHunterKnowledge,
+  selectTechniquePacksForSurface,
+} = require("./technique-packs.js");
 
 // Bypass table tech-to-file map used by hunter brief generation.
 const BYPASS_TABLE_MAP = {
@@ -69,10 +71,6 @@ const BYPASS_TABLE_MAP = {
   oidc: "oauth-oidc.txt",
 };
 const BYPASS_TABLE_DEFAULT = "rest-api.txt";
-const HUNTER_KNOWLEDGE_FILE = Object.freeze(["knowledge", "hunter-techniques.json"]);
-const HUNTER_KNOWLEDGE_DEFAULT_ID = "generic-rest-api";
-const HUNTER_KNOWLEDGE_MAX_ENTRIES = 4;
-const HUNTER_KNOWLEDGE_MAX_CHARS = 4500;
 const HUNTER_BRIEF_SURFACE_ARRAY_LIMITS = Object.freeze({
   hosts: 20,
   tech_stack: 20,
@@ -121,228 +119,6 @@ function resolveBypassTable(techStack) {
     }
   }
   return BYPASS_TABLE_DEFAULT;
-}
-
-function hunterKnowledgeCandidatePaths() {
-  return resourceCandidatePaths(...HUNTER_KNOWLEDGE_FILE);
-}
-
-function loadHunterKnowledge() {
-  for (const candidate of hunterKnowledgeCandidatePaths()) {
-    try {
-      if (!candidate || !fs.existsSync(candidate)) continue;
-      const parsed = JSON.parse(fs.readFileSync(candidate, "utf8"));
-      if (parsed && typeof parsed === "object" && Array.isArray(parsed.entries)) {
-        return {
-          path: candidate,
-          entries: parsed.entries.filter((entry) => entry && typeof entry === "object"),
-        };
-      }
-    } catch {
-      // Knowledge is read-only enrichment. A malformed optional file should not
-      // block a hunter from receiving the deterministic assignment brief.
-    }
-  }
-  return { path: null, entries: [] };
-}
-
-function lowerStringArray(value) {
-  if (value == null) return [];
-  const values = Array.isArray(value) ? value : [value];
-  return values
-    .filter((item) => item != null)
-    .map((item) => String(item).toLowerCase());
-}
-
-function stringArray(value) {
-  if (value == null) return [];
-  const values = Array.isArray(value) ? value : [value];
-  return values
-    .filter((item) => item != null)
-    .map((item) => String(item));
-}
-
-function surfaceFieldText(surface, fields) {
-  const values = [];
-  for (const field of fields) {
-    values.push(...lowerStringArray(surface[field]));
-  }
-  return values.join("\n");
-}
-
-function countMatches(patterns, haystack, weight, label) {
-  const matches = [];
-  let score = 0;
-  for (const pattern of lowerStringArray(patterns)) {
-    if (!pattern || !haystack.includes(pattern)) continue;
-    score += weight;
-    matches.push(`${label}:${pattern}`);
-  }
-  return { score, matches };
-}
-
-function countExactMatches(patterns, values, weight, label) {
-  const valueSet = new Set(lowerStringArray(values));
-  const matches = [];
-  let score = 0;
-  for (const pattern of lowerStringArray(patterns)) {
-    if (!pattern || !valueSet.has(pattern)) continue;
-    score += weight;
-    matches.push(`${label}:${pattern}`);
-  }
-  return { score, matches };
-}
-
-function scoreKnowledgeEntry(entry, surface) {
-  const match = entry.match && typeof entry.match === "object" ? entry.match : {};
-  const techText = surfaceFieldText(surface, [
-    "tech_stack",
-    "surface_type",
-  ]);
-  const endpointText = surfaceFieldText(surface, [
-    "endpoints",
-    "discovered_endpoints",
-    "js_endpoints",
-    "hosts",
-    "high_value_flows",
-    "evidence",
-  ]);
-  const paramValues = [
-    ...lowerStringArray(surface.interesting_params),
-    ...lowerStringArray(surface.params),
-    ...lowerStringArray(surface.parameters),
-  ];
-  const hintText = surfaceFieldText(surface, [
-    "nuclei_hits",
-    "js_hints",
-    "security_issues",
-    "leaked_secrets",
-    "auth_info",
-    "surface_type",
-    "bug_class_hints",
-    "high_value_flows",
-    "evidence",
-  ]);
-
-  const scored = [
-    countMatches(match.tech, techText, 8, "tech"),
-    countMatches(match.endpoints, endpointText, 5, "endpoint"),
-    countExactMatches(match.params, paramValues, 3, "param"),
-    countMatches(match.hints, hintText, 4, "hint"),
-  ];
-
-  return scored.reduce(
-    (result, item) => ({
-      score: result.score + item.score,
-      matches: result.matches.concat(item.matches),
-    }),
-    { score: 0, matches: [] },
-  );
-}
-
-function slimKnowledgeEntry(entry, matches) {
-  return {
-    id: assertNonEmptyString(entry.id || "knowledge-entry", "knowledge.id"),
-    title: assertNonEmptyString(entry.title || entry.id || "Hunter guidance", "knowledge.title"),
-    matched: matches.slice(0, 6),
-    techniques: stringArray(entry.techniques)
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .slice(0, 4),
-    payload_hints: stringArray(entry.payload_hints)
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .slice(0, 4),
-  };
-}
-
-function fitKnowledgeEntries(entries, maxChars) {
-  const selected = [];
-  for (const entry of entries) {
-    const candidate = selected.concat(entry);
-    if (JSON.stringify(candidate).length > maxChars) break;
-    selected.push(entry);
-  }
-  return selected;
-}
-
-function resolveHunterKnowledge(surface) {
-  const knowledge = loadHunterKnowledge();
-  if (knowledge.entries.length === 0) {
-    return {
-      techniques: [],
-      payload_hints: [],
-      knowledge_summary: {
-        source: null,
-        entries_returned: 0,
-        capped: false,
-        char_count: 0,
-      },
-    };
-  }
-
-  const scoredEntries = [];
-  for (const entry of knowledge.entries) {
-    const scored = scoreKnowledgeEntry(entry, surface);
-    if (scored.score > 0) {
-      scoredEntries.push({ entry, score: scored.score, matches: scored.matches });
-    }
-  }
-
-  if (scoredEntries.length === 0) {
-    const fallback = knowledge.entries.find((entry) => entry.id === HUNTER_KNOWLEDGE_DEFAULT_ID);
-    if (fallback) {
-      scoredEntries.push({ entry: fallback, score: 0, matches: ["fallback:generic-rest-api"] });
-    }
-  }
-
-  scoredEntries.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return String(a.entry.id || "").localeCompare(String(b.entry.id || ""));
-  });
-
-  const slimEntries = scoredEntries
-    .slice(0, HUNTER_KNOWLEDGE_MAX_ENTRIES)
-    .map(({ entry, matches }) => slimKnowledgeEntry(entry, matches));
-  const fittedEntries = fitKnowledgeEntries(slimEntries, HUNTER_KNOWLEDGE_MAX_CHARS);
-  let techniques = [];
-  let payloadHints = [];
-  let charCount = 0;
-  while (fittedEntries.length > 0) {
-    techniques = fittedEntries.map((entry) => ({
-      id: entry.id,
-      title: entry.title,
-      matched: entry.matched,
-      guidance: entry.techniques,
-    }));
-    payloadHints = fittedEntries
-      .filter((entry) => entry.payload_hints.length > 0)
-      .map((entry) => ({
-        id: entry.id,
-        title: entry.title,
-        hints: entry.payload_hints,
-      }));
-    charCount = JSON.stringify({ techniques, payload_hints: payloadHints }).length;
-    if (charCount <= HUNTER_KNOWLEDGE_MAX_CHARS) break;
-    fittedEntries.pop();
-  }
-  if (fittedEntries.length === 0) {
-    techniques = [];
-    payloadHints = [];
-    charCount = 0;
-  }
-
-  return {
-    techniques,
-    payload_hints: payloadHints,
-    knowledge_summary: {
-      source: knowledge.path ? path.basename(knowledge.path) : null,
-      entries_returned: fittedEntries.length,
-      capped: slimEntries.length > fittedEntries.length,
-      char_count: charCount,
-      max_chars: HUNTER_KNOWLEDGE_MAX_CHARS,
-    },
-  };
 }
 
 function isBriefScalar(value) {
@@ -504,6 +280,7 @@ function readHunterBrief(args) {
     domain,
     surface: surfaceObj,
     assignment,
+    routeMetadata,
   });
 
   return JSON.stringify({
@@ -514,8 +291,10 @@ function readHunterBrief(args) {
       egress_profile: egressProfile,
       block_internal_hosts: blockInternalHosts,
       capability_pack: routeMetadata.capability_pack,
+      capability_pack_version: routeMetadata.capability_pack_version,
       hunter_agent: routeMetadata.hunter_agent,
       brief_profile: routeMetadata.brief_profile,
+      context_budget: routeMetadata.context_budget,
     },
     target_url: state.target_url,
     wave,
@@ -542,9 +321,9 @@ function readHunterBrief(args) {
 // Profile dispatch table. Adding a non-web, non-smart-contract pack means
 // adding both a pack record (capability-packs.js) and an entry here — fail
 // loudly on any profile we did not explicitly opt in.
-function buildBriefExtrasForProfile(profile, { domain, surface, assignment }) {
+function buildBriefExtrasForProfile(profile, { domain, surface, assignment, routeMetadata }) {
   if (profile === "web") {
-    return buildWebBriefExtras(domain, surface);
+    return buildWebBriefExtras(domain, surface, routeMetadata);
   }
   if (typeof profile === "string" && profile.startsWith("smart_contract_")) {
     return buildSmartContractBriefExtras(domain, surface, assignment);
@@ -556,14 +335,76 @@ function buildBriefExtrasForProfile(profile, { domain, surface, assignment }) {
 // tech stack, web technique/payload knowledge, traffic + audit + circuit
 // breaker summaries from real HTTP probes, public bounty intel, static scan
 // hints, and an auth-profile hint pointing the hunter at bounty_list_auth_profiles.
-function buildWebBriefExtras(domain, surfaceObj) {
+const LEGACY_TECHNIQUE_SUMMARY_LIMIT = 2;
+
+function basenameForSummary(filePath) {
+  if (!filePath) return null;
+  return String(filePath).split(/[\\/]/).pop() || null;
+}
+
+function legacyKnowledgeFromTechniquePacks(selectedResult, selectedTechniquePacks) {
+  const legacyEntries = selectedTechniquePacks.slice(0, LEGACY_TECHNIQUE_SUMMARY_LIMIT);
+  const techniques = legacyEntries
+    .filter((pack) => pack.summary && Array.isArray(pack.summary.guidance) && pack.summary.guidance.length > 0)
+    .map((pack) => ({
+      id: pack.id,
+      title: pack.title,
+      matched: Array.isArray(pack.matched) ? pack.matched.slice(0, 6) : [],
+      guidance: pack.summary.guidance.slice(0, 4),
+    }));
+  const payloadHints = legacyEntries
+    .filter((pack) => pack.summary && Array.isArray(pack.summary.payload_hints) && pack.summary.payload_hints.length > 0)
+    .map((pack) => ({
+      id: pack.id,
+      title: pack.title,
+      hints: pack.summary.payload_hints.slice(0, 4),
+    }));
+  const charCount = JSON.stringify({ techniques, payload_hints: payloadHints }).length;
+  return {
+    techniques,
+    payload_hints: payloadHints,
+    knowledge_summary: {
+      source: basenameForSummary(selectedResult.source),
+      entries_returned: legacyEntries.length,
+      capped: selectedTechniquePacks.length > legacyEntries.length,
+      char_count: charCount,
+      max_chars: HUNTER_KNOWLEDGE_MAX_CHARS,
+      max_entries: LEGACY_TECHNIQUE_SUMMARY_LIMIT,
+      legacy_compatibility: true,
+      registry_warnings: selectedResult.registry_warnings || [],
+    },
+  };
+}
+
+function buildWebBriefExtras(domain, surfaceObj, routeMetadata) {
   const bypassFile = resolveBypassTable(surfaceObj.tech_stack);
   let bypassTable = "";
   try {
     const content = readResourceText("bypass-tables", bypassFile);
     if (content != null) bypassTable = content.trim();
   } catch {}
-  const knowledge = resolveHunterKnowledge(surfaceObj);
+  const candidatePackLimit = routeMetadata.context_budget.candidate_pack_limit;
+  const selectedTechniquePackResult = selectTechniquePacksForSurface(surfaceObj, {
+    capabilityPack: routeMetadata.capability_pack,
+    maxPacks: candidatePackLimit,
+    includeAttempted: true,
+  });
+  const selectedTechniquePacks = selectedTechniquePackResult.selected.map((pack) => ({
+    id: pack.id,
+    version: pack.version,
+    title: pack.title,
+    matched: pack.matched,
+    score: pack.score,
+    summary: pack.summary,
+    summary_limits: pack.summary_limits,
+    estimated_tokens: pack.estimated_tokens,
+  }));
+  const selectedTechniquePackLimits = {
+    ...selectedTechniquePackResult.selection_limits,
+    selected_chars: JSON.stringify(selectedTechniquePacks).length,
+    selected_count: selectedTechniquePacks.length,
+  };
+  const knowledge = legacyKnowledgeFromTechniquePacks(selectedTechniquePackResult, selectedTechniquePacks);
   const trafficSummary = summarizeTrafficRecords(
     readTrafficRecordsFromJsonl(domain),
     { surface: surfaceObj },
@@ -578,6 +419,16 @@ function buildWebBriefExtras(domain, surfaceObj) {
     techniques: knowledge.techniques,
     payload_hints: knowledge.payload_hints,
     knowledge_summary: knowledge.knowledge_summary,
+    technique_packs: {
+      selected: selectedTechniquePacks,
+      selection_limits: selectedTechniquePackLimits,
+      registry_warnings: selectedTechniquePackResult.registry_warnings,
+      selection_budget: {
+        candidate_pack_limit: candidatePackLimit,
+        full_pack_read_limit: routeMetadata.context_budget.full_pack_read_limit,
+        attempt_log_required: routeMetadata.context_budget.attempt_log_required,
+      },
+    },
     traffic_summary: trafficSummary,
     audit_summary: auditSummary,
     circuit_breaker_summary: circuitBreakerSummary,

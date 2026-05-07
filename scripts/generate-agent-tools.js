@@ -26,8 +26,8 @@ const AGENT_TOOL_SPECS = Object.freeze({
     extras: ["Bash", "Read", "Write", "Glob", "Grep"],
   },
   "surface-router-agent.md": {
-    roleBundles: ["router"],
-    extras: ["Read"],
+    roleBundles: [],
+    extras: ["Read", "mcp__bountyagent__bounty_route_surfaces"],
   },
   "hunter-agent.md": {
     roleBundles: ["hunter-shared", "hunter-web"],

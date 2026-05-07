@@ -4,6 +4,7 @@
 //   id              — string used in surface-routes.json and findings.jsonl
 //   hunter_agent    — Claude/Codex subagent name spawned for this pack
 //   brief_profile   — selects which buildBriefExtras builder hunter-brief calls
+//   context_budget  — bounded context contract exposed to routed hunters
 //   role_bundles    — MCP tool bundles the spawned hunter sees
 //   completion_gate — wave-handoff completion rule the merge layer enforces
 //   verifier        — pack-keyed PoC replay for brutalist/balanced/final verifier
@@ -17,12 +18,26 @@
 // is composed from spawn fields, so adding a chain pack auto-generates its
 // catalogue entry without touching any renderer.
 
+const DEFAULT_CONTEXT_BUDGET = Object.freeze({
+  candidate_pack_limit: 5,
+  full_pack_read_limit: 2,
+  attempt_log_required: true,
+});
+
+const SMART_CONTRACT_CONTEXT_BUDGET = Object.freeze({
+  candidate_pack_limit: 5,
+  full_pack_read_limit: 2,
+  attempt_log_required: false,
+});
+
 const WEB_CAPABILITY_PACK = Object.freeze({
   id: "web",
+  capability_pack_version: 1,
   hunter_agent: "hunter-agent",
   brief_profile: "web",
   role_bundles: Object.freeze(["hunter-shared", "hunter-web"]),
   completion_gate: "web_wave_handoff",
+  context_budget: DEFAULT_CONTEXT_BUDGET,
   verifier: Object.freeze({
     // Web verifier replay is a fresh HTTP call against the same endpoint
     // with the captured auth profile. Verifier extracts the request from
@@ -46,10 +61,12 @@ const WEB_CAPABILITY_PACK = Object.freeze({
 
 const SMART_CONTRACT_EVM_CAPABILITY_PACK = Object.freeze({
   id: "smart_contract_evm",
+  capability_pack_version: 1,
   hunter_agent: "hunter-evm-agent",
   brief_profile: "smart_contract_evm",
   role_bundles: Object.freeze(["hunter-shared", "hunter-evm"]),
   completion_gate: "smart_contract_wave_handoff",
+  context_budget: SMART_CONTRACT_CONTEXT_BUDGET,
   verifier: Object.freeze({
     replay_tool: "bounty_foundry_run",
     sample_type: "evm_foundry_run",
@@ -81,10 +98,12 @@ const SMART_CONTRACT_EVM_CAPABILITY_PACK = Object.freeze({
 
 const SMART_CONTRACT_SVM_CAPABILITY_PACK = Object.freeze({
   id: "smart_contract_svm",
+  capability_pack_version: 1,
   hunter_agent: "hunter-svm-agent",
   brief_profile: "smart_contract_svm",
   role_bundles: Object.freeze(["hunter-shared", "hunter-svm"]),
   completion_gate: "smart_contract_wave_handoff",
+  context_budget: SMART_CONTRACT_CONTEXT_BUDGET,
   verifier: Object.freeze({
     replay_tool: "bounty_anchor_run",
     sample_type: "svm_anchor_run",
@@ -120,10 +139,12 @@ const SMART_CONTRACT_SVM_CAPABILITY_PACK = Object.freeze({
 // and bounty_sui_*.
 const SMART_CONTRACT_APTOS_CAPABILITY_PACK = Object.freeze({
   id: "smart_contract_aptos",
+  capability_pack_version: 1,
   hunter_agent: "hunter-move-agent",
   brief_profile: "smart_contract_aptos",
   role_bundles: Object.freeze(["hunter-shared", "hunter-move"]),
   completion_gate: "smart_contract_wave_handoff",
+  context_budget: SMART_CONTRACT_CONTEXT_BUDGET,
   verifier: Object.freeze({
     replay_tool: "bounty_aptos_run",
     sample_type: "aptos_move_test",
@@ -157,10 +178,12 @@ const SMART_CONTRACT_APTOS_CAPABILITY_PACK = Object.freeze({
 
 const SMART_CONTRACT_SUI_CAPABILITY_PACK = Object.freeze({
   id: "smart_contract_sui",
+  capability_pack_version: 1,
   hunter_agent: "hunter-move-agent",
   brief_profile: "smart_contract_sui",
   role_bundles: Object.freeze(["hunter-shared", "hunter-move"]),
   completion_gate: "smart_contract_wave_handoff",
+  context_budget: SMART_CONTRACT_CONTEXT_BUDGET,
   verifier: Object.freeze({
     replay_tool: "bounty_sui_run",
     sample_type: "sui_move_test",
@@ -190,10 +213,12 @@ const SMART_CONTRACT_SUI_CAPABILITY_PACK = Object.freeze({
 
 const SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK = Object.freeze({
   id: "smart_contract_substrate",
+  capability_pack_version: 1,
   hunter_agent: "hunter-substrate-agent",
   brief_profile: "smart_contract_substrate",
   role_bundles: Object.freeze(["hunter-shared", "hunter-substrate"]),
   completion_gate: "smart_contract_wave_handoff",
+  context_budget: SMART_CONTRACT_CONTEXT_BUDGET,
   verifier: Object.freeze({
     replay_tool: "bounty_substrate_run",
     sample_type: "substrate_ink_test",
@@ -227,10 +252,12 @@ const SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK = Object.freeze({
 
 const SMART_CONTRACT_COSMWASM_CAPABILITY_PACK = Object.freeze({
   id: "smart_contract_cosmwasm",
+  capability_pack_version: 1,
   hunter_agent: "hunter-cosmwasm-agent",
   brief_profile: "smart_contract_cosmwasm",
   role_bundles: Object.freeze(["hunter-shared", "hunter-cosmwasm"]),
   completion_gate: "smart_contract_wave_handoff",
+  context_budget: SMART_CONTRACT_CONTEXT_BUDGET,
   verifier: Object.freeze({
     replay_tool: "bounty_cosmwasm_run",
     sample_type: "cosmwasm_cw_multi_test",
@@ -368,6 +395,20 @@ function getCapabilityPack(packId) {
   return CAPABILITY_PACKS[packId] || null;
 }
 
+function cloneContextBudget(budget) {
+  return {
+    candidate_pack_limit: budget.candidate_pack_limit,
+    full_pack_read_limit: budget.full_pack_read_limit,
+    attempt_log_required: budget.attempt_log_required,
+  };
+}
+
+function getCapabilityPackContextBudget(packId) {
+  const pack = getCapabilityPack(packId);
+  if (!pack) return null;
+  return cloneContextBudget(pack.context_budget || DEFAULT_CONTEXT_BUDGET);
+}
+
 function hunterAgentNamesForCapabilityPacks() {
   return Array.from(new Set(
     Object.values(CAPABILITY_PACKS)
@@ -413,8 +454,10 @@ function chainSpecificHunterBundles() {
 function defaultWebRouteMetadata() {
   return {
     capability_pack: WEB_CAPABILITY_PACK.id,
+    capability_pack_version: WEB_CAPABILITY_PACK.capability_pack_version,
     hunter_agent: WEB_CAPABILITY_PACK.hunter_agent,
     brief_profile: WEB_CAPABILITY_PACK.brief_profile,
+    context_budget: cloneContextBudget(WEB_CAPABILITY_PACK.context_budget),
   };
 }
 
@@ -434,8 +477,10 @@ function classifySurfaceCapability(surface) {
         return {
           surface_type: surfaceType,
           capability_pack: pack.id,
+          capability_pack_version: pack.capability_pack_version,
           hunter_agent: pack.hunter_agent,
           brief_profile: pack.brief_profile,
+          context_budget: cloneContextBudget(pack.context_budget),
           confidence: "high",
           reasons,
         };
@@ -461,8 +506,10 @@ function classifySurfaceCapability(surface) {
   return {
     surface_type: surfaceType,
     capability_pack: WEB_CAPABILITY_PACK.id,
+    capability_pack_version: WEB_CAPABILITY_PACK.capability_pack_version,
     hunter_agent: WEB_CAPABILITY_PACK.hunter_agent,
     brief_profile: WEB_CAPABILITY_PACK.brief_profile,
+    context_budget: cloneContextBudget(WEB_CAPABILITY_PACK.context_budget),
     confidence: knownWebType ? "high" : "medium",
     reasons,
   };
@@ -479,11 +526,58 @@ function assertPackString(value, fieldName) {
   return normalized;
 }
 
+function assertPositiveInteger(value, fieldName) {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`assignment route metadata has invalid ${fieldName}`);
+  }
+  return value;
+}
+
+function normalizeBudgetInteger(value, fieldName) {
+  if (!Number.isInteger(value) || value < 1 || value > 100_000) {
+    throw new Error(`assignment route metadata has invalid context_budget.${fieldName}`);
+  }
+  return value;
+}
+
+function normalizeBudgetBoolean(value, fieldName) {
+  if (typeof value !== "boolean") {
+    throw new Error(`assignment route metadata has invalid context_budget.${fieldName}`);
+  }
+  return value;
+}
+
+function normalizeContextBudget(value, pack) {
+  if (value == null) {
+    return cloneContextBudget(pack.context_budget || DEFAULT_CONTEXT_BUDGET);
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("assignment route metadata has invalid context_budget");
+  }
+  const allowedFields = new Set([
+    "candidate_pack_limit",
+    "full_pack_read_limit",
+    "attempt_log_required",
+  ]);
+  for (const field of Object.keys(value)) {
+    if (!allowedFields.has(field)) {
+      throw new Error(`assignment route metadata has unsupported context_budget.${field}`);
+    }
+  }
+  return {
+    candidate_pack_limit: normalizeBudgetInteger(value.candidate_pack_limit, "candidate_pack_limit"),
+    full_pack_read_limit: normalizeBudgetInteger(value.full_pack_read_limit, "full_pack_read_limit"),
+    attempt_log_required: normalizeBudgetBoolean(value.attempt_log_required, "attempt_log_required"),
+  };
+}
+
 function normalizeAssignmentRouteMetadata(assignment) {
   const hasRouteMetadata = !!assignment && (
     assignment.capability_pack != null ||
+    assignment.capability_pack_version != null ||
     assignment.hunter_agent != null ||
-    assignment.brief_profile != null
+    assignment.brief_profile != null ||
+    assignment.context_budget != null
   );
   if (!hasRouteMetadata) {
     // Legacy assignment files (pre-router) carry no route metadata. Default
@@ -515,11 +609,16 @@ function normalizeAssignmentRouteMetadata(assignment) {
   if (briefProfile !== pack.brief_profile) {
     throw new Error(`assignment route metadata brief_profile ${briefProfile} does not match pack ${capabilityPack}`);
   }
+  const capabilityPackVersion = assignment.capability_pack_version == null
+    ? pack.capability_pack_version
+    : assertPositiveInteger(assignment.capability_pack_version, "capability_pack_version");
 
   return {
     capability_pack: capabilityPack,
+    capability_pack_version: capabilityPackVersion,
     hunter_agent: hunterAgent,
     brief_profile: briefProfile,
+    context_budget: normalizeContextBudget(assignment.context_budget, pack),
   };
 }
 
@@ -554,6 +653,7 @@ function capabilityPackForLegacyFinding({ surface_type: surfaceType, sc_evidence
 
 module.exports = {
   CAPABILITY_PACKS,
+  DEFAULT_CONTEXT_BUDGET,
   HUNTER_ROLES,
   WEB_SURFACE_TYPES,
   capabilityPackForLegacyFinding,
@@ -561,10 +661,13 @@ module.exports = {
   classifySurfaceCapability,
   defaultWebRouteMetadata,
   getCapabilityPack,
+  getCapabilityPackContextBudget,
   hunterAgentNamesForCapabilityPacks,
   hunterRoleSpec,
   hunterRoleSpecs,
   normalizeAssignmentRouteMetadata,
+  normalizeContextBudget,
   normalizeSurfaceType,
+  SMART_CONTRACT_CONTEXT_BUDGET,
   smartContractCapabilityPacks,
 };

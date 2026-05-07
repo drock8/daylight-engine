@@ -23,6 +23,8 @@ BLOCKED_EXACT = {
     "findings.jsonl",
     "findings.md",
     "coverage.jsonl",
+    "technique-attempts.jsonl",
+    "technique-pack-reads.jsonl",
     "chain-attempts.jsonl",
     "brutalist.json",
     "brutalist.md",
