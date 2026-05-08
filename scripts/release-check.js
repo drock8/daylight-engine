@@ -282,17 +282,17 @@ function checkWrapperPack(spec, rootPackage) {
   assertEqual(result.name, spec.name, `${spec.label} pack name is ${spec.name}`);
   assertEqual(result.version, rootPackage.version, `${spec.label} pack version matches canonical version`);
 
-  const expected = [spec.bin, "package.json"];
+  const expected = [spec.bin, "README.md", "package.json"].sort();
   if (JSON.stringify(files) === JSON.stringify(expected)) {
-    pass(`${spec.label} pack contains only wrapper and manifest`);
+    pass(`${spec.label} pack contains only wrapper, README, and manifest`);
   } else {
     fail(`${spec.label} pack contents mismatch: ${files.join(", ")}`);
   }
 
-  if (result.size < 3000) {
-    pass(`${spec.label} pack size ${result.size} bytes is under 3 KB`);
+  if (result.size < 5000) {
+    pass(`${spec.label} pack size ${result.size} bytes is under 5 KB`);
   } else {
-    fail(`${spec.label} pack size ${result.size} bytes exceeds 3 KB`);
+    fail(`${spec.label} pack size ${result.size} bytes exceeds 5 KB`);
   }
 
   // Verify the bin script injects the adapter default. Catches a renamed

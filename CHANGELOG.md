@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-05-08
+
+### Adapter wrapper READMEs
+
+- Added `README.md` to the `hacker-bob-cc` and `hacker-bob-codex` wrapper packages so the npmjs.com listing explains the wrapper, install command, and link back to the canonical `hacker-bob` package.
+- Updated the wrapper `files` allowlist to include `README.md`, and bumped the release-check and `test/package.test.js` size cap from 3 KB to 5 KB while still rejecting any other extra files in the wrapper pack.
+
 ## [1.2.4] - 2026-05-08
 
 ### Evidence agent color fix

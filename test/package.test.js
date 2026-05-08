@@ -120,7 +120,7 @@ for (const wrapper of WRAPPER_PACKAGES) {
   test(`${wrapper.name} package declares bin ${wrapper.name} -> ${wrapper.bin}`, () => {
     const wrapperPackage = require(path.join(wrapper.root, "package.json"));
     assert.deepEqual(wrapperPackage.bin, { [wrapper.name]: wrapper.bin });
-    assert.deepEqual(wrapperPackage.files, [wrapper.bin]);
+    assert.deepEqual(wrapperPackage.files, [wrapper.bin, "README.md"]);
     assert.equal(wrapperPackage.dependencies && wrapperPackage.dependencies["hacker-bob"], PACKAGE_VERSION);
   });
 
@@ -149,9 +149,9 @@ for (const wrapper of WRAPPER_PACKAGES) {
       assert.equal(pack.version, PACKAGE_VERSION);
       assert.deepEqual(
         pack.files.map((file) => file.path).sort(),
-        [wrapper.bin, "package.json"],
+        [wrapper.bin, "README.md", "package.json"].sort(),
       );
-      assert.ok(pack.size < 3000, `${wrapper.name} pack size ${pack.size} exceeds 3 KB threshold`);
+      assert.ok(pack.size < 5000, `${wrapper.name} pack size ${pack.size} exceeds 5 KB threshold`);
     } finally {
       fs.rmSync(npmCache, { recursive: true, force: true });
     }

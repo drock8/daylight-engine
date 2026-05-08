@@ -1,6 +1,6 @@
 {
   "name": "hacker-bob-codex",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Hacker Bob — Codex adapter wrapper. Pins --adapter codex and delegates to the canonical hacker-bob CLI.",
   "license": "Apache-2.0",
   "repository": {
@@ -18,9 +18,10 @@
     "node": ">=20"
   },
   "files": [
-    "bin/hacker-bob-codex.js"
+    "bin/hacker-bob-codex.js",
+    "README.md"
   ],
   "dependencies": {
-    "hacker-bob": "1.2.4"
+    "hacker-bob": "1.2.5"
   }
 }
