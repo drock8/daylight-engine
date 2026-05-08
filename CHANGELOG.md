@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-05-08
+
+### Evidence agent color fix
+
+- Replaced the unsupported `teal` color on the rendered `evidence-agent` Claude agent with the supported `cyan` value so Claude Code stops warning on agent load.
+- Added a shared list of Claude Code-supported agent colors and a prompt-contract test that fails if any rendered agent uses a color outside that allowlist.
+
 ## [1.2.3] - 2026-05-08
 
 ### Post-release export bundles
