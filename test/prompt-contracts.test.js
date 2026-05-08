@@ -21,6 +21,7 @@ const {
 } = require("../mcp/lib/role-model.js");
 const {
   CLAUDE_ROLE_SPECS,
+  SUPPORTED_CLAUDE_AGENT_COLORS,
   renderClaudeRole,
 } = require("../scripts/lib/claude-role-renderer.js");
 const {
@@ -175,6 +176,20 @@ test("Claude roles render exactly from the shared role model", () => {
       renderClaudeRole(roleId),
       `${spec.output_path} is not generated from ${roleId}`,
     );
+  }
+});
+
+test("Claude agent colors use values rendered by Claude Code", () => {
+  for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
+    if (spec.kind !== "agent") continue;
+    assert.ok(spec.color, `${roleId} is missing a Claude agent color`);
+    assert.ok(
+      SUPPORTED_CLAUDE_AGENT_COLORS.includes(spec.color),
+      `${roleId} uses unsupported Claude agent color ${spec.color}`,
+    );
+
+    const frontmatter = parseFrontmatter(readFile(spec.output_path), spec.output_path);
+    assert.equal(frontmatter.color, spec.color, `${spec.output_path} color drifted from source spec`);
   }
 });
 

@@ -18,6 +18,18 @@ const { hunterRoleSpecs } = require("../../mcp/lib/capability-packs.js");
 
 const DEFAULT_ROOT = path.join(__dirname, "..", "..");
 
+const SUPPORTED_CLAUDE_AGENT_COLORS = Object.freeze([
+  "blue",
+  "green",
+  "yellow",
+  "magenta",
+  "cyan",
+  "purple",
+  "orange",
+  "pink",
+  "red",
+]);
+
 const CLAUDE_LAUNCH_TEMPLATES = Object.freeze({
   "{{SPAWN_RECON_AGENT}}": [
     "```text",
@@ -270,7 +282,7 @@ const CLAUDE_ROLE_SPECS = Object.freeze({
     name: "evidence-agent",
     description: "Collects bounded pre-grade evidence packs for final reportable findings (HTTP via bounty_http_scan; SC via family runners)",
     model: "sonnet",
-    color: "teal",
+    color: "cyan",
     mcp_server: true,
     local_tools: Object.freeze([]),
   }),
@@ -430,6 +442,7 @@ function updateClaudeRoleFiles({ check = false, root = DEFAULT_ROOT, roleIds = O
 
 module.exports = {
   CLAUDE_ROLE_SPECS,
+  SUPPORTED_CLAUDE_AGENT_COLORS,
   claudeAllowedToolsForRole,
   claudeMcpToolsForRole,
   claudeRoleOutputPath,
