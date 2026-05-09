@@ -134,6 +134,10 @@ function authDifferentialResultsPath(domain) {
   return path.join(sessionDir(domain), "auth-differential-results.json");
 }
 
+function findingsIndexJsonlPath(domain) {
+  return path.join(sessionDir(domain), "findings-index.jsonl");
+}
+
 function staticScanResultsJsonlPath(domain) {
   return path.join(sessionDir(domain), "static-scan-results.jsonl");
 }
@@ -215,6 +219,7 @@ module.exports = {
   techniquePackReadsJsonlPath,
   authDifferentialResultsPath,
   docDeltaResultsPath,
+  findingsIndexJsonlPath,
   schemaContractsJsonlPath,
   staticArtifactImportDir,
   staticArtifactPath,
