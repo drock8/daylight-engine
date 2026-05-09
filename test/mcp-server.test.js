@@ -9929,6 +9929,62 @@ test("verification v2 attempt is created only on CHAIN -> VERIFY and context rep
   });
 });
 
+test("verification v2 archive recovers attempt_id from snapshot when state has lost it", () => {
+  withTempHome(() => {
+    const domain = "orphaned-attempt.example.com";
+    seedSessionState(domain, { phase: "CHAIN" });
+    seedFinding(domain);
+    JSON.parse(transitionPhase({ target_domain: domain, to_phase: "VERIFY" }));
+    const firstSnapshot = JSON.parse(fs.readFileSync(verificationSnapshotPath(domain), "utf8"));
+    const firstAttemptId = firstSnapshot.verification_attempt_id;
+
+    // Simulate state.json losing the attempt fields (manual edit / partial recovery)
+    // while the snapshot file remains on disk. Without the orphan-recovery fix,
+    // the next CHAIN -> VERIFY archives this artifact set as `attempt-unknown`
+    // and a second iteration collides on the same path.
+    const stateDoc = JSON.parse(fs.readFileSync(statePath(domain), "utf8"));
+    delete stateDoc.verification_attempt_id;
+    delete stateDoc.verification_snapshot_hash;
+    delete stateDoc.verification_entered_at;
+    stateDoc.phase = "CHAIN";
+    writeFileAtomic(statePath(domain), `${JSON.stringify(stateDoc, null, 2)}\n`);
+
+    JSON.parse(transitionPhase({
+      target_domain: domain,
+      to_phase: "VERIFY",
+      override_reason: "regression: orphaned attempt archives by inferred id",
+    }));
+
+    const archivesDir = path.join(sessionDir(domain), "verification-attempts");
+    const archived = fs.readdirSync(archivesDir).filter((name) => name.startsWith("attempt-"));
+    assert.equal(archived.length, 1);
+    assert.equal(archived[0], `attempt-${firstAttemptId}`);
+
+    // Re-run the same recovery dance: drop attempt fields and trigger a fresh
+    // bootstrap. The new attempt's snapshot replaced the previous one, so its
+    // attempt_id is what should land on disk this time. Critically, the second
+    // archive must NOT collide with the first.
+    const secondSnapshot = JSON.parse(fs.readFileSync(verificationSnapshotPath(domain), "utf8"));
+    const secondAttemptId = secondSnapshot.verification_attempt_id;
+    const stateDoc2 = JSON.parse(fs.readFileSync(statePath(domain), "utf8"));
+    delete stateDoc2.verification_attempt_id;
+    delete stateDoc2.verification_snapshot_hash;
+    delete stateDoc2.verification_entered_at;
+    stateDoc2.phase = "CHAIN";
+    writeFileAtomic(statePath(domain), `${JSON.stringify(stateDoc2, null, 2)}\n`);
+    JSON.parse(transitionPhase({
+      target_domain: domain,
+      to_phase: "VERIFY",
+      override_reason: "regression: second orphaned recovery must not collide",
+    }));
+
+    const archivedAfter = fs.readdirSync(archivesDir).filter((name) => name.startsWith("attempt-")).sort();
+    assert.equal(archivedAfter.length, 2);
+    assert.ok(archivedAfter.includes(`attempt-${firstAttemptId}`));
+    assert.ok(archivedAfter.includes(`attempt-${secondAttemptId}`));
+  });
+});
+
 test("verification v2 CHAIN -> VERIFY rejects when manifest refresh fails", () => {
   withTempHome(() => {
     const domain = "manifest-fail.example.com";

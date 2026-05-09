@@ -365,11 +365,31 @@ function pruneOldVerificationArchives(domain) {
   return pruned;
 }
 
+function inferOrphanedAttemptId(domain) {
+  // state.json sometimes loses verification_attempt_id but the snapshot or
+  // round files persist their own copy. Prefer those over the literal string
+  // "unknown" so concurrent recoveries land in distinct archive directories.
+  const snapshot = safeReadJson(verificationSnapshotPath(domain));
+  if (snapshot && typeof snapshot.verification_attempt_id === "string" && snapshot.verification_attempt_id) {
+    return snapshot.verification_attempt_id;
+  }
+  for (const round of VERIFICATION_ROUND_VALUES) {
+    const doc = safeReadJson(verificationRoundPaths(domain, round).json);
+    if (doc && typeof doc.verification_attempt_id === "string" && doc.verification_attempt_id) {
+      return doc.verification_attempt_id;
+    }
+  }
+  // No on-disk record either. Use a millisecond-precision random suffix so a
+  // retry in the same session cannot collide with the previous archive.
+  return `unknown-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+}
+
 function archiveCurrentV2Attempt(domain, { attemptId, snapshotHash }) {
   if (!attemptId && !hasCurrentV2Files(domain)) return null;
   refreshVerificationManifest(domain);
   const archivedAt = new Date().toISOString();
-  const archiveDir = path.join(verificationAttemptsDir(domain), `attempt-${sanitizeAttemptId(attemptId || "unknown")}`);
+  const effectiveAttemptId = attemptId || inferOrphanedAttemptId(domain);
+  const archiveDir = path.join(verificationAttemptsDir(domain), `attempt-${sanitizeAttemptId(effectiveAttemptId)}`);
   if (fs.existsSync(archiveDir)) {
     throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Cannot archive current verification attempt because archive already exists: ${archiveDir}`);
   }
@@ -403,7 +423,7 @@ function archiveCurrentV2Attempt(domain, { attemptId, snapshotHash }) {
     }
 
     const manifest = {
-      attempt_id: attemptId || "unknown",
+      attempt_id: effectiveAttemptId,
       archived_at: archivedAt,
       snapshot_hash: snapshotHash || null,
       ...(adjudicationPlanHash ? { adjudication_plan_hash: adjudicationPlanHash } : {}),
@@ -416,7 +436,7 @@ function archiveCurrentV2Attempt(domain, { attemptId, snapshotHash }) {
       phase: "VERIFY",
       status: "archived",
       source: "verification_v2",
-      verification_attempt_id: attemptId || "unknown",
+      verification_attempt_id: effectiveAttemptId,
       verification_snapshot_hash: snapshotHash || undefined,
       adjudication_plan_hash: adjudicationPlanHash || undefined,
       final_verification_hash: finalVerificationHash || undefined,
