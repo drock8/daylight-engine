@@ -67,8 +67,7 @@
       "Read",
       "Glob",
       "Grep",
-      "mcp__bountyagent__bounty_read_verification_context",
-      "mcp__bountyagent__bounty_build_verification_adjudication"
+      "mcp__bountyagent__bounty_read_verification_context"
     ]
   },
   "hooks": {

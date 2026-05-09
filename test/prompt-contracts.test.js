@@ -476,7 +476,8 @@ test("manifest, settings, and generated Claude config keep global MCP permission
   assert.deepEqual(TOOL_MANIFEST.bounty_write_evidence_packs.role_bundles, ["evidence"]);
   assert.deepEqual(TOOL_MANIFEST.bounty_read_evidence_packs.role_bundles, ["evidence", "grader", "reporter", "orchestrator"]);
   assert.deepEqual(TOOL_MANIFEST.bounty_read_verification_context.role_bundles, ["orchestrator", "verifier", "evidence", "grader", "reporter"]);
-  assert.deepEqual(TOOL_MANIFEST.bounty_build_verification_adjudication.role_bundles, ["orchestrator", "verifier"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_build_verification_adjudication.role_bundles, ["orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_build_verification_adjudication.global_preapproval, false);
   assert.ok(!sourceAllowed.has("bounty_merge_wave_handoffs"));
   assert.ok(!sourceAllowed.has("bounty_read_tool_telemetry"));
   assert.ok(!sourceAllowed.has("bounty_read_pipeline_analytics"));
@@ -1694,14 +1695,24 @@ test("verifier role bundle has only documented mutating tools and no orchestrati
   assert.deepEqual(
     mutatingInVerifier.map((tool) => tool.name).sort(),
     [
-      "bounty_build_verification_adjudication", // MCP-owned v2 adjudication artifact
       "bounty_evm_fetch_source",       // SC source-cache populate during re-run
       "bounty_http_scan",              // web PoC replay (existing baseline)
       "bounty_write_verification_round" // the verifier's own write path
     ].sort(),
-    "Only adjudication build, evm-fetch-source, http_scan, and write-verification-round may be mutating in the verifier bundle. New mutating tools must be reviewed before joining verifier role.",
+    "Only evm-fetch-source, http_scan, and write-verification-round may be mutating in the verifier bundle. New mutating tools must be reviewed before joining verifier role.",
   );
-  const forbidden = ["bounty_record_finding", "bounty_write_wave_handoff", "bounty_finalize_hunter_run", "bounty_log_coverage", "bounty_log_dead_ends", "bounty_write_grade_verdict", "bounty_apply_wave_merge"];
+  const forbidden = [
+    "bounty_record_finding",
+    "bounty_write_wave_handoff",
+    "bounty_finalize_hunter_run",
+    "bounty_log_coverage",
+    "bounty_log_dead_ends",
+    "bounty_write_grade_verdict",
+    "bounty_apply_wave_merge",
+    // Adjudication is built by the orchestrator; verifiers consume the
+    // adjudication_plan_hash from bounty_read_verification_context only.
+    "bounty_build_verification_adjudication",
+  ];
   for (const tool of forbidden) {
     const meta = TOOL_MANIFEST[tool];
     if (!meta) continue;
