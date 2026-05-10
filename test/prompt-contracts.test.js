@@ -974,6 +974,7 @@ test("bountyagentstatus skill is compact, read-only, and points to next commands
   assert.match(skill, /snapshot_hash_current/);
   assert.match(skill, /replay_execution_policy/);
   assert.match(skill, /Archive trail/);
+  assert.match(skill, /When `bounty_read_verification_context` reports `schema_version: 2`[\s\S]*Current attempt:[\s\S]*current_attempt_id[\s\S]*first 8 chars of `snapshot_hash`[\s\S]*replay_execution_policy[\s\S]*archived_attempts\.length[\s\S]*snapshot <snapshot_hash:0\.\.8>[\s\S]*Older v1 sessions print `verification: schema v1` and skip the panel\./);
   for (const tool of forbiddenTools) {
     assert.ok(!allowedTools.includes(tool), `${tool} must not be allowed in bountyagentstatus`);
   }
