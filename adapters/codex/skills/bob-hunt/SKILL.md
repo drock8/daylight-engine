@@ -203,7 +203,7 @@ After completion, call `bounty_transition_phase({ target_domain, to_phase: "VERI
 ## PHASE 5: VERIFY
 Verification JSON is the only machine-readable source of truth. Markdown mirrors are human/debug only.
 
-First call `bounty_read_verification_context({ target_domain })` and use `.data.schema_version`, `.data.current_attempt_id`, `.data.snapshot_hash`, `.data.replay_execution_policy`, `.data.round_status`, `.data.adjudication_status`, `.data.evidence_match_status`, `.data.stale_blockers`, and `.data.next_action`. Do not read `state.json` or infer v2 status from raw artifact files.
+First call `bounty_read_verification_context({ target_domain })` and use `.data.schema_version`, `.data.current_attempt_id`, `.data.snapshot_hash`, `.data.replay_execution_policy`, `.data.round_status`, `.data.adjudication_status`, `.data.adjudication_context`, `.data.evidence_match_status`, `.data.stale_blockers`, and `.data.next_action`. Do not read `state.json` or infer v2 status from raw artifact files.
 
 If `schema_version === 1`, use the legacy sequential cascade:
 1. Brutalist round:
@@ -226,7 +226,7 @@ After the balanced agent completes, validate the artifact: call `bounty_read_ver
 ```text
 Use Codex spawn_agent for final-verifier -> Codex worker.
 - agent_type: "worker"
-- message: `Bob role: final-verifier. Session: ~/bounty-agent-sessions/[domain]. Target: [domain]. First call bounty_read_verification_context({ target_domain }). If v2, consume the adjudication_plan_hash and write with current_attempt_id/snapshot_hash/adjudication_plan_hash; do not compute diffs.` Include the full `final-verifier` contract from Codex Worker Role Contracts.
+- message: `Bob role: final-verifier. Session: ~/bounty-agent-sessions/[domain]. Target: [domain]. First call bounty_read_verification_context({ target_domain }). If v2, consume adjudication_context.adjudication_plan_hash and write with current_attempt_id/snapshot_hash/adjudication_plan_hash; do not compute diffs.` Include the full `final-verifier` contract from Codex Worker Role Contracts.
 Wait with `wait_agent`, read the MCP verification artifact, then `close_agent`.
 ```
 
@@ -246,23 +246,23 @@ Use Codex spawn_agent for balanced-verifier -> Codex worker.
 Wait with `wait_agent`, read the MCP verification artifact, then `close_agent`.
 ```
 3. After both complete, call `bounty_read_verification_context({ target_domain })` again. Require brutalist and balanced statuses to be `current: true`; retry a missing/invalid worker once.
-4. Call `bounty_build_verification_adjudication({ target_domain })`. Use only its returned `.data.adjudication_plan_hash` and adjudication payload; do not compute diffs in prose or ask the final verifier to compute diffs.
-5. Launch the final verifier with current attempt ID, snapshot hash, and `adjudication_plan_hash`. The final verifier must consume the adjudication plan hash and write `round="final"` with `adjudication_plan_hash`.
+4. Call `bounty_build_verification_adjudication({ target_domain })`, then call `bounty_read_verification_context({ target_domain })` again. Use only `.data.adjudication_context.adjudication_plan_hash` and the bounded `.data.adjudication_context` machine fields; do not read raw adjudication artifacts, compute diffs in prose, or ask the final verifier to compute diffs. If `.data.adjudication_context.current !== true`, treat the blocker as stale verification state and restart VERIFY/adjudication through the normal phase flow.
+5. Launch the final verifier with current attempt ID, snapshot hash, and `adjudication_plan_hash` from `.data.adjudication_context`. The final verifier must consume that context and write `round="final"` with `adjudication_plan_hash`.
 ```text
 Use Codex spawn_agent for final-verifier -> Codex worker.
 - agent_type: "worker"
-- message: `Bob role: final-verifier. Session: ~/bounty-agent-sessions/[domain]. Target: [domain]. First call bounty_read_verification_context({ target_domain }). If v2, consume the adjudication_plan_hash and write with current_attempt_id/snapshot_hash/adjudication_plan_hash; do not compute diffs.` Include the full `final-verifier` contract from Codex Worker Role Contracts.
+- message: `Bob role: final-verifier. Session: ~/bounty-agent-sessions/[domain]. Target: [domain]. First call bounty_read_verification_context({ target_domain }). If v2, consume adjudication_context.adjudication_plan_hash and write with current_attempt_id/snapshot_hash/adjudication_plan_hash; do not compute diffs.` Include the full `final-verifier` contract from Codex Worker Role Contracts.
 Wait with `wait_agent`, read the MCP verification artifact, then `close_agent`.
 ```
 
-After final verification in either branch, read `bounty_read_verification_round({ target_domain: "[domain]", round: "final" }).data`. For v2, require `.data.current === true` and no `stale` flag. If no result has `reportable: true`, do not stop: call `bounty_read_evidence_packs({ target_domain: "[domain]" })` to confirm `skipped: true`, then call `bounty_transition_phase({ target_domain, to_phase: "GRADE" })` and continue through GRADE and REPORT so the session gets a durable SKIP grade and no-findings report. If final reportables exist, spawn the evidence agent before GRADE:
+After final verification in either branch, read `bounty_read_verification_round({ target_domain: "[domain]", round: "final" }).data`. For v2, require `.data.current === true` and no `stale` flag; a stale final verification is a blocker, not a file-editing task. If no result has `reportable: true`, do not stop: call `bounty_read_evidence_packs({ target_domain: "[domain]" })` to confirm `skipped: true`, then explicitly call `bounty_transition_phase({ target_domain, to_phase: "GRADE" })` and continue through GRADE and REPORT so the session gets a durable SKIP grade and no-findings report. If final reportables exist, spawn the evidence agent before GRADE:
 ```text
 Use Codex spawn_agent for evidence-agent -> Codex worker.
 - agent_type: "worker"
 - message: `Bob role: evidence-agent. Session: ~/bounty-agent-sessions/[domain]. Egress profile: [egress_profile]. First call bounty_read_verification_context({ target_domain }); for v2 pass evidence_replay context and bind evidence to the current final_verification_hash.` Include the full `evidence` contract from Codex Worker Role Contracts.
 Wait with `wait_agent`, read `bounty_read_evidence_packs.data`, then `close_agent`.
 ```
-After the evidence agent completes, validate with `bounty_read_verification_context({ target_domain })` and `bounty_read_evidence_packs({ target_domain: "[domain]" })`. For v2, require evidence to match current attempt ID, snapshot hash, and final verification hash. Retry once if missing/invalid, then call `bounty_transition_phase({ target_domain, to_phase: "GRADE" })`.
+After the evidence agent completes, validate with `bounty_read_verification_context({ target_domain })` and `bounty_read_evidence_packs({ target_domain: "[domain]" })`. For v2, require evidence to match current attempt ID, snapshot hash, and final verification hash. Retry once if missing/invalid. Only call `bounty_transition_phase({ target_domain, to_phase: "GRADE" })` after `bounty_read_verification_context({ target_domain }).data.evidence_match_status.valid === true` and, for v2, `matches_final === true`, and `bounty_read_evidence_packs` returns successfully. If the retry still fails validation, report the blocker and stop without transitioning.
 
 ## PHASE 6: GRADE
 Spawn:
@@ -1711,9 +1711,9 @@ END balanced-verifier CONTRACT
 
 ### final-verifier
 BEGIN final-verifier CONTRACT
-You are the final verifier. First call `bounty_read_verification_context({ target_domain })`.
-- If schema is v1, re-run only the `reportable: true` findings from `bounty_read_verification_round(round="balanced")` with fresh requests.
-- If schema is v2, consume the current adjudication plan hash provided by the orchestrator and confirmed by `bounty_read_verification_context.data.adjudication_status.adjudication_plan_hash`. Do not compute diffs in prose; MCP already built deterministic brutalist/balanced diffs in `bounty_build_verification_adjudication`.
+You are the final verifier. First call `bounty_read_verification_context({ target_domain })`. Then read the balanced round with `bounty_read_verification_round({ target_domain, round: "balanced" })`; the balanced round is the source-of-truth result set for both v1 and v2 finalization.
+- If schema is v1, re-run only the balanced-round findings with `reportable: true` using fresh requests.
+- If schema is v2, consume the current adjudication plan hash and bounded machine fields from `bounty_read_verification_context.data.adjudication_context`. Require `adjudication_context.current === true`; if it is stale or missing, report the blocker and stop. Do not read raw adjudication artifacts; do not compute diffs in prose. MCP already built deterministic brutalist/balanced diffs in `bounty_build_verification_adjudication`.
 Use `bounty_read_http_audit` if recent request history helps distinguish stale auth, repeated 403/429/timeout failures, or already-confirmed replay behavior.
 
 Read findings through `bounty_read_findings` so you can join full finding details back onto the balanced-round results.
@@ -1735,7 +1735,7 @@ For each REPORTABLE finding, execute the PoC again from scratch. Confirm or deny
 
 Your `results` array MUST include EVERY finding from the balanced round — not just the ones you re-tested. Pass through non-reportable findings unchanged (same disposition, severity, reportable: false, with reasoning like "Non-reportable per balanced round, not re-tested"). Only update findings you actually re-ran. If a finding is missing from your results, it is silently dropped from the pipeline.
 
-For v2, preserve monotonic `state_sensitive`: if any prior round or adjudication context made a finding state-sensitive, your final result must keep `state_sensitive: true`. Keep effective current confidence reasons plus optional `inherited_confidence_reasons` and `resolved_confidence_reasons` when a replay resolves or supersedes an earlier reason.
+For v2, preserve monotonic `state_sensitive`: if any prior round or `bounty_read_verification_context.data.adjudication_context` entry made a finding state-sensitive, your final result must keep `state_sensitive: true`. Keep effective current confidence reasons plus optional `inherited_confidence_reasons` and `resolved_confidence_reasons` when a replay resolves or supersedes an earlier reason.
 
 Write results only through `bounty_write_verification_round` with `round="final"`.
 
@@ -1754,7 +1754,7 @@ Do not write verifier markdown directly. The MCP tool owns `verified-final.json`
 
 Your final durable write before stopping MUST be exactly one `bounty_write_verification_round` call. After it succeeds, read back `bounty_read_verification_round({ target_domain, round: "final" })`. Example:
 
-For v2, the write must reference the current attempt ID, snapshot hash, and adjudication plan hash exactly. The MCP computes and stores `final_verification_hash`; do not invent it.
+For v2, the write must reference the current attempt ID, snapshot hash, and `bounty_read_verification_context.data.adjudication_context.adjudication_plan_hash` exactly. The MCP computes and stores `final_verification_hash`; do not invent it.
 
 ```
 bounty_write_verification_round({
@@ -1818,11 +1818,11 @@ You are the evidence agent. Collect formal pre-grade evidence packs for final re
 
 The orchestrator provides the domain and egress profile in the spawn prompt.
 
-First call `bounty_read_verification_context({ target_domain })`. For v2, keep the current attempt ID, snapshot hash, and final verification hash visible from the final verification artifact; evidence packs must bind to that exact final hash. Read findings through `bounty_read_findings`, final verification through `bounty_read_verification_round(round="final")`, request audit context through `bounty_read_http_audit`, and auth profile summaries through `bounty_list_auth_profiles`.
+First call `bounty_read_verification_context({ target_domain })`. For v2, keep the current attempt ID, snapshot hash, and final verification hash visible from the final verification artifact; evidence packs must bind to that exact final hash. Read findings through `bounty_read_findings`, final verification through `bounty_read_verification_round({ target_domain, round: "final" })`, request audit context through `bounty_read_http_audit`, and auth profile summaries through `bounty_list_auth_profiles`.
 
 For every final verification result with `reportable: true`, collect one bounded representative evidence pack. Do not create, modify, or remove findings. Do not grade. Do not write reports. Do not write files directly; `bounty_write_evidence_packs` owns `evidence-packs.json` and the human/debug mirror.
 
-Before stopping, complete exactly one successful `bounty_write_evidence_packs` write. For v2, MCP binds the write to the current attempt ID, snapshot hash, and `final_verification_hash`; if the final verification is stale, do NOT retry — report the blocker so the orchestrator can restart VERIFY. If the call fails for any other reason (invalid payload, missing finding coverage, tool error), fix the inputs and retry until exactly one successful write lands. After the successful write, read it back with `bounty_read_evidence_packs` and stop.
+Before stopping, complete exactly one successful write sequence: make exactly one successful `bounty_write_evidence_packs` call, then read it back with `bounty_read_evidence_packs`. For v2, MCP binds the write to the current attempt ID, snapshot hash, and `final_verification_hash`; if the final verification is stale, do NOT retry or edit artifacts — report the blocker so the orchestrator can restart VERIFY. If the call fails for any other reason (invalid payload, missing finding coverage, tool error), fix the inputs and retry until exactly one successful write lands.
 
 Dispatch by `finding.capability_pack` (every Phase-C finding carries the routed pack triple). Look up the pack's `evidence` block in the **Capability pack verifier table** at the end of this prompt. The block names the runner (`runner`) and the `sample_type` label to record on each evidence pack. The evidence agent does not branch on `chain_family`.
 
@@ -1841,7 +1841,7 @@ For each reportable finding:
    - CosmWasm: `bounty_cosmwasm_fetch_contract` (code_id + admin), `bounty_cosmwasm_smart_query` (post-run state probe).
 6. `representative_samples[]` for SC findings contain: `runner` (e.g., `"foundry"`), `harness_path`, `match_test`, `fork_block_used` (number or null), `test_stdout_excerpt` (≤1000 chars — the failing assertion line plus 2-3 lines of context, NOT the full output), `state_delta_summary` (one-line prose describing the on-chain effect). Optional: `trust_map_read` with the family-specific read tool name and key fields (e.g., `{tool: "bounty_sui_fetch_object", owner: "AddressOwner(0xattacker)", type: "Coin<SUI>"}`).
 7. `replay_summary` for SC findings: short prose anchoring the verifier's `verified at block N on chain X` reasoning into the pack. The grader and reporter both read this; keep it ≤2000 chars.
-8. If the runner returns any tooling-blocker reason (`<runner>_not_in_path`, `<runner>_dependency_missing`, `move_compile_failed`, `cargo_compile_failed`, `rpc_unreachable`), the evidence pack still gets written but with `replay_summary` recording the blocker and `representative_samples[]` carrying the verifier's earlier reasoning text from `bounty_read_verification_round(round="final")`. Do NOT mark the finding non-reportable from the evidence agent — the verifier owns reportability; the evidence agent only gates the GRADE transition by ensuring an evidence pack EXISTS.
+8. If the runner returns any tooling-blocker reason (`<runner>_not_in_path`, `<runner>_dependency_missing`, `move_compile_failed`, `cargo_compile_failed`, `rpc_unreachable`), the evidence pack still gets written but with `replay_summary` recording both the blocker reason and the verifier's earlier reasoning excerpt from `bounty_read_verification_round({ target_domain, round: 'final' })`, and `representative_samples[]` containing exactly one structured fallback object: `{ source: 'final_verification_round', runner: '<runner>', blocker_reason: '<reason>', final_verification_hash: '<hash>' }`. Each `representative_samples` item must be an object — never a raw string. Do NOT mark the finding non-reportable from the evidence agent — the verifier owns reportability; the evidence agent only gates the GRADE transition by ensuring an evidence pack EXISTS.
 
 Common rules (HTTP + SC):
 - Store only bounded samples: at most 10 `representative_samples` per finding.

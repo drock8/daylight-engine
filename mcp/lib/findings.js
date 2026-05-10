@@ -868,15 +868,34 @@ function normalizeStringEnumArray(value, fieldName, allowedValues, { required = 
   return normalized;
 }
 
+const VERIFICATION_ARTIFACT_HASH_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
+const VERIFICATION_ARTIFACT_HASH_VALUE_RE = /^[a-f0-9]{64}$/;
+const VERIFICATION_ARTIFACT_HASH_MAX_ENTRIES = 20;
+const VERIFICATION_ARTIFACT_HASH_SECRET_KEY_RE = /(?:authorization|cookie|token|secret|password|passwd|api[_-]?key|credential|session)/i;
+
 function normalizeArtifactHashes(value, fieldName = "artifact_hashes") {
   if (value == null) return {};
   if (value == null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${fieldName} must be an object`);
   }
+  const entries = Object.entries(value);
+  if (entries.length > VERIFICATION_ARTIFACT_HASH_MAX_ENTRIES) {
+    throw new Error(`${fieldName} must contain at most ${VERIFICATION_ARTIFACT_HASH_MAX_ENTRIES} entries`);
+  }
   const normalized = {};
-  for (const key of Object.keys(value).sort()) {
+  for (const [key, hash] of entries.sort(([a], [b]) => a.localeCompare(b))) {
     const safeKey = assertNonEmptyString(key, `${fieldName} key`);
-    normalized[safeKey] = assertNonEmptyString(value[key], `${fieldName}.${safeKey}`);
+    if (!VERIFICATION_ARTIFACT_HASH_KEY_RE.test(safeKey)) {
+      throw new Error(`${fieldName} key must use only letters, numbers, dot, underscore, colon, or hyphen and be at most 80 chars`);
+    }
+    if (VERIFICATION_ARTIFACT_HASH_SECRET_KEY_RE.test(safeKey)) {
+      throw new Error(`${fieldName} key must be metadata-only and must not name secrets or credentials`);
+    }
+    const normalizedHash = assertNonEmptyString(hash, `${fieldName}.${safeKey}`);
+    if (!VERIFICATION_ARTIFACT_HASH_VALUE_RE.test(normalizedHash)) {
+      throw new Error(`${fieldName}.${safeKey} must be a lower-case SHA-256 hex hash`);
+    }
+    normalized[safeKey] = normalizedHash;
   }
   return normalized;
 }
@@ -906,22 +925,31 @@ function normalizeVerificationResult(result, findingIdSet, { schemaVersion = 1 }
       "confidence_reasons",
       VERIFICATION_CONFIDENCE_REASON_VALUES,
       { required: true },
-    );
+    ).sort((a, b) => a.localeCompare(b));
     normalized.state_sensitive = assertBoolean(result.state_sensitive, "state_sensitive");
     normalized.artifact_hashes = normalizeArtifactHashes(result.artifact_hashes);
     normalized.inherited_confidence_reasons = normalizeStringEnumArray(
       result.inherited_confidence_reasons,
       "inherited_confidence_reasons",
       VERIFICATION_CONFIDENCE_REASON_VALUES,
-    );
+    ).sort((a, b) => a.localeCompare(b));
     normalized.resolved_confidence_reasons = normalizeStringEnumArray(
       result.resolved_confidence_reasons,
       "resolved_confidence_reasons",
       VERIFICATION_CONFIDENCE_REASON_VALUES,
-    );
+    ).sort((a, b) => a.localeCompare(b));
   }
 
   return normalized;
+}
+
+function sortVerificationResultsByFindingIds(results, findingIds) {
+  const order = new Map(findingIds.map((id, index) => [id, index]));
+  return results.slice().sort((a, b) => (
+    (order.get(a.finding_id) ?? Number.MAX_SAFE_INTEGER)
+    - (order.get(b.finding_id) ?? Number.MAX_SAFE_INTEGER)
+    || a.finding_id.localeCompare(b.finding_id)
+  ));
 }
 
 function normalizeVerificationRoundDocument(document, { expectedDomain, expectedRound, findingIdSet = null } = {}) {
@@ -1060,7 +1088,7 @@ function writeVerificationRound(args) {
     ? new Set(v2Snapshot.finding_ids)
     : new Set(readFindingsFromJsonl(domain).map((finding) => finding.id));
   const seenIds = new Set();
-  const results = args.results.map((result) => {
+  let results = args.results.map((result) => {
     const normalizedResult = normalizeVerificationResult(result, findingIdSet, { schemaVersion });
     if (seenIds.has(normalizedResult.finding_id)) {
       throw new Error(`Duplicate finding_id in results: ${normalizedResult.finding_id}`);
@@ -1090,6 +1118,7 @@ function writeVerificationRound(args) {
       throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "plan_hash is not supported; use adjudication_plan_hash");
     }
     verificationLib().assertExactFindingCoverage(results, v2Snapshot.finding_ids, round);
+    results = sortVerificationResultsByFindingIds(results, v2Snapshot.finding_ids);
     if (round === "final") {
       const adjudicationPlanHash = assertNonEmptyString(args.adjudication_plan_hash, "adjudication_plan_hash");
       v2Adjudication = verificationLib().requireCurrentAdjudication(domain, {
@@ -1384,7 +1413,7 @@ function writeGradeVerdict(args) {
   enforceGradeVerdictConsistency(document, {
     finalReportableSeveritySet: requireFinalReportableSeveritySet(domain, findingIdSet),
   });
-  requireEvidencePacksForGrading(domain, findingIdSet);
+  verificationLib().requireVerificationCompleteForGrade(domain, { findingIdSet });
 
   const paths = gradeArtifactPaths(domain);
   writeFileAtomic(paths.json, JSON.stringify(document, null, 2) + "\n");

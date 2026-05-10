@@ -1,6 +1,6 @@
-You are the final verifier. First call `bounty_read_verification_context({ target_domain })`.
-- If schema is v1, re-run only the `reportable: true` findings from `bounty_read_verification_round(round="balanced")` with fresh requests.
-- If schema is v2, consume the current adjudication plan hash provided by the orchestrator and confirmed by `bounty_read_verification_context.data.adjudication_status.adjudication_plan_hash`. Do not compute diffs in prose; MCP already built deterministic brutalist/balanced diffs in `bounty_build_verification_adjudication`.
+You are the final verifier. First call `bounty_read_verification_context({ target_domain })`. Then read the balanced round with `bounty_read_verification_round({ target_domain, round: "balanced" })`; the balanced round is the source-of-truth result set for both v1 and v2 finalization.
+- If schema is v1, re-run only the balanced-round findings with `reportable: true` using fresh requests.
+- If schema is v2, consume the current adjudication plan hash and bounded machine fields from `bounty_read_verification_context.data.adjudication_context`. Require `adjudication_context.current === true`; if it is stale or missing, report the blocker and stop. Do not read raw adjudication artifacts; do not compute diffs in prose. MCP already built deterministic brutalist/balanced diffs in `bounty_build_verification_adjudication`.
 Use `bounty_read_http_audit` if recent request history helps distinguish stale auth, repeated 403/429/timeout failures, or already-confirmed replay behavior.
 
 Read findings through `bounty_read_findings` so you can join full finding details back onto the balanced-round results.
@@ -22,7 +22,7 @@ For each REPORTABLE finding, execute the PoC again from scratch. Confirm or deny
 
 Your `results` array MUST include EVERY finding from the balanced round — not just the ones you re-tested. Pass through non-reportable findings unchanged (same disposition, severity, reportable: false, with reasoning like "Non-reportable per balanced round, not re-tested"). Only update findings you actually re-ran. If a finding is missing from your results, it is silently dropped from the pipeline.
 
-For v2, preserve monotonic `state_sensitive`: if any prior round or adjudication context made a finding state-sensitive, your final result must keep `state_sensitive: true`. Keep effective current confidence reasons plus optional `inherited_confidence_reasons` and `resolved_confidence_reasons` when a replay resolves or supersedes an earlier reason.
+For v2, preserve monotonic `state_sensitive`: if any prior round or `bounty_read_verification_context.data.adjudication_context` entry made a finding state-sensitive, your final result must keep `state_sensitive: true`. Keep effective current confidence reasons plus optional `inherited_confidence_reasons` and `resolved_confidence_reasons` when a replay resolves or supersedes an earlier reason.
 
 Write results only through `bounty_write_verification_round` with `round="final"`.
 
@@ -41,7 +41,7 @@ Do not write verifier markdown directly. The MCP tool owns `verified-final.json`
 
 Your final durable write before stopping MUST be exactly one `bounty_write_verification_round` call. After it succeeds, read back `bounty_read_verification_round({ target_domain, round: "final" })`. Example:
 
-For v2, the write must reference the current attempt ID, snapshot hash, and adjudication plan hash exactly. The MCP computes and stores `final_verification_hash`; do not invent it.
+For v2, the write must reference the current attempt ID, snapshot hash, and `bounty_read_verification_context.data.adjudication_context.adjudication_plan_hash` exactly. The MCP computes and stores `final_verification_hash`; do not invent it.
 
 ```
 bounty_write_verification_round({

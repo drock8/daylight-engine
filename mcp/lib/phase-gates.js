@@ -20,8 +20,8 @@ const {
   readFindingsFromJsonl,
 } = require("./findings.js");
 const {
-  requireValidEvidencePacksForFinalReportableFindings,
-} = require("./evidence.js");
+  requireVerificationCompleteForGrade,
+} = require("./verification.js");
 const {
   readChainAttemptsFromJsonl,
   summarizeChainAttempts,
@@ -319,28 +319,45 @@ function computeChainToVerifyGate(domain) {
 function computeVerifyToGradeGate(domain) {
   const blockers = [];
   let evidence = null;
+  let verification = null;
 
   try {
-    const validation = requireValidEvidencePacksForFinalReportableFindings(domain);
+    const validation = requireVerificationCompleteForGrade(domain);
+    const evidenceValidation = validation.evidence;
     evidence = {
       valid: true,
-      skipped: validation.skipped,
-      packs_count: validation.packs_count,
-      representative_samples_count: validation.representative_samples_count,
-      final_reportable_count: validation.final_reportable_count,
-      reportable_findings_covered: validation.reportable_findings_covered,
-      missing_finding_ids: validation.missing_finding_ids,
+      skipped: evidenceValidation.skipped,
+      packs_count: evidenceValidation.packs_count,
+      representative_samples_count: evidenceValidation.representative_samples_count,
+      final_reportable_count: evidenceValidation.final_reportable_count,
+      reportable_findings_covered: evidenceValidation.reportable_findings_covered,
+      missing_finding_ids: evidenceValidation.missing_finding_ids,
     };
+    if (validation.schema_version === 2) {
+      verification = {
+        schema_version: 2,
+        verification_attempt_id: validation.verification_attempt_id,
+        verification_snapshot_hash: validation.verification_snapshot_hash,
+        adjudication_plan_hash: validation.adjudication_plan_hash,
+        final_verification_hash: validation.final_verification_hash,
+        counts: validation.counts,
+      };
+    }
   } catch (error) {
+    const message = compactErrorMessage(error);
+    const evidenceLike = /Evidence packs|evidence packs|Missing evidence packs|final reportable/i.test(message);
     blockers.push(blocker(
-      "evidence_packs_invalid",
-      "evidence packs are missing or invalid for final reportable findings",
-      { error: compactErrorMessage(error) },
+      evidenceLike ? "evidence_packs_invalid" : "verification_chain_incomplete",
+      evidenceLike
+        ? "evidence packs are missing or invalid for final reportable findings"
+        : "verification v2 chain is incomplete or stale",
+      { error: message },
     ));
   }
 
   return {
     evidence,
+    verification,
     transition_blockers: blockers,
   };
 }

@@ -156,7 +156,7 @@ function codexLaunchTemplates() {
       "```text",
       `Use Codex spawn_agent for ${workerLabel("final-verifier")}.`,
       "- agent_type: \"worker\"",
-      "- message: `Bob role: final-verifier. Session: ~/bounty-agent-sessions/[domain]. Target: [domain]. First call bounty_read_verification_context({ target_domain }). If v2, consume the adjudication_plan_hash and write with current_attempt_id/snapshot_hash/adjudication_plan_hash; do not compute diffs.` Include the full `final-verifier` contract from Codex Worker Role Contracts.",
+      "- message: `Bob role: final-verifier. Session: ~/bounty-agent-sessions/[domain]. Target: [domain]. First call bounty_read_verification_context({ target_domain }). If v2, consume adjudication_context.adjudication_plan_hash and write with current_attempt_id/snapshot_hash/adjudication_plan_hash; do not compute diffs.` Include the full `final-verifier` contract from Codex Worker Role Contracts.",
       "Wait with `wait_agent`, read the MCP verification artifact, then `close_agent`.",
       "```",
     ].join("\n"),

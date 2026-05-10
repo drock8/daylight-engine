@@ -23,12 +23,39 @@ function readJsonFile(filePath) {
 
 function writeFileAtomic(filePath, content) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = path.join(
+  const tempPath = siblingTempPath(filePath);
+  try {
+    fs.writeFileSync(tempPath, content);
+    fs.renameSync(tempPath, filePath);
+  } finally {
+    try { fs.unlinkSync(tempPath); } catch {}
+  }
+}
+
+function siblingTempPath(filePath) {
+  return path.join(
     path.dirname(filePath),
     `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
   );
-  fs.writeFileSync(tempPath, content);
-  fs.renameSync(tempPath, filePath);
+}
+
+function writeFileExclusiveAtomic(filePath, content, { mode } = {}) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = siblingTempPath(filePath);
+  const writeOptions = { flag: "wx" };
+  if (mode != null) writeOptions.mode = mode;
+  try {
+    fs.writeFileSync(tempPath, content, writeOptions);
+    try {
+      fs.linkSync(tempPath, filePath);
+      return true;
+    } catch (error) {
+      if (error && error.code === "EEXIST") return false;
+      throw error;
+    }
+  } finally {
+    try { fs.unlinkSync(tempPath); } catch {}
+  }
 }
 
 function normalizeMaxJsonlRecords(maxRecords) {
@@ -135,23 +162,9 @@ function tryAcquireSessionLock(lockPathValue) {
     timestamp: new Date().toISOString(),
     token,
   }, null, 2)}\n`;
-  let fd = null;
-  try {
-    fd = fs.openSync(lockPathValue, "wx", 0o600);
-    fs.writeFileSync(fd, payload, "utf8");
-    fs.closeSync(fd);
-    fd = null;
-    return token;
-  } catch (error) {
-    if (error && error.code === "EEXIST") {
-      return null;
-    }
-    throw error;
-  } finally {
-    if (fd != null) {
-      try { fs.closeSync(fd); } catch {}
-    }
-  }
+  return writeFileExclusiveAtomic(lockPathValue, payload, { mode: 0o600 })
+    ? token
+    : null;
 }
 
 function readSessionLockSnapshot(lockPathValue) {
@@ -279,5 +292,6 @@ module.exports = {
   tryAcquireSessionLock,
   withSessionLock,
   writeFileAtomic,
+  writeFileExclusiveAtomic,
   writeMarkdownMirror,
 };

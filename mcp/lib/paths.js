@@ -169,6 +169,10 @@ function verificationAttemptsDir(domain) {
   return path.join(sessionDir(domain), "verification-attempts");
 }
 
+function verificationReplayLeaseDir(domain) {
+  return path.join(sessionDir(domain), "verification-replay-leases");
+}
+
 function reportMarkdownPath(domain) {
   return path.join(sessionDir(domain), "report.md");
 }
@@ -205,6 +209,7 @@ module.exports = {
   verificationAdjudicationPath,
   verificationAttemptsDir,
   verificationManifestPath,
+  verificationReplayLeaseDir,
   verificationRoundPaths,
   verificationSnapshotPath,
   waveAssignmentsPath,

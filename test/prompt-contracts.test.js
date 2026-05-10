@@ -686,9 +686,13 @@ test("v2 verification prompt contracts use context, independent rounds, adjudica
   assert.match(orchestrator, /bounty_read_verification_context/);
   assert.match(orchestrator, /schema_version === 2/);
   assert.match(orchestrator, /bounty_build_verification_adjudication/);
+  assert.match(orchestrator, /adjudication_context/);
   assert.match(orchestrator, /adjudication_plan_hash/);
   assert.doesNotMatch(orchestrator.replaceAll("adjudication_plan_hash", ""), /\bplan_hash\b/);
   assert.match(orchestrator, /replay_execution_policy/);
+  assert.match(orchestrator, /evidence_match_status\.valid === true/);
+  assert.match(orchestrator, /matches_final === true/);
+  assert.doesNotMatch(orchestrator, /Retry once if missing\/invalid, then call/);
 
   assert.match(brutalist, /verification_attempt_id/);
   assert.match(brutalist, /verification_snapshot_hash/);
@@ -702,13 +706,20 @@ test("v2 verification prompt contracts use context, independent rounds, adjudica
   assert.match(balanced, /round: "balanced"/);
 
   assert.match(final, /adjudication_plan_hash/);
+  assert.match(final, /adjudication_context/);
   assert.doesNotMatch(final.replaceAll("adjudication_plan_hash", ""), /\bplan_hash\b/);
+  assert.match(final, /bounty_read_verification_round\(\{ target_domain, round: "balanced" \}\)/);
+  assert.match(final, /source-of-truth result set for both v1 and v2 finalization/);
   assert.match(final, /do not compute diffs/i);
   assert.match(final, /inherited_confidence_reasons/);
   assert.match(final, /resolved_confidence_reasons/);
 
   assert.match(evidence, /purpose: "evidence_replay"/);
   assert.match(evidence, /final_verification_hash/);
+  assert.match(evidence, /containing exactly one structured fallback object/i);
+  assert.match(evidence, /source: 'final_verification_round'/);
+  assert.match(evidence, /final_verification_hash/);
+  assert.doesNotMatch(evidence, /carrying the verifier's earlier reasoning text/);
 });
 
 test("evidence-agent exists, is MCP-only, and cannot mutate unrelated artifacts", () => {

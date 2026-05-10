@@ -99,8 +99,10 @@ module.exports = Object.freeze({
             },
             "artifact_hashes": {
               "type": "object",
+              "maxProperties": 20,
               "additionalProperties": {
-                "type": "string"
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
               }
             },
             "inherited_confidence_reasons": {

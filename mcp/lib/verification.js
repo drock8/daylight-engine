@@ -20,12 +20,14 @@ const {
   verificationAdjudicationPath,
   verificationAttemptsDir,
   verificationManifestPath,
+  verificationReplayLeaseDir,
   verificationRoundPaths,
   verificationSnapshotPath,
 } = require("./paths.js");
 const {
   loadJsonDocumentStrict,
   writeFileAtomic,
+  writeFileExclusiveAtomic,
 } = require("./storage.js");
 const {
   ERROR_CODES,
@@ -48,12 +50,11 @@ const VERIFICATION_SCHEMA_V1 = 1;
 const VERIFICATION_SCHEMA_V2 = 2;
 const VERIFICATION_INPUT_CHANGED_MESSAGE = "VERIFY input changed after snapshot; restart VERIFY/adjudication.";
 const VERIFICATION_ARCHIVE_RETENTION = 5;
+const VERIFICATION_REPLAY_LEASE_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_REPLAY_SAFETY = Object.freeze({
   mode: "serialized",
   lease_scope: "attempt_pack",
 });
-
-const ACTIVE_REPLAY_LEASES = new Map();
 
 function findingsLib() {
   return require("./findings.js");
@@ -587,6 +588,11 @@ function assertCurrentV2RoundDocument(domain, document, { expectedRound = null, 
     if (document.final_verification_hash !== recomputed) {
       throw new ToolError(ERROR_CODES.STATE_CONFLICT, "final verification hash mismatch");
     }
+    requireCurrentAdjudication(domain, {
+      adjudicationPlanHash: document.adjudication_plan_hash,
+      state: effectiveState,
+      snapshot: effectiveSnapshot,
+    });
   }
   return { state: effectiveState, snapshot: effectiveSnapshot };
 }
@@ -661,6 +667,90 @@ function adjudicationHashPayload(document) {
 
 function computeAdjudicationPlanHash(document) {
   return hashCanonicalJson(adjudicationHashPayload(document));
+}
+
+function compactAdjudicationContextFromDocument(document, { current = true, stale = false, blockerReason = null } = {}) {
+  if (!document || !isPlainObject(document)) {
+    return {
+      current: false,
+      stale: true,
+      blocker_reason: blockerReason || "missing verification adjudication",
+    };
+  }
+
+  if (!current) {
+    return {
+      current: false,
+      stale: stale === true,
+      blocker_reason: blockerReason || null,
+      adjudication_plan_hash: typeof document.adjudication_plan_hash === "string"
+        ? document.adjudication_plan_hash
+        : null,
+    };
+  }
+
+  const byFinding = new Map();
+  const ensureEntry = (findingId) => {
+    if (!byFinding.has(findingId)) {
+      byFinding.set(findingId, {
+        finding_id: findingId,
+        replay_required: false,
+        replay_reasons: [],
+        disagreement: false,
+        disagreement_fields: [],
+        brutalist: null,
+        balanced: null,
+      });
+    }
+    return byFinding.get(findingId);
+  };
+
+  for (const entry of Array.isArray(document.agreed) ? document.agreed : []) {
+    if (!entry || typeof entry.finding_id !== "string") continue;
+    const item = ensureEntry(entry.finding_id);
+    item.brutalist = resultSummary(entry);
+    item.balanced = resultSummary(entry);
+  }
+
+  for (const disagreement of Array.isArray(document.disagreements) ? document.disagreements : []) {
+    if (!disagreement || typeof disagreement.finding_id !== "string") continue;
+    const item = ensureEntry(disagreement.finding_id);
+    item.disagreement = true;
+    item.disagreement_fields = Array.isArray(disagreement.diffs)
+      ? disagreement.diffs.slice().sort((a, b) => a.localeCompare(b))
+      : [];
+    item.brutalist = disagreement.brutalist ? resultSummary(disagreement.brutalist) : null;
+    item.balanced = disagreement.balanced ? resultSummary(disagreement.balanced) : null;
+  }
+
+  const replayRequiredIds = new Set(Array.isArray(document.replay_required_ids)
+    ? document.replay_required_ids
+    : []);
+  const replayReasons = isPlainObject(document.replay_reasons) ? document.replay_reasons : {};
+  for (const findingId of replayRequiredIds) {
+    const item = ensureEntry(findingId);
+    item.replay_required = true;
+    item.replay_reasons = Array.isArray(replayReasons[findingId])
+      ? replayReasons[findingId].slice().sort((a, b) => a.localeCompare(b))
+      : [];
+  }
+
+  return {
+    current: true,
+    stale: false,
+    blocker_reason: null,
+    adjudication_plan_hash: document.adjudication_plan_hash,
+    counts: cloneJson(document.counts || {}),
+    finding_ids: Array.isArray(document.finding_ids) ? document.finding_ids.slice() : [],
+    replay_required_ids: Array.from(replayRequiredIds).sort((a, b) => a.localeCompare(b)),
+    replay_skipped_ids: Array.isArray(document.replay_skipped_ids)
+      ? document.replay_skipped_ids.slice().sort((a, b) => a.localeCompare(b))
+      : [],
+    qa_sampled_ids: Array.isArray(document.qa_sampled_ids)
+      ? document.qa_sampled_ids.slice().sort((a, b) => a.localeCompare(b))
+      : [],
+    findings: Array.from(byFinding.values()).sort((a, b) => a.finding_id.localeCompare(b.finding_id)),
+  };
 }
 
 function buildVerificationAdjudication(args) {
@@ -793,6 +883,7 @@ function buildVerificationAdjudication(args) {
     verification_snapshot_hash: state.verification_snapshot_hash,
     adjudication_plan_hash: adjudicationPlanHash,
     counts: document.counts,
+    adjudication_context: compactAdjudicationContextFromDocument(document),
     written_json: verificationAdjudicationPath(domain),
   });
 }
@@ -921,6 +1012,51 @@ function assertEvidenceMatchesFinal(domain, evidenceDocument, finalDocument) {
   return binding;
 }
 
+function requireCompleteV2VerificationChain(domain, { findingIdSet = null } = {}) {
+  const { state, snapshot } = requireV2State(domain);
+  const brutalist = loadCurrentV2Round(domain, "brutalist", { state, snapshot });
+  const balanced = loadCurrentV2Round(domain, "balanced", { state, snapshot });
+  const adjudication = requireCurrentAdjudication(domain, { state, snapshot });
+  const final = loadCurrentV2Round(domain, "final", { state, snapshot });
+  if (final.adjudication_plan_hash !== adjudication.adjudication_plan_hash) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, "final verification must reference the current adjudication_plan_hash");
+  }
+  validateFinalAgainstAdjudication(domain, final, adjudication);
+  const evidence = evidenceLib().requireValidEvidencePacksForFinalReportableFindings(domain, {
+    findingIdSet: findingIdSet || new Set(snapshot.finding_ids),
+  });
+  if (!evidence.skipped) {
+    assertEvidenceMatchesFinal(domain, evidence.document, final);
+  }
+  return {
+    schema_version: VERIFICATION_SCHEMA_V2,
+    verification_attempt_id: state.verification_attempt_id,
+    verification_snapshot_hash: state.verification_snapshot_hash,
+    final_verification_hash: final.final_verification_hash,
+    adjudication_plan_hash: adjudication.adjudication_plan_hash,
+    counts: {
+      snapshot_findings: snapshot.finding_ids.length,
+      brutalist_results: brutalist.results.length,
+      balanced_results: balanced.results.length,
+      final_results: final.results.length,
+      evidence_packs: evidence.packs_count,
+      final_reportable: evidence.final_reportable_count,
+    },
+    evidence,
+  };
+}
+
+function requireVerificationCompleteForGrade(domain, { findingIdSet = null } = {}) {
+  const schemaVersion = schemaVersionForContext(domain);
+  if (schemaVersion === VERIFICATION_SCHEMA_V1) {
+    return {
+      schema_version: VERIFICATION_SCHEMA_V1,
+      evidence: evidenceLib().requireValidEvidencePacksForFinalReportableFindings(domain, { findingIdSet }),
+    };
+  }
+  return requireCompleteV2VerificationChain(domain, { findingIdSet });
+}
+
 function replaySafetyForTool(toolName) {
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     if (!pack || !pack.verifier) continue;
@@ -968,6 +1104,148 @@ function replayLeaseKey({ targetDomain, capabilityPack, context, leaseScope }) {
   throw new ToolError(ERROR_CODES.INTERNAL_ERROR, `Unsupported replay lease_scope: ${leaseScope}`);
 }
 
+function replayLeaseFileName(key) {
+  return `${crypto.createHash("sha256").update(key).digest("hex")}.json`;
+}
+
+function replayLeasePath(targetDomain, key) {
+  return path.join(verificationReplayLeaseDir(targetDomain), replayLeaseFileName(key));
+}
+
+function parseLeaseTime(value) {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function isReplayLeaseStale(lease, nowMs = Date.now()) {
+  if (!lease || !isPlainObject(lease)) return true;
+  const expiresAtMs = parseLeaseTime(lease.expires_at);
+  if (!expiresAtMs) return true;
+  return expiresAtMs <= nowMs;
+}
+
+function readReplayLeaseFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function cleanupStaleReplayLease(filePath, nowMs = Date.now()) {
+  const lease = readReplayLeaseFile(filePath);
+  if (!isReplayLeaseStale(lease, nowMs)) return false;
+  try {
+    fs.rmSync(filePath, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildReplayLeaseMetadata({
+  targetDomain,
+  key,
+  toolName,
+  policy,
+  leaseScope,
+  context,
+  nowMs = Date.now(),
+}) {
+  const acquiredAt = new Date(nowMs).toISOString();
+  return {
+    version: 1,
+    lease_id: crypto.createHash("sha256").update(key).digest("hex"),
+    target_domain: targetDomain,
+    tool: toolName,
+    capability_pack: policy.capability_pack,
+    lease_scope: leaseScope,
+    replay_purpose: context.purpose,
+    verification_attempt_id: context.verification_attempt_id,
+    verification_snapshot_hash: context.verification_snapshot_hash,
+    round: context.round,
+    finding_id: context.finding_id,
+    acquired_at: acquiredAt,
+    expires_at: new Date(nowMs + VERIFICATION_REPLAY_LEASE_TTL_MS).toISOString(),
+    pid: process.pid,
+  };
+}
+
+function acquireReplayLease({
+  targetDomain,
+  key,
+  toolName,
+  policy,
+  leaseScope,
+  context,
+}) {
+  const dir = verificationReplayLeaseDir(targetDomain);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = replayLeasePath(targetDomain, key);
+  const keyHash = crypto.createHash("sha256").update(key).digest("hex");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const metadata = buildReplayLeaseMetadata({
+      targetDomain,
+      key,
+      toolName,
+      policy,
+      leaseScope,
+      context,
+    });
+    const payload = `${JSON.stringify(metadata, null, 2)}\n`;
+    if (writeFileExclusiveAtomic(filePath, payload)) {
+      return { filePath, metadata };
+    }
+    const existing = readReplayLeaseFile(filePath);
+    if (cleanupStaleReplayLease(filePath)) continue;
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Replay lease busy for ${leaseScope}: ${keyHash}`, {
+      active_lease: existing && isPlainObject(existing)
+        ? {
+          lease_id: existing.lease_id || keyHash,
+          tool: existing.tool || null,
+          capability_pack: existing.capability_pack || policy.capability_pack,
+          replay_purpose: existing.replay_purpose || null,
+          verification_attempt_id: existing.verification_attempt_id || null,
+          round: existing.round || null,
+          finding_id: existing.finding_id || null,
+          acquired_at: existing.acquired_at || null,
+          expires_at: existing.expires_at || null,
+        }
+        : null,
+    });
+  }
+  throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Replay lease busy for ${leaseScope}: ${keyHash}`);
+}
+
+function listActiveReplayLeases(targetDomain) {
+  const dir = verificationReplayLeaseDir(targetDomain);
+  if (!fs.existsSync(dir)) return [];
+  const active = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const filePath = path.join(dir, entry.name);
+    const lease = readReplayLeaseFile(filePath);
+    if (isReplayLeaseStale(lease)) {
+      cleanupStaleReplayLease(filePath);
+      continue;
+    }
+    active.push({
+      lease_id: lease.lease_id || entry.name.replace(/\.json$/, ""),
+      tool: lease.tool || null,
+      capability_pack: lease.capability_pack || null,
+      lease_scope: lease.lease_scope || null,
+      purpose: lease.replay_purpose || null,
+      replay_purpose: lease.replay_purpose || null,
+      verification_attempt_id: lease.verification_attempt_id || null,
+      round: lease.round || null,
+      finding_id: lease.finding_id || null,
+      acquired_at: lease.acquired_at || null,
+      expires_at: lease.expires_at || null,
+    });
+  }
+  return active.sort((a, b) => a.lease_id.localeCompare(b.lease_id));
+}
+
 function assertReplayContextCurrent(targetDomain, context) {
   const { state } = requireV2State(targetDomain);
   if (context.verification_attempt_id !== state.verification_attempt_id) {
@@ -998,27 +1276,36 @@ async function runWithReplaySafety(tool, args, handler) {
     context,
     leaseScope,
   });
-  if (key && ACTIVE_REPLAY_LEASES.has(key)) {
-    safeAppendPipelineEvent(targetDomain, "verification_replay_policy_applied", {
-      phase: "VERIFY",
-      status: "lease_rejected",
-      source: tool.name,
-      verification_attempt_id: context.verification_attempt_id,
-      verification_snapshot_hash: context.verification_snapshot_hash,
-      capability_pack: policy.capability_pack,
-      lease_scope: leaseScope,
-      replay_purpose: context.purpose,
-      counts: { active_leases: ACTIVE_REPLAY_LEASES.size },
-    });
-    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Replay lease busy for ${leaseScope}: ${key}`);
-  }
+  let lease = null;
   if (key) {
-    ACTIVE_REPLAY_LEASES.set(key, {
-      tool: tool.name,
-      capability_pack: policy.capability_pack,
-      purpose: context.purpose,
-      acquired_at: Date.now(),
-    });
+    try {
+      lease = acquireReplayLease({
+        targetDomain,
+        key,
+        toolName: tool.name,
+        policy,
+        leaseScope,
+        context,
+      });
+    } catch (error) {
+      if (error instanceof ToolError && error.code === ERROR_CODES.STATE_CONFLICT) {
+        safeAppendPipelineEvent(targetDomain, "verification_replay_policy_applied", {
+          phase: "VERIFY",
+          status: "lease_rejected",
+          source: tool.name,
+          verification_attempt_id: context.verification_attempt_id,
+          verification_snapshot_hash: context.verification_snapshot_hash,
+          capability_pack: policy.capability_pack,
+          lease_scope: leaseScope,
+          replay_purpose: context.purpose,
+          counts: { active_leases: listActiveReplayLeases(targetDomain).length },
+        });
+      }
+      throw error;
+    }
+  }
+  if (key && !lease) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, "Replay lease acquisition failed");
   }
   safeAppendPipelineEvent(targetDomain, "verification_replay_policy_applied", {
     phase: "VERIFY",
@@ -1029,21 +1316,33 @@ async function runWithReplaySafety(tool, args, handler) {
     capability_pack: policy.capability_pack,
     lease_scope: leaseScope,
     replay_purpose: context.purpose,
-    counts: { active_leases: ACTIVE_REPLAY_LEASES.size },
+    counts: { active_leases: listActiveReplayLeases(targetDomain).length },
   });
   try {
     return await handler();
   } finally {
-    if (key) ACTIVE_REPLAY_LEASES.delete(key);
+    if (lease && lease.filePath) {
+      try { fs.rmSync(lease.filePath, { force: true }); } catch {}
+    }
   }
 }
 
-function replayExecutionPolicy() {
+function replayExecutionPolicy(targetDomain) {
+  const activeLeases = targetDomain ? listActiveReplayLeases(targetDomain) : [];
   return Object.values(CAPABILITY_PACKS).map((pack) => {
     const safety = pack.verifier.replay_safety || DEFAULT_REPLAY_SAFETY;
-    const active = Array.from(ACTIVE_REPLAY_LEASES.entries())
-      .filter(([, value]) => value.capability_pack === pack.id)
-      .map(([key, value]) => ({ key, tool: value.tool, purpose: value.purpose }));
+    const active = activeLeases
+      .filter((lease) => lease.capability_pack === pack.id)
+      .map((lease) => ({
+        lease_id: lease.lease_id,
+        tool: lease.tool,
+        purpose: lease.purpose,
+        verification_attempt_id: lease.verification_attempt_id,
+        round: lease.round,
+        finding_id: lease.finding_id,
+        acquired_at: lease.acquired_at,
+        expires_at: lease.expires_at,
+      }));
     return {
       capability_pack: pack.id,
       mode: safety.mode,
@@ -1129,6 +1428,35 @@ function adjudicationStatus(domain, state) {
     status.blocker_reason = error.message || String(error);
   }
   return status;
+}
+
+function readCompactAdjudicationContext(domain, state, status = null) {
+  const effectiveStatus = status || adjudicationStatus(domain, state);
+  if (!effectiveStatus.exists) {
+    return {
+      current: false,
+      stale: false,
+      blocker_reason: "missing verification-adjudication.json",
+      adjudication_plan_hash: null,
+    };
+  }
+  const document = safeReadJson(verificationAdjudicationPath(domain));
+  if (!document) {
+    return {
+      current: false,
+      stale: true,
+      blocker_reason: effectiveStatus.blocker_reason || "malformed verification-adjudication.json",
+      adjudication_plan_hash: effectiveStatus.adjudication_plan_hash || null,
+    };
+  }
+  if (effectiveStatus.current === true) {
+    return compactAdjudicationContextFromDocument(document);
+  }
+  return compactAdjudicationContextFromDocument(document, {
+    current: false,
+    stale: effectiveStatus.stale === true,
+    blockerReason: effectiveStatus.blocker_reason,
+  });
 }
 
 function evidenceMatchStatus(domain) {
@@ -1404,6 +1732,7 @@ function readVerificationContext(args) {
   }
   const rounds = Object.fromEntries(VERIFICATION_ROUND_VALUES.map((round) => [round, roundStatus(domain, round, state)]));
   const adjudication = adjudicationStatus(domain, state);
+  const adjudicationContext = readCompactAdjudicationContext(domain, state, adjudication);
   const evidence = evidenceMatchStatus(domain);
   const context = {
     version: 1,
@@ -1415,9 +1744,10 @@ function readVerificationContext(args) {
     entered_at: state ? state.verification_entered_at : null,
     round_status: rounds,
     adjudication_status: adjudication,
+    adjudication_context: adjudicationContext,
     evidence_match_status: evidence,
     stale_blockers: staleBlockers,
-    replay_execution_policy: replayExecutionPolicy(),
+    replay_execution_policy: replayExecutionPolicy(domain),
     archived_attempts: listArchivedVerificationAttempts(domain),
   };
   context.next_action = nextVerificationAction({
@@ -1435,6 +1765,7 @@ module.exports = {
   DEFAULT_REPLAY_SAFETY,
   VERIFICATION_ARCHIVE_RETENTION,
   VERIFICATION_INPUT_CHANGED_MESSAGE,
+  VERIFICATION_REPLAY_LEASE_TTL_MS,
   VERIFICATION_SCHEMA_V1,
   VERIFICATION_SCHEMA_V2,
   assertCurrentV2RoundDocument,
@@ -1449,12 +1780,16 @@ module.exports = {
   evidenceBindingForFinal,
   finalVerificationHash,
   hashCanonicalJson,
+  listActiveReplayLeases,
   listArchivedVerificationAttempts,
   prepareVerificationEntry,
   readVerificationContext,
   requireCurrentAdjudication,
+  requireCompleteV2VerificationChain,
   requireV2State,
+  requireVerificationCompleteForGrade,
   refreshVerificationManifest,
+  replayExecutionPolicy,
   runWithReplaySafety,
   selectVerificationWriteSchemaVersion,
   validateCurrentAttemptArgs,

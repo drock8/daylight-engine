@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const { EventEmitter } = require("events");
 const Module = require("module");
@@ -13,7 +14,12 @@ const path = require("path");
 const serverModule = require("../mcp/server.js");
 const {
   computeAdjudicationPlanHash,
+  runWithReplaySafety,
+  VERIFICATION_REPLAY_LEASE_TTL_MS,
 } = require("../mcp/lib/verification.js");
+const {
+  verificationReplayLeaseDir,
+} = require("../mcp/lib/paths.js");
 const {
   TECHNIQUE_FULL_ITEM_MAX_CHARS,
   TECHNIQUE_FULL_ITEMS_PER_KIND,
@@ -789,6 +795,68 @@ function enterVerifyV2(domain) {
   return JSON.parse(transitionPhase({ target_domain: domain, to_phase: "VERIFY" }));
 }
 
+function replayContextFromVerificationContext(context, overrides = {}) {
+  return {
+    purpose: "verification_replay",
+    verification_attempt_id: context.current_attempt_id,
+    verification_snapshot_hash: context.snapshot_hash,
+    round: "brutalist",
+    finding_id: "F-1",
+    ...overrides,
+  };
+}
+
+function replayLeaseFileFor(domain, context, capabilityPack = "web") {
+  const key = `${domain}:${context.verification_attempt_id}:${capabilityPack}`;
+  return path.join(
+    verificationReplayLeaseDir(domain),
+    `${crypto.createHash("sha256").update(key).digest("hex")}.json`,
+  );
+}
+
+function flushMicrotasks() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function holdingHandler(leasePath) {
+  let entered = false;
+  let snapshot = null;
+  let releaseFn;
+  const deferred = new Promise((resolve) => { releaseFn = resolve; });
+  return {
+    handler: async () => {
+      entered = true;
+      try {
+        snapshot = JSON.parse(fs.readFileSync(leasePath, "utf8"));
+      } catch (err) {
+        snapshot = { error: err.message || String(err) };
+      }
+      await deferred;
+    },
+    entered: () => entered,
+    leaseSnapshot: () => snapshot,
+    release: () => releaseFn(),
+  };
+}
+
+function assertCompleteReplayLeaseSnapshot(snapshot, expected) {
+  assert.ok(snapshot);
+  assert.equal(snapshot.error, undefined);
+  assert.equal(snapshot.lease_id, expected.lease_id);
+  assert.equal(snapshot.target_domain, expected.target_domain);
+  assert.equal(snapshot.tool, expected.tool);
+  assert.equal(snapshot.capability_pack, expected.capability_pack);
+  assert.equal(snapshot.lease_scope, expected.lease_scope);
+  assert.equal(snapshot.replay_purpose, expected.replay_purpose);
+  assert.equal(snapshot.verification_attempt_id, expected.verification_attempt_id);
+  assert.equal(snapshot.verification_snapshot_hash, expected.verification_snapshot_hash);
+  assert.equal(snapshot.round, expected.round);
+  assert.equal(snapshot.finding_id, expected.finding_id);
+  assert.ok(snapshot.acquired_at);
+  assert.ok(snapshot.expires_at);
+  assert.equal(snapshot.pid, process.pid);
+}
+
 async function withMockSafeFetch(routes, fn, { dnsRecords = {} } = {}) {
   const originalLookup = dns.lookup;
   const originalHttpRequest = http.request;
@@ -1108,6 +1176,9 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
     "verification-attempts/attempt-*/",
   ]);
   assert.deepEqual(TOOL_MANIFEST.bounty_write_verification_round.session_artifacts_written, ["brutalist.json", "balanced.json", "verified-final.json", "verification-manifest.json"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_build_verification_adjudication.role_bundles, ["orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_build_verification_adjudication.mutating, true);
+  assert.equal(TOOL_MANIFEST.bounty_build_verification_adjudication.global_preapproval, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_build_verification_adjudication.session_artifacts_written, ["verification-adjudication.json", "verification-manifest.json"]);
   assert.equal(TOOL_MANIFEST.bounty_start_wave.mutating, true);
   assert.equal(TOOL_MANIFEST.bounty_start_wave.global_preapproval, false);
@@ -10027,8 +10098,16 @@ test("verification v2 round and final hashes are stable across confidence_reason
 
     const reasonsA = ["fresh_replay_passed", "auth_expired", "tooling_blocked"];
     const reasonsB = ["tooling_blocked", "fresh_replay_passed", "auth_expired"];
-    const hashesA = { foundry_run: "h1", http_audit: "h2", roast: "h3" };
-    const hashesB = { roast: "h3", foundry_run: "h1", http_audit: "h2" };
+    const hashesA = {
+      foundry_run: "1".repeat(64),
+      http_audit: "2".repeat(64),
+      roast: "3".repeat(64),
+    };
+    const hashesB = {
+      roast: "3".repeat(64),
+      foundry_run: "1".repeat(64),
+      http_audit: "2".repeat(64),
+    };
 
     const writeOnce = (reasons, hashes) => {
       const result = v2VerificationResult("F-1", {
@@ -10108,10 +10187,12 @@ test("verification v2 round results sort deterministically across multi-finding 
         round_profile: "brutalist",
         results,
       });
-      const onDisk = JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "brutalist").json, "utf8"));
+      const onDiskPath = verificationRoundPaths(domain, "brutalist").json;
+      const onDiskBytes = fs.readFileSync(onDiskPath);
+      const onDisk = JSON.parse(onDiskBytes.toString("utf8"));
       return {
         ids: onDisk.results.map((r) => r.finding_id),
-        artifact_hash: require("crypto").createHash("sha256").update(JSON.stringify(onDisk)).digest("hex"),
+        artifact_hash: require("crypto").createHash("sha256").update(onDiskBytes).digest("hex"),
       };
     };
 
@@ -10203,6 +10284,14 @@ test("verification v2 supports independent round order, deterministic adjudicati
     assert.equal(manifest.artifacts.adjudication.current, true);
     assert.equal(manifest.chain_hashes.adjudication_plan_hash, adjudication.adjudication_plan_hash);
     assert.equal(Object.hasOwn(manifest, "plan_hash"), false);
+    let verificationContext = JSON.parse(readVerificationContext({ target_domain: domain }));
+    assert.equal(verificationContext.adjudication_context.current, true);
+    assert.equal(verificationContext.adjudication_context.adjudication_plan_hash, adjudication.adjudication_plan_hash);
+    assert.deepEqual(verificationContext.adjudication_context.finding_ids, ["F-1"]);
+    assert.equal(verificationContext.adjudication_context.findings[0].finding_id, "F-1");
+    assert.equal(verificationContext.adjudication_context.findings[0].replay_required, true);
+    assert.equal(Object.hasOwn(verificationContext.adjudication_context.findings[0], "reasoning"), false);
+    assert.doesNotMatch(JSON.stringify(verificationContext.adjudication_context), /curl|account_id|proof_of_concept|response_evidence/i);
 
     const staleAdjudicationHash = adjudication.adjudication_plan_hash;
     writeVerificationRound({
@@ -10224,6 +10313,14 @@ test("verification v2 supports independent round order, deterministic adjudicati
       manifest.artifacts.adjudication.blocker_reason,
       /input_round_hashes\.balanced does not match current balanced round/,
     );
+    verificationContext = JSON.parse(readVerificationContext({ target_domain: domain }));
+    assert.equal(verificationContext.adjudication_context.current, false);
+    assert.equal(verificationContext.adjudication_context.stale, true);
+    assert.match(
+      verificationContext.adjudication_context.blocker_reason,
+      /input_round_hashes\.balanced does not match current balanced round/,
+    );
+    assert.equal(Object.hasOwn(verificationContext.adjudication_context, "findings"), false);
     assert.throws(() => writeVerificationRound({
       target_domain: domain,
       round: "final",
@@ -10340,6 +10437,66 @@ test("verification v2 manifest treats no-reportable final evidence as skipped wi
     assert.equal(manifest.artifacts.evidence.current, true);
     assert.equal(manifest.chain_complete, true);
     assert.equal(fs.existsSync(evidencePaths.json), false);
+  });
+});
+
+test("verification v2 blocks grading when adjudication goes stale after final evidence", () => {
+  withTempHome(() => {
+    const domain = "stale-after-final.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+    seedVerificationPipeline(domain, [v2VerificationResult("F-1")]);
+    writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] });
+
+    const before = JSON.parse(readVerificationContext({ target_domain: domain }));
+    assert.equal(before.adjudication_context.current, true);
+    assert.equal(before.round_status.final.current, true);
+    assert.equal(before.evidence_match_status.valid, true);
+
+    writeVerificationRound({
+      target_domain: domain,
+      round: "balanced",
+      notes: "Balanced round revised after final and evidence were already written.",
+      verification_attempt_id: context.current_attempt_id,
+      verification_snapshot_hash: context.snapshot_hash,
+      round_profile: "balanced",
+      results: [v2VerificationResult("F-1", {
+        confidence: "medium",
+        confidence_reasons: ["manual_inference"],
+        reasoning: "Revised balanced view after final.",
+      })],
+    });
+
+    const after = JSON.parse(readVerificationContext({ target_domain: domain }));
+    assert.equal(after.adjudication_status.current, false);
+    assert.match(after.adjudication_status.blocker_reason, /input_round_hashes\.balanced/);
+    assert.equal(after.adjudication_context.current, false);
+    assert.equal(Object.hasOwn(after.adjudication_context, "findings"), false);
+    assert.equal(after.round_status.final.current, false);
+    assert.match(after.round_status.final.blocker_reason, /input_round_hashes\.balanced/);
+    assert.equal(after.evidence_match_status.valid, false);
+    assert.match(after.evidence_match_status.blocker_reason, /input_round_hashes\.balanced/);
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "GRADE" }),
+      /VERIFY -> GRADE blocked: .*verification v2 chain is incomplete or stale.*input_round_hashes\.balanced/is,
+    );
+    assert.throws(() => writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 45,
+      findings: [{
+        finding_id: "F-1",
+        impact: 20,
+        proof_quality: 10,
+        severity_accuracy: 5,
+        chain_potential: 5,
+        report_quality: 5,
+        total_score: 45,
+        feedback: null,
+      }],
+      feedback: null,
+    }), /input_round_hashes\.balanced/);
   });
 });
 
@@ -10468,6 +10625,118 @@ test("verification v2 snapshot ignores time-derived auth expiry booleans", () =>
   });
 });
 
+test("verification v2 validates artifact hashes and canonicalizes result ordering", () => {
+  withTempHome(() => {
+    const domain = "canonical-v2.example.com";
+    seedSessionState(domain, { phase: "CHAIN" });
+    seedFinding(domain);
+    seedFinding(domain, { title: "Second finding", endpoint: "/api/second" });
+    const transitioned = JSON.parse(transitionPhase({
+      target_domain: domain,
+      to_phase: "VERIFY",
+      override_reason: "canonicalization regression test enters VERIFY without chain attempt",
+    }));
+    const context = {
+      current_attempt_id: transitioned.verification.attempt_id,
+      snapshot_hash: transitioned.verification.snapshot_hash,
+    };
+    const f1 = v2VerificationResult("F-1", {
+      confidence_reasons: ["manual_inference", "fresh_replay_passed"],
+      artifact_hashes: {
+        "z-run": "b".repeat(64),
+        "a-run": "a".repeat(64),
+      },
+    });
+    const f2 = v2VerificationResult("F-2", {
+      confidence_reasons: ["fresh_replay_passed"],
+      artifact_hashes: {
+        "http-audit:42": "c".repeat(64),
+      },
+    });
+
+    writeVerificationRound({
+      target_domain: domain,
+      round: "brutalist",
+      notes: null,
+      verification_attempt_id: context.current_attempt_id,
+      verification_snapshot_hash: context.snapshot_hash,
+      round_profile: "brutalist",
+      results: [f2, f1],
+    });
+    const brutalistDoc = JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "brutalist").json, "utf8"));
+    assert.deepEqual(brutalistDoc.results.map((result) => result.finding_id), ["F-1", "F-2"]);
+    assert.deepEqual(brutalistDoc.results[0].confidence_reasons, ["fresh_replay_passed", "manual_inference"]);
+    assert.deepEqual(Object.keys(brutalistDoc.results[0].artifact_hashes), ["a-run", "z-run"]);
+
+    writeVerificationRound({
+      target_domain: domain,
+      round: "balanced",
+      notes: null,
+      verification_attempt_id: context.current_attempt_id,
+      verification_snapshot_hash: context.snapshot_hash,
+      round_profile: "balanced",
+      results: [f2, f1],
+    });
+    const adjudication = JSON.parse(buildVerificationAdjudication({ target_domain: domain }));
+    const finalA = JSON.parse(writeVerificationRound({
+      target_domain: domain,
+      round: "final",
+      notes: null,
+      verification_attempt_id: context.current_attempt_id,
+      verification_snapshot_hash: context.snapshot_hash,
+      round_profile: "final",
+      adjudication_plan_hash: adjudication.adjudication_plan_hash,
+      results: [f2, f1],
+    }));
+    const finalB = JSON.parse(writeVerificationRound({
+      target_domain: domain,
+      round: "final",
+      notes: null,
+      verification_attempt_id: context.current_attempt_id,
+      verification_snapshot_hash: context.snapshot_hash,
+      round_profile: "final",
+      adjudication_plan_hash: adjudication.adjudication_plan_hash,
+      results: [
+        { ...f1, confidence_reasons: ["fresh_replay_passed", "manual_inference"], artifact_hashes: { "a-run": "a".repeat(64), "z-run": "b".repeat(64) } },
+        f2,
+      ],
+    }));
+    assert.equal(finalA.final_verification_hash, finalB.final_verification_hash);
+
+    assert.throws(() => writeVerificationRound({
+      target_domain: domain,
+      round: "brutalist",
+      notes: null,
+      verification_attempt_id: context.current_attempt_id,
+      verification_snapshot_hash: context.snapshot_hash,
+      round_profile: "brutalist",
+      results: [v2VerificationResult("F-1", { artifact_hashes: { bad: "A".repeat(64) } }), f2],
+    }), /lower-case SHA-256 hex hash|must match pattern/);
+
+    assert.throws(() => writeVerificationRound({
+      target_domain: domain,
+      round: "brutalist",
+      notes: null,
+      verification_attempt_id: context.current_attempt_id,
+      verification_snapshot_hash: context.snapshot_hash,
+      round_profile: "brutalist",
+      results: [v2VerificationResult("F-1", { artifact_hashes: { "bad key": "a".repeat(64) } }), f2],
+    }), /artifact_hashes key/);
+
+    assert.throws(() => writeVerificationRound({
+      target_domain: domain,
+      round: "brutalist",
+      notes: null,
+      verification_attempt_id: context.current_attempt_id,
+      verification_snapshot_hash: context.snapshot_hash,
+      round_profile: "brutalist",
+      results: [v2VerificationResult("F-1", {
+        artifact_hashes: Object.fromEntries(Array.from({ length: 21 }, (_, index) => [`h${index}`, "a".repeat(64)])),
+      }), f2],
+    }), /at most 20 entries/);
+  });
+});
+
 test("existing v1 verification artifacts pin VERIFY transition to v1 for the session lifetime", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -10517,6 +10786,372 @@ test("replay-capable tools require context only for verification and evidence re
   });
 });
 
+test("concurrent acquire cannot observe a partial lease file", async () => {
+  await withTempHome(async () => {
+    const domain = "lease-partial-window.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+    const replayContext = replayContextFromVerificationContext(context);
+    const leasePath = replayLeaseFileFor(domain, replayContext);
+    const tool = { name: "bounty_http_scan" };
+    const args = { target_domain: domain, replay_context: replayContext };
+    const originalOpenSync = fs.openSync;
+    let triggered = false;
+    let secondHandlerEntered = false;
+    let secondPromise = null;
+
+    fs.openSync = function patchedOpenSync(target, flags, mode) {
+      if (target === leasePath && flags === "wx" && !triggered) {
+        const fd = originalOpenSync.call(fs, target, flags, mode);
+        triggered = true;
+        secondPromise = runWithReplaySafety(tool, args, async () => {
+          secondHandlerEntered = true;
+        });
+        secondPromise.catch(() => {});
+        return fd;
+      }
+      return originalOpenSync.call(fs, target, flags, mode);
+    };
+
+    try {
+      assert.equal(
+        await runWithReplaySafety(tool, args, async () => "first lease acquired"),
+        "first lease acquired",
+      );
+      assert.equal(secondHandlerEntered, false);
+    } finally {
+      if (secondPromise) await secondPromise.catch(() => {});
+      fs.openSync = originalOpenSync;
+    }
+    assert.equal(fs.existsSync(leasePath), false);
+  });
+});
+
+test("acquire never calls openSync(wx) on the lease path", async () => {
+  await withTempHome(async () => {
+    const domain = "lease-open-wx-pin.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+    const replayContext = replayContextFromVerificationContext(context);
+    const leasePath = replayLeaseFileFor(domain, replayContext);
+    const originalOpenSync = fs.openSync;
+    const openWxCalls = [];
+
+    fs.openSync = function patchedOpenSync(target, flags, mode) {
+      if (target === leasePath && flags === "wx") {
+        openWxCalls.push({ target, flags });
+      }
+      return originalOpenSync.call(fs, target, flags, mode);
+    };
+
+    try {
+      assert.equal(
+        await runWithReplaySafety(
+          { name: "bounty_http_scan" },
+          { target_domain: domain, replay_context: replayContext },
+          async () => "ok",
+        ),
+        "ok",
+      );
+      assert.deepEqual(openWxCalls, []);
+    } finally {
+      fs.openSync = originalOpenSync;
+    }
+  });
+});
+
+test("verification replay leases serialize same-process and expose active file leases in context", async () => {
+  await withTempHome(async () => {
+    const domain = "lease-same-process.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+    const replayContext = replayContextFromVerificationContext(context);
+    let release;
+    const first = runWithReplaySafety(
+      { name: "bounty_http_scan" },
+      { target_domain: domain, replay_context: replayContext },
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+    await flushMicrotasks();
+
+    const leasePath = replayLeaseFileFor(domain, replayContext);
+    assert.equal(fs.existsSync(leasePath), true);
+    const leaseDoc = JSON.parse(fs.readFileSync(leasePath, "utf8"));
+    assert.deepEqual(Object.keys(leaseDoc).sort(), [
+      "acquired_at",
+      "capability_pack",
+      "expires_at",
+      "finding_id",
+      "lease_id",
+      "lease_scope",
+      "pid",
+      "replay_purpose",
+      "round",
+      "target_domain",
+      "tool",
+      "verification_attempt_id",
+      "verification_snapshot_hash",
+      "version",
+    ]);
+    assert.doesNotMatch(JSON.stringify(leaseDoc), /url|headers|cookie|authorization|body|request/i);
+
+    const activeContext = JSON.parse(readVerificationContext({ target_domain: domain }));
+    const webPolicy = activeContext.replay_execution_policy.find((item) => item.capability_pack === "web");
+    assert.equal(webPolicy.active_leases.length, 1);
+    assert.equal(webPolicy.active_leases[0].tool, "bounty_http_scan");
+
+    await assert.rejects(
+      () => runWithReplaySafety(
+        { name: "bounty_http_scan" },
+        { target_domain: domain, replay_context: replayContext },
+        () => "should not run",
+      ),
+      /Replay lease busy/,
+    );
+
+    release("ok");
+    assert.equal(await first, "ok");
+    assert.equal(fs.existsSync(leasePath), false);
+  });
+});
+
+test("verification replay leases reject simulated cross-process locks and clean stale locks", async () => {
+  await withTempHome(async () => {
+    const domain = "lease-cross-process.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+    const replayContext = replayContextFromVerificationContext(context);
+    const leasePath = replayLeaseFileFor(domain, replayContext);
+    fs.mkdirSync(path.dirname(leasePath), { recursive: true });
+    const leaseId = path.basename(leasePath, ".json");
+    writeFileAtomic(leasePath, `${JSON.stringify({
+      version: 1,
+      lease_id: leaseId,
+      target_domain: domain,
+      tool: "bounty_http_scan",
+      capability_pack: "web",
+      lease_scope: "attempt_pack",
+      replay_purpose: "verification_replay",
+      verification_attempt_id: replayContext.verification_attempt_id,
+      verification_snapshot_hash: replayContext.verification_snapshot_hash,
+      round: replayContext.round,
+      finding_id: replayContext.finding_id,
+      acquired_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + VERIFICATION_REPLAY_LEASE_TTL_MS).toISOString(),
+      pid: 999999,
+    }, null, 2)}\n`);
+
+    await assert.rejects(
+      () => runWithReplaySafety(
+        { name: "bounty_http_scan" },
+        { target_domain: domain, replay_context: replayContext },
+        () => "should not run",
+      ),
+      /Replay lease busy/,
+    );
+
+    writeFileAtomic(leasePath, `${JSON.stringify({
+      version: 1,
+      lease_id: leaseId,
+      target_domain: domain,
+      tool: "bounty_http_scan",
+      capability_pack: "web",
+      lease_scope: "attempt_pack",
+      replay_purpose: "verification_replay",
+      verification_attempt_id: replayContext.verification_attempt_id,
+      verification_snapshot_hash: replayContext.verification_snapshot_hash,
+      round: replayContext.round,
+      finding_id: replayContext.finding_id,
+      acquired_at: new Date(Date.now() - VERIFICATION_REPLAY_LEASE_TTL_MS - 1000).toISOString(),
+      expires_at: new Date(Date.now() - 1000).toISOString(),
+      pid: 999999,
+    }, null, 2)}\n`);
+
+    const result = await runWithReplaySafety(
+      { name: "bounty_http_scan" },
+      { target_domain: domain, replay_context: replayContext },
+      () => "fresh lease acquired",
+    );
+    assert.equal(result, "fresh lease acquired");
+    assert.equal(fs.existsSync(leasePath), false);
+  });
+});
+
+test("externally-created empty lease is cleaned up and acquired", async () => {
+  await withTempHome(async () => {
+    const domain = "lease-empty-external.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+    const replayContext = replayContextFromVerificationContext(context);
+    const leasePath = replayLeaseFileFor(domain, replayContext);
+    fs.mkdirSync(path.dirname(leasePath), { recursive: true });
+    fs.writeFileSync(leasePath, "");
+    const leaseId = path.basename(leasePath, ".json");
+    const h = holdingHandler(leasePath);
+    const wrapperPromise = runWithReplaySafety(
+      { name: "bounty_http_scan" },
+      { target_domain: domain, replay_context: replayContext },
+      h.handler,
+    );
+
+    try {
+      await flushMicrotasks();
+      assert.equal(h.entered(), true);
+      assertCompleteReplayLeaseSnapshot(h.leaseSnapshot(), {
+        lease_id: leaseId,
+        target_domain: domain,
+        tool: "bounty_http_scan",
+        capability_pack: "web",
+        lease_scope: "attempt_pack",
+        replay_purpose: replayContext.purpose,
+        verification_attempt_id: replayContext.verification_attempt_id,
+        verification_snapshot_hash: replayContext.verification_snapshot_hash,
+        round: replayContext.round,
+        finding_id: replayContext.finding_id,
+      });
+    } finally {
+      h.release();
+    }
+
+    await wrapperPromise;
+    assert.equal(fs.existsSync(leasePath), false);
+  });
+});
+
+test("handler exception releases the lease file", async () => {
+  await withTempHome(async () => {
+    const domain = "lease-handler-exception.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+    const replayContext = replayContextFromVerificationContext(context);
+    const leasePath = replayLeaseFileFor(domain, replayContext);
+
+    await assert.rejects(
+      () => runWithReplaySafety(
+        { name: "bounty_http_scan" },
+        { target_domain: domain, replay_context: replayContext },
+        async () => { throw new Error("boom"); },
+      ),
+      /boom/,
+    );
+    assert.equal(fs.existsSync(leasePath), false);
+  });
+});
+
+test("two concurrent acquires on the new model: second wins, first rejects", async () => {
+  await withTempHome(async () => {
+    const domain = "lease-link-race.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+    const replayContext = replayContextFromVerificationContext(context);
+    const leasePath = replayLeaseFileFor(domain, replayContext);
+    const leaseId = path.basename(leasePath, ".json");
+    const tool = { name: "bounty_http_scan" };
+    const args = { target_domain: domain, replay_context: replayContext };
+    const originalLinkSync = fs.linkSync;
+    let triggered = false;
+    let holdingHandler2 = null;
+    let secondPromise = null;
+
+    fs.linkSync = function patchedLinkSync(src, dest) {
+      if (dest === leasePath && !triggered) {
+        triggered = true;
+        holdingHandler2 = holdingHandler(leasePath);
+        secondPromise = runWithReplaySafety(tool, args, holdingHandler2.handler);
+        secondPromise.catch(() => {});
+      }
+      return originalLinkSync.call(fs, src, dest);
+    };
+
+    try {
+      const firstPromise = runWithReplaySafety(tool, args, async () => "should not run");
+      assert.ok(holdingHandler2);
+      assert.equal(holdingHandler2.entered(), true);
+      await assert.rejects(
+        firstPromise,
+        (err) => {
+          assert.equal(err.code, "STATE_CONFLICT");
+          assert.match(err.message, /Replay lease busy/);
+          return true;
+        },
+      );
+      assertCompleteReplayLeaseSnapshot(holdingHandler2.leaseSnapshot(), {
+        lease_id: leaseId,
+        target_domain: domain,
+        tool: "bounty_http_scan",
+        capability_pack: "web",
+        lease_scope: "attempt_pack",
+        replay_purpose: replayContext.purpose,
+        verification_attempt_id: replayContext.verification_attempt_id,
+        verification_snapshot_hash: replayContext.verification_snapshot_hash,
+        round: replayContext.round,
+        finding_id: replayContext.finding_id,
+      });
+    } finally {
+      try {
+        if (holdingHandler2) holdingHandler2.release();
+        if (secondPromise) await secondPromise;
+        assert.equal(fs.existsSync(leasePath), false);
+      } finally {
+        fs.linkSync = originalLinkSync;
+      }
+    }
+  });
+});
+
+test("linkSync EEXIST during retry triggers stale cleanup once", async () => {
+  await withTempHome(async () => {
+    const domain = "lease-link-stale-retry.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+    const replayContext = replayContextFromVerificationContext(context);
+    const leasePath = replayLeaseFileFor(domain, replayContext);
+    fs.mkdirSync(path.dirname(leasePath), { recursive: true });
+    const leaseId = path.basename(leasePath, ".json");
+    writeFileAtomic(leasePath, `${JSON.stringify({
+      version: 1,
+      lease_id: leaseId,
+      target_domain: domain,
+      tool: "bounty_http_scan",
+      capability_pack: "web",
+      lease_scope: "attempt_pack",
+      replay_purpose: "verification_replay",
+      verification_attempt_id: replayContext.verification_attempt_id,
+      verification_snapshot_hash: replayContext.verification_snapshot_hash,
+      round: replayContext.round,
+      finding_id: replayContext.finding_id,
+      acquired_at: new Date(Date.now() - VERIFICATION_REPLAY_LEASE_TTL_MS - 1000).toISOString(),
+      expires_at: new Date(Date.now() - 1000).toISOString(),
+      pid: 999999,
+    }, null, 2)}\n`);
+    const originalLinkSync = fs.linkSync;
+    let triggered = false;
+
+    fs.linkSync = function patchedLinkSync(src, dest) {
+      if (dest === leasePath && !triggered) {
+        triggered = true;
+        const error = new Error("EEXIST");
+        error.code = "EEXIST";
+        throw error;
+      }
+      return originalLinkSync.call(fs, src, dest);
+    };
+
+    try {
+      const result = await runWithReplaySafety(
+        { name: "bounty_http_scan" },
+        { target_domain: domain, replay_context: replayContext },
+        async () => "fresh lease acquired",
+      );
+      assert.equal(result, "fresh lease acquired");
+      assert.equal(triggered, true);
+      assert.equal(fs.existsSync(leasePath), false);
+    } finally {
+      fs.linkSync = originalLinkSync;
+    }
+  });
+});
+
 test("bounty_write_evidence_packs writes JSON and markdown mirror", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -10542,6 +11177,9 @@ test("bounty_write_evidence_packs writes JSON and markdown mirror", () => {
     assert.equal(result.written_md, paths.markdown);
     const ctx = JSON.parse(readVerificationContext({ target_domain: domain }));
     const onDisk = JSON.parse(fs.readFileSync(paths.json, "utf8"));
+    const finalDoc = ctx.schema_version === 2
+      ? JSON.parse(fs.readFileSync(verificationRoundPaths(domain, "final").json, "utf8"))
+      : null;
     const expectedShape = {
       version: 1,
       target_domain: domain,
@@ -10549,9 +11187,12 @@ test("bounty_write_evidence_packs writes JSON and markdown mirror", () => {
       ...(ctx.schema_version === 2 ? {
         verification_attempt_id: ctx.current_attempt_id,
         verification_snapshot_hash: ctx.snapshot_hash,
-        final_verification_hash: onDisk.final_verification_hash,
+        final_verification_hash: finalDoc.final_verification_hash,
       } : {}),
     };
+    if (ctx.schema_version === 2) {
+      assert.equal(onDisk.final_verification_hash, finalDoc.final_verification_hash);
+    }
     assert.deepEqual(onDisk, expectedShape);
     assert.match(fs.readFileSync(paths.markdown, "utf8"), /# Evidence Packs/);
     assert.deepEqual(JSON.parse(readEvidencePacks({ target_domain: domain })), expectedShape);
@@ -14425,18 +15066,31 @@ test("session lock creates an atomic metadata lock file", () => {
     const domain = "locktest.com";
     const dir = sessionDir(domain);
     fs.mkdirSync(dir, { recursive: true });
+    const lockPath = sessionLockPath(domain);
+    const originalOpenSync = fs.openSync;
+    const openWxCalls = [];
 
-    const release = acquireSessionLock(domain);
     try {
-      const lockPath = sessionLockPath(domain);
-      assert.ok(fs.statSync(lockPath).isFile());
-      const metadata = JSON.parse(fs.readFileSync(lockPath, "utf8"));
-      assert.equal(metadata.pid, process.pid);
-      assert.ok(metadata.hostname);
-      assert.ok(metadata.timestamp);
-      assert.ok(metadata.token);
+      fs.openSync = function patchedOpenSync(target, flags, mode) {
+        if (target === lockPath && flags === "wx") {
+          openWxCalls.push({ target, flags });
+        }
+        return originalOpenSync.call(fs, target, flags, mode);
+      };
+      const release = acquireSessionLock(domain);
+      try {
+        assert.deepEqual(openWxCalls, []);
+        assert.ok(fs.statSync(lockPath).isFile());
+        const metadata = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+        assert.equal(metadata.pid, process.pid);
+        assert.ok(metadata.hostname);
+        assert.ok(metadata.timestamp);
+        assert.ok(metadata.token);
+      } finally {
+        release();
+      }
     } finally {
-      release();
+      fs.openSync = originalOpenSync;
     }
     assert.ok(!fs.existsSync(sessionLockPath(domain)));
   });
