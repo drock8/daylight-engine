@@ -26,6 +26,7 @@ const {
   appendChainNode,
   frontier,
 } = require("./chain-state-tree.js");
+const { capabilityToolMapFromRegistry } = require("./tool-registry.js");
 
 function uniqueDomain(prefix) {
   return `${prefix}-${crypto.randomBytes(4).toString("hex")}.eval-fixture.local`;
@@ -213,6 +214,18 @@ const FIXTURES = Object.freeze({
     },
   },
 });
+
+const SUPPORTED_CAPABILITY_IDS = Object.freeze(new Set(Object.keys(capabilityToolMapFromRegistry())));
+
+function assertFixturesRegistryBacked(fixtures) {
+  for (const [name, spec] of Object.entries(fixtures)) {
+    if (!SUPPORTED_CAPABILITY_IDS.has(spec.capability)) {
+      throw new Error(`Capability fixture ${name} uses unregistered capability ${spec.capability}`);
+    }
+  }
+}
+
+assertFixturesRegistryBacked(FIXTURES);
 
 async function evaluateAllFixtures() {
   const results = [];

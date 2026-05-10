@@ -24,6 +24,7 @@ const VALID_ROLE_BUNDLES = Object.freeze([
   ...CROSS_CUTTING_ROLE_BUNDLES,
   ...chainSpecificHunterBundles(),
 ]);
+const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUIRED_FIELDS = Object.freeze([
   "name",
   "description",
@@ -61,6 +62,16 @@ function assertStringArrayField(entry, field, { allowEmpty = true, validValues =
   }
 }
 
+function normalizeCapabilityId(entry) {
+  if (!Object.prototype.hasOwnProperty.call(entry, "capability_id")) {
+    return null;
+  }
+  if (typeof entry.capability_id !== "string" || !CAPABILITY_ID_PATTERN.test(entry.capability_id)) {
+    throw new Error(`tool registry entry for ${entry.name} has invalid capability_id`);
+  }
+  return entry.capability_id;
+}
+
 function defineTool(entry) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("tool registry entry must be an object");
@@ -91,7 +102,10 @@ function defineTool(entry) {
   assertBooleanField(entry, "sensitive_output");
   assertStringArrayField(entry, "session_artifacts_written");
   assertBooleanField(entry, "hook_required");
-  return Object.freeze({ ...entry });
+  return Object.freeze({
+    ...entry,
+    capability_id: normalizeCapabilityId(entry),
+  });
 }
 
 function buildToolRegistry({
@@ -133,6 +147,7 @@ const TOOL_MANIFEST = Object.freeze(TOOL_REGISTRY.reduce((manifest, tool) => {
     sensitive_output: tool.sensitive_output,
     session_artifacts_written: tool.session_artifacts_written.slice(),
     hook_required: tool.hook_required,
+    capability_id: tool.capability_id,
   });
   return manifest;
 }, {}));
@@ -148,6 +163,21 @@ function toolNamesForRoleBundle(roleBundle) {
     .map((tool) => tool.name);
 }
 
+function capabilityToolMapFromRegistry(registry = TOOL_REGISTRY) {
+  const map = {};
+  for (const tool of registry) {
+    if (tool.capability_id == null) continue;
+    if (!Object.prototype.hasOwnProperty.call(map, tool.capability_id)) {
+      map[tool.capability_id] = [];
+    }
+    map[tool.capability_id].push(tool.name);
+  }
+  for (const capabilityId of Object.keys(map)) {
+    map[capabilityId] = Object.freeze(map[capabilityId].slice());
+  }
+  return Object.freeze(map);
+}
+
 module.exports = {
   TOOL_HANDLERS,
   TOOL_MANIFEST,
@@ -155,6 +185,7 @@ module.exports = {
   TOOLS,
   VALID_ROLE_BUNDLES,
   buildToolRegistry,
+  capabilityToolMapFromRegistry,
   defineTool,
   getRegisteredTool,
   toolNamesForRoleBundle,

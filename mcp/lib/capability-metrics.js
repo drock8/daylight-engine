@@ -1,36 +1,9 @@
 "use strict";
 
+const { capabilityToolMapFromRegistry } = require("./tool-registry.js");
 const { readToolTelemetryEvents } = require("./tool-telemetry.js");
 
-const CAPABILITY_TO_TOOLS = Object.freeze({
-  C2_doc_vs_behavior: [
-    "bounty_ingest_schema_doc",
-    "bounty_query_schema_contracts",
-    "bounty_run_doc_delta",
-    "bounty_read_doc_delta_results",
-  ],
-  C4_multi_account_differential: [
-    "bounty_run_auth_differential",
-    "bounty_read_auth_differential_results",
-  ],
-  I6_findings_index: [
-    "bounty_index_finding",
-    "bounty_query_findings_index",
-  ],
-  I1_surface_graph: [
-    "bounty_build_surface_graph",
-    "bounty_query_surface_graph",
-  ],
-  I7_chain_state_tree: [
-    "bounty_append_chain_node",
-    "bounty_query_chain_tree",
-    "bounty_chain_frontier",
-    "bounty_chain_ancestry",
-  ],
-  X2_verification_attempt_diff: [
-    "bounty_diff_verification_attempts",
-  ],
-});
+const CAPABILITY_TO_TOOLS = capabilityToolMapFromRegistry();
 
 const TOOL_TO_CAPABILITY = (() => {
   const map = new Map();

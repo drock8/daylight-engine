@@ -1,11 +1,10 @@
 "use strict";
 
-const {
-  evaluateAllFixtures,
-  evaluateOneFixture,
-} = require("../capability-eval-harness.js");
-
 async function evaluateCapabilitiesHandler(args) {
+  const {
+    evaluateAllFixtures,
+    evaluateOneFixture,
+  } = require("../capability-eval-harness.js");
   if (args && typeof args.fixture === "string" && args.fixture.length > 0) {
     return evaluateOneFixture(args.fixture);
   }

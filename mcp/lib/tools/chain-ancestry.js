@@ -12,6 +12,7 @@ function chainAncestryHandler(args) {
 
 module.exports = Object.freeze({
   name: "bounty_chain_ancestry",
+  capability_id: "I7_chain_state_tree",
   description:
     "Walk parent_state_hash links from a state_hash back to the chain tree root. Returns the lineage in newest-first order, capped at 25 by default (max 100). Use when explaining how a leaf state was reached or when reconstructing a chain for evidence.",
   inputSchema: {

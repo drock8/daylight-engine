@@ -23,6 +23,7 @@ function queryFindingsIndexHandler(args) {
 
 module.exports = Object.freeze({
   name: "bounty_query_findings_index",
+  capability_id: "I6_findings_index",
   description:
     "Query the hashed-feature-vector findings index for top-K similar past findings. Defaults to per-target scope; pass scope: 'cross_target' to walk all session directories. Use this to inject prior-art into a new hunt's brief or to look up similar findings while triaging a candidate.",
   inputSchema: {

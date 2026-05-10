@@ -33,6 +33,7 @@ const {
 } = require("../mcp/lib/dispatch.js");
 const {
   buildToolRegistry,
+  capabilityToolMapFromRegistry,
   defineTool,
   TOOL_REGISTRY,
 } = require("../mcp/lib/tool-registry.js");
@@ -1169,7 +1170,47 @@ test("MCP tool manifest exposes required policy metadata for every tool", () => 
     assert.equal(typeof metadata.sensitive_output, "boolean");
     assert.ok(Array.isArray(metadata.session_artifacts_written));
     assert.equal(typeof metadata.hook_required, "boolean");
+    assert.ok(metadata.capability_id === null || typeof metadata.capability_id === "string");
   }
+});
+
+test("MCP tool registry exposes capability metadata for metric and eval tools", () => {
+  const capabilityMap = capabilityToolMapFromRegistry();
+  assert.equal(TOOL_MANIFEST.bounty_http_scan.capability_id, null);
+  assert.equal(TOOL_MANIFEST.bounty_ingest_schema_doc.capability_id, "C2_doc_vs_behavior");
+  assert.equal(Object.isFrozen(capabilityMap), true);
+  for (const tools of Object.values(capabilityMap)) {
+    assert.equal(Object.isFrozen(tools), true);
+  }
+  assert.deepEqual(capabilityMap, {
+    C2_doc_vs_behavior: [
+      "bounty_ingest_schema_doc",
+      "bounty_query_schema_contracts",
+      "bounty_run_doc_delta",
+      "bounty_read_doc_delta_results",
+    ],
+    C4_multi_account_differential: [
+      "bounty_run_auth_differential",
+      "bounty_read_auth_differential_results",
+    ],
+    I6_findings_index: [
+      "bounty_index_finding",
+      "bounty_query_findings_index",
+    ],
+    I7_chain_state_tree: [
+      "bounty_append_chain_node",
+      "bounty_query_chain_tree",
+      "bounty_chain_frontier",
+      "bounty_chain_ancestry",
+    ],
+    X2_verification_attempt_diff: [
+      "bounty_diff_verification_attempts",
+    ],
+    I1_surface_graph: [
+      "bounty_build_surface_graph",
+      "bounty_query_surface_graph",
+    ],
+  });
 });
 
 test("MCP per-tool modules preserve representative tool behavior", () => {
@@ -1299,6 +1340,15 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
     hook_required: false,
   };
 
+  assert.equal(
+    buildToolRegistry({ toolModules: [completeModule] })[0].capability_id,
+    null,
+  );
+  assert.equal(
+    buildToolRegistry({ toolModules: [{ ...completeModule, capability_id: "C2_doc_vs_behavior" }] })[0].capability_id,
+    "C2_doc_vs_behavior",
+  );
+
   assert.throws(
     () => buildToolRegistry({
       toolModules: [completeModule, { ...completeModule }],
@@ -1335,6 +1385,15 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
     }),
     /unknown role bundle mystery/,
   );
+
+  for (const capability_id of ["", " C2_doc_vs_behavior", "-bad", "bad space", "a".repeat(129), null, 42]) {
+    assert.throws(
+      () => buildToolRegistry({
+        toolModules: [{ ...completeModule, capability_id }],
+      }),
+      /invalid capability_id/,
+    );
+  }
 });
 
 test("MCP runtime no longer imports legacy split tool definition files", () => {

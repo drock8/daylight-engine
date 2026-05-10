@@ -14,6 +14,7 @@ function queryChainTreeHandler(args) {
 
 module.exports = Object.freeze({
   name: "bounty_query_chain_tree",
+  capability_id: "I7_chain_state_tree",
   description:
     "Filter the chain state tree by parent_state_hash, verdict, and action.kind. Use to enumerate the children of a node (pass parent_state_hash) or to inspect every pending / success / pruned attempt across the tree.",
   inputSchema: {

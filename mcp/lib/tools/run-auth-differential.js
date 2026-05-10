@@ -56,6 +56,7 @@ async function runAuthDifferentialToolHandler(args) {
 
 module.exports = Object.freeze({
   name: "bounty_run_auth_differential",
+  capability_id: "C4_multi_account_differential",
   description:
     "Run a multi-account differential across the supplied endpoints. For each endpoint, issues a request via bounty_http_scan once per auth_profile, classifies divergences (status, response class, body shape, body length, sensitive-field count, unauth-success-with-auth-blocked), and writes auth-differential-results.json. Provide profile_metadata to flag genuine auth bypass; otherwise the tool auto-derives sent_with_auth: false for profile names matching guest/anon/noauth/etc.",
   inputSchema: {

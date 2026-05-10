@@ -8,17 +8,14 @@ const {
   evaluateAllFixtures,
   evaluateOneFixture,
 } = require("../mcp/lib/capability-eval-harness.js");
+const {
+  capabilityToolMapFromRegistry,
+} = require("../mcp/lib/tool-registry.js");
 
-test("FIXTURES covers every post-v2 capability that has a runnable fixture", () => {
-  const capabilities = new Set(Object.values(FIXTURES).map((f) => f.capability));
-  for (const cap of [
-    "C2_doc_vs_behavior",
-    "C4_multi_account_differential",
-    "I6_findings_index",
-    "I1_surface_graph",
-    "I7_chain_state_tree",
-  ]) {
-    assert.ok(capabilities.has(cap), `${cap} fixture present`);
+test("FIXTURES capabilities are backed by registry capability metadata", () => {
+  const capabilityMap = capabilityToolMapFromRegistry();
+  for (const [name, spec] of Object.entries(FIXTURES)) {
+    assert.ok(capabilityMap[spec.capability], `${name} capability ${spec.capability} is registry-backed`);
   }
 });
 

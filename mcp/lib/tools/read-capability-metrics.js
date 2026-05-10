@@ -1,8 +1,7 @@
 "use strict";
 
-const { readCapabilityMetrics } = require("../capability-metrics.js");
-
 function readCapabilityMetricsHandler(args) {
+  const { readCapabilityMetrics } = require("../capability-metrics.js");
   return readCapabilityMetrics({
     target_domain: args && args.target_domain,
   });

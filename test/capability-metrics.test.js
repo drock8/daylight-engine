@@ -7,22 +7,23 @@ const {
   CAPABILITY_TO_TOOLS,
   summarizeCapabilityMetrics,
 } = require("../mcp/lib/capability-metrics.js");
+const {
+  capabilityToolMapFromRegistry,
+  TOOL_MANIFEST,
+} = require("../mcp/lib/tool-registry.js");
 
 function event({ tool, status = "ok", latency_ms = 10, timestamp = "2026-05-10T00:00:00Z", ok, error_code }) {
   return { tool, status, latency_ms, timestamp, ok, error_code };
 }
 
-test("CAPABILITY_TO_TOOLS covers the post-v2 capability surface", () => {
-  for (const cap of [
-    "C2_doc_vs_behavior",
-    "C4_multi_account_differential",
-    "I6_findings_index",
-    "I1_surface_graph",
-    "I7_chain_state_tree",
-    "X2_verification_attempt_diff",
-  ]) {
-    assert.ok(CAPABILITY_TO_TOOLS[cap], `${cap} present`);
-    assert.ok(CAPABILITY_TO_TOOLS[cap].length > 0, `${cap} has at least one tool`);
+test("CAPABILITY_TO_TOOLS is derived from registry capability metadata", () => {
+  const registryMap = capabilityToolMapFromRegistry();
+  assert.deepEqual(CAPABILITY_TO_TOOLS, registryMap);
+  for (const [capability, tools] of Object.entries(CAPABILITY_TO_TOOLS)) {
+    assert.ok(tools.length > 0, `${capability} has at least one tool`);
+    for (const tool of tools) {
+      assert.equal(TOOL_MANIFEST[tool].capability_id, capability);
+    }
   }
 });
 

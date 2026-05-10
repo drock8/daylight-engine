@@ -12,6 +12,7 @@ function indexFindingHandler(args) {
 
 module.exports = Object.freeze({
   name: "bounty_index_finding",
+  capability_id: "I6_findings_index",
   description:
     "Compute a hashed-feature-vector embedding for a finding and persist it to findings-index.jsonl. Idempotent by finding_id; later calls upsert the same record. Pass calibration_label after grade adjudication so the same record carries ground-truth signal for future similarity queries.",
   inputSchema: {

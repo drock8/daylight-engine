@@ -12,6 +12,7 @@ function chainFrontierHandler(args) {
 
 module.exports = Object.freeze({
   name: "bounty_chain_frontier",
+  capability_id: "I7_chain_state_tree",
   description:
     "Return the leaf nodes of the chain state tree (the live exploration frontier). Default excludes pruned leaves so dead branches don't pollute the next-action search; pass include_pruned: true to recover pruned tips for diagnostics.",
   inputSchema: {
