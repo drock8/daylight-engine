@@ -61,7 +61,7 @@ test("call_count, success_count, success_rate, avg_latency aggregate per capabil
 
 test("blocked_count breaks out from error_count", () => {
   const events = [
-    event({ tool: "bounty_run_auth_differential", status: "blocked" }),
+    event({ tool: "bounty_run_auth_differential", status: "blocked", ok: true }),
     event({ tool: "bounty_run_auth_differential", status: "ok" }),
     event({ tool: "bounty_run_auth_differential", status: "error" }),
   ];

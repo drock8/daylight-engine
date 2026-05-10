@@ -116,11 +116,12 @@ function summarizeCapabilityMetrics(events) {
     const bucket = buckets[capability];
     bucket.call_count += 1;
     const status = event.status;
-    const ok = event.ok === true || status === "ok" || status === "success" || status === "allowed";
+    const isBlocked = status === "blocked";
+    const ok = !isBlocked && (event.ok === true || status === "ok" || status === "success" || status === "allowed");
     if (ok) bucket.success_count += 1;
-    if (status === "blocked") bucket.blocked_count += 1;
+    if (isBlocked) bucket.blocked_count += 1;
     if (event.error_code != null || event.error != null || (status != null && status !== "ok" && status !== "success" && status !== "allowed")) {
-      if (status !== "blocked") bucket.error_count += 1;
+      if (!isBlocked) bucket.error_count += 1;
     }
     if (typeof event.latency_ms === "number" && event.latency_ms >= 0) {
       bucket.total_latency_ms += event.latency_ms;
@@ -134,9 +135,9 @@ function summarizeCapabilityMetrics(events) {
     const perTool = bucket.per_tool[tool];
     perTool.call_count += 1;
     if (ok) perTool.success_count += 1;
-    if (status === "blocked") perTool.blocked_count += 1;
+    if (isBlocked) perTool.blocked_count += 1;
     if (event.error_code != null || event.error != null || (status != null && status !== "ok" && status !== "success" && status !== "allowed")) {
-      if (status !== "blocked") perTool.error_count += 1;
+      if (!isBlocked) perTool.error_count += 1;
     }
     if (typeof event.latency_ms === "number" && event.latency_ms >= 0) {
       perTool.total_latency_ms += event.latency_ms;

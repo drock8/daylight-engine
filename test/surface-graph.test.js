@@ -12,6 +12,7 @@ const {
   queryEdges,
   neighbors,
   normalizeEdge,
+  NODE_TYPES,
 } = require("../mcp/lib/surface-graph.js");
 
 function uniqueDomain(prefix = "bob-surface-graph-test") {
@@ -180,6 +181,16 @@ test("neighbors returns incoming, outgoing, or both per direction", () => {
   } finally {
     cleanupDomain(domain);
   }
+});
+
+test("neighbors rejects unscoped node lookups", () => {
+  assert.throws(() => neighbors({ target_domain: "x.example", node_type: "", node_id: "/api" }), /node_type/);
+  assert.throws(() => neighbors({ target_domain: "x.example", node_type: "endpoint", node_id: "" }), /node_id/);
+});
+
+test("NODE_TYPES includes emitted surface and tech node kinds", () => {
+  assert.ok(NODE_TYPES.includes("surface"));
+  assert.ok(NODE_TYPES.includes("tech"));
 });
 
 test("on-disk surface-graph.jsonl is sorted by edge_hash for replay determinism", () => {

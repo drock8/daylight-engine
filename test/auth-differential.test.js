@@ -25,11 +25,12 @@ test("computeResponseSignature classifies status into status_class and response_
   assert.equal(computeResponseSignature({ status: 500 }).response_class, "server_error");
 });
 
-test("body_hash is stable across re-encoding the same shape", () => {
+test("body_hash is stable across key order but differs across value changes", () => {
   const a = computeResponseSignature({ status: 200, body: { id: "1", name: "Alice" } });
-  const b = computeResponseSignature({ status: 200, body: { name: "Bob", id: "2" } });
-  // Different content, same property_keys → same body_hash
+  const b = computeResponseSignature({ status: 200, body: { name: "Alice", id: "1" } });
+  const c = computeResponseSignature({ status: 200, body: { id: "2", name: "Bob" } });
   assert.equal(a.body_hash, b.body_hash);
+  assert.notEqual(a.body_hash, c.body_hash);
 });
 
 test("body_hash differs across different shapes", () => {

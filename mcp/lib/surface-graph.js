@@ -9,10 +9,12 @@ const {
 const { hashCanonicalJson } = require("./verification.js");
 
 const NODE_TYPES = Object.freeze([
+  "surface",
   "subdomain",
   "hostname",
   "endpoint",
   "js_file",
+  "tech",
   "openapi_spec",
   "archived_url",
   "secret_marker",
@@ -190,6 +192,12 @@ function queryEdges({
 }
 
 function neighbors({ target_domain, node_type, node_id, direction, limit }) {
+  if (typeof node_type !== "string" || node_type.length === 0) {
+    throw new Error("neighbors node_type must be a non-empty string");
+  }
+  if (typeof node_id !== "string" || node_id.length === 0) {
+    throw new Error("neighbors node_id must be a non-empty string");
+  }
   const dir = direction === "incoming" ? "incoming" : direction === "outgoing" ? "outgoing" : "both";
   const result = { incoming: [], outgoing: [] };
   if (dir === "outgoing" || dir === "both") {

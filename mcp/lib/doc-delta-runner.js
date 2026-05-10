@@ -11,6 +11,7 @@ const {
 const { hashCanonicalJson } = require("./verification.js");
 
 const DEFAULT_LIMIT = 200;
+const MAX_LIMIT = 1000;
 
 function ensureSessionDir(domain) {
   const dir = sessionDir(domain);
@@ -93,7 +94,9 @@ async function runDocDelta({
   if (typeof fetch_fn !== "function") {
     throw new Error("fetch_fn must be a function");
   }
-  const effectiveLimit = Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_LIMIT;
+  const effectiveLimit = Number.isInteger(limit) && limit > 0
+    ? Math.min(limit, MAX_LIMIT)
+    : DEFAULT_LIMIT;
   const queryResult = querySchemaContracts({
     target_domain: domain,
     endpoint_pattern,
@@ -168,4 +171,5 @@ module.exports = {
   runDocDelta,
   readResults,
   joinUrl,
+  MAX_LIMIT,
 };

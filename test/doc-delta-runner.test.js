@@ -11,6 +11,7 @@ const {
   runDocDelta,
   readResults,
   joinUrl,
+  MAX_LIMIT,
 } = require("../mcp/lib/doc-delta-runner.js");
 const {
   ingestSchemaDoc,
@@ -219,6 +220,45 @@ test("runDocDelta filters corpus by endpoint_pattern", async () => {
     assert.equal(result.summary.contracts_tested, 1);
     assert.equal(result.per_contract.length, 1);
     assert.equal(result.per_contract[0].endpoint, "/health");
+  } finally {
+    cleanupDomain(domain);
+  }
+});
+
+test("runDocDelta caps caller-supplied limit at MAX_LIMIT", async () => {
+  const domain = uniqueDomain();
+  try {
+    const paths = {};
+    for (let i = 0; i < MAX_LIMIT + 5; i++) {
+      paths[`/items/${i}`] = {
+        get: {
+          responses: {
+            "200": {
+              description: "ok",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+          },
+        },
+      };
+    }
+    ingestSchemaDoc({
+      target_domain: domain,
+      raw_doc: JSON.stringify({ openapi: "3.0.3", paths }),
+      source_uri: "https://example.com/openapi-large.json",
+    });
+    let fetchCount = 0;
+    const fetch_fn = async () => {
+      fetchCount += 1;
+      return { status: 200, content_type: "application/json", body: {}, sent_with_auth: false };
+    };
+    const result = await runDocDelta({
+      target_domain: domain,
+      base_url: "https://api.example.com",
+      fetch_fn,
+      limit: 999_999,
+    });
+    assert.equal(result.summary.contracts_tested, MAX_LIMIT);
+    assert.equal(fetchCount, MAX_LIMIT);
   } finally {
     cleanupDomain(domain);
   }

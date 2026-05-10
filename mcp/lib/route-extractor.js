@@ -35,6 +35,23 @@ function lineFromOffset(source, offset) {
   return line;
 }
 
+function findMatchingBrace(source, openIndex) {
+  if (typeof source !== "string" || source[openIndex] !== "{") return -1;
+  let depth = 0;
+  for (let i = openIndex; i < source.length; i++) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function isOffsetInRanges(offset, ranges) {
+  return ranges.some((range) => offset >= range.start && offset < range.end);
+}
+
 function extractExpressRoutes(source) {
   // app.METHOD('/path', ...) or router.METHOD('/path', ...) where METHOD is a
   // lowercase HTTP verb. Also matches app.use('/prefix', router) for surface
@@ -76,12 +93,30 @@ function extractExpressRoutes(source) {
   return routes;
 }
 
-function extractKoaFastifyRoutes(source) {
+function extractKoaFastifyRoutes(source, options = {}) {
   const routes = [];
+  const includeKoa = options.includeKoa !== false;
+  const includeFastify = options.includeFastify !== false;
   // Koa: app.use(router.routes()) is broad; Koa explicit handlers commonly
   // come via koa-router which mirrors Express patterns. Matched alongside
   // express; only add Koa-specific patterns here to avoid double-counting.
+  if (includeKoa && /(?:koa-router|@koa\/router|new\s+Router\s*\(|require\s*\(\s*['"](?:@koa\/router|koa-router)['"]\s*\))/.test(source)) {
+    const koaVerbRegex = /\b(?:router|apiRouter|routes)\.(get|post|put|delete|patch|options|head|all)\s*\(\s*(['"`])([^'"`\\]+)\2/g;
+    let koaMatch;
+    while ((koaMatch = koaVerbRegex.exec(source)) != null) {
+      const method = koaMatch[1].toUpperCase();
+      routes.push({
+        framework: "koa",
+        method: method === "ALL" ? "ALL" : method,
+        path: koaMatch[3],
+        line: lineFromOffset(source, koaMatch.index),
+        handler_hint: extractHandlerHint(source, koaVerbRegex.lastIndex),
+        edge_kind: "route",
+      });
+    }
+  }
   // Fastify: fastify.get('/path', handler), fastify.route({ method: 'GET', url: '/path' })
+  if (!includeFastify) return routes;
   const fastifyVerbRegex = /\bfastify\.(get|post|put|delete|patch|options|head|all)\s*\(\s*(['"`])([^'"`\\]+)\2/g;
   let match;
   while ((match = fastifyVerbRegex.exec(source)) != null) {
@@ -119,26 +154,37 @@ function extractNestjsRoutes(source) {
   // NestJS @Get('/path'), @Post('/path'), etc. Class-level @Controller('/prefix')
   // captured to expose mount edges.
   const routes = [];
-  const controllerRegex = /@Controller\s*\(\s*(['"`])([^'"`\\]+)\1\s*\)/g;
-  let controllerPrefix = null;
-  let controllerLine = null;
-  let match = controllerRegex.exec(source);
-  if (match != null) {
-    controllerPrefix = match[2];
-    controllerLine = lineFromOffset(source, match.index);
-  }
-  if (controllerPrefix) {
+  const controllerRanges = [];
+  const controllerClassRegex = /@Controller\s*\(\s*(['"`])([^'"`\\]+)\1\s*\)[\s\S]*?\b(?:export\s+)?class\s+[A-Za-z_$][\w$]*[^{]*\{/g;
+  let match;
+  while ((match = controllerClassRegex.exec(source)) != null) {
+    const controllerPrefix = match[2];
+    const openBraceIndex = controllerClassRegex.lastIndex - 1;
+    const closeBraceIndex = findMatchingBrace(source, openBraceIndex);
+    const bodyEnd = closeBraceIndex === -1 ? source.length : closeBraceIndex;
+    controllerRanges.push({ start: openBraceIndex + 1, end: bodyEnd });
     routes.push({
       framework: "nestjs",
       method: "ALL",
       path: controllerPrefix.startsWith("/") ? controllerPrefix : `/${controllerPrefix}`,
-      line: controllerLine,
+      line: lineFromOffset(source, match.index),
       handler_hint: null,
       edge_kind: "mount",
     });
+    extractNestjsDecorators(source, openBraceIndex + 1, bodyEnd, controllerPrefix, routes);
   }
+
+  extractNestjsDecorators(source, 0, source.length, null, routes, controllerRanges);
+  return routes;
+}
+
+function extractNestjsDecorators(source, start, end, controllerPrefix, routes, skipRanges = []) {
   const decoratorRegex = /@(Get|Post|Put|Delete|Patch|Options|Head|All)\s*\(\s*(?:(['"`])([^'"`\\]*)\2)?\s*\)/g;
+  decoratorRegex.lastIndex = start;
+  let match;
   while ((match = decoratorRegex.exec(source)) != null) {
+    if (match.index >= end) break;
+    if (skipRanges.length > 0 && isOffsetInRanges(match.index, skipRanges)) continue;
     const method = match[1].toUpperCase();
     const subPath = match[3] || "";
     const fullPath = controllerPrefix
@@ -153,7 +199,6 @@ function extractNestjsRoutes(source) {
       edge_kind: "route",
     });
   }
-  return routes;
 }
 
 function joinNestjsPaths(prefix, sub) {
@@ -222,22 +267,29 @@ function extractDjangoRoutes(source) {
 
 function extractSpringRoutes(source) {
   const routes = [];
-  const requestMappingClass = /@RequestMapping\s*\(\s*(?:value\s*=\s*)?\{?\s*(['"])([^'"]*)\1/g;
-  let classPrefix = null;
-  let classPrefixIndex = -1;
-  let m = requestMappingClass.exec(source);
-  if (m != null) {
-    classPrefix = m[2];
-    classPrefixIndex = m.index;
+  const classRanges = [];
+  const requestMappingClass = /@RequestMapping\s*\(\s*(?:value\s*=\s*)?\{?\s*(['"])([^'"]*)\1[\s\S]*?\b(?:public\s+)?(?:class|interface)\s+[A-Za-z_$][\w$]*[^{]*\{/g;
+  let m;
+  while ((m = requestMappingClass.exec(source)) != null) {
+    const classPrefix = m[2];
+    const openBraceIndex = requestMappingClass.lastIndex - 1;
+    const closeBraceIndex = findMatchingBrace(source, openBraceIndex);
+    const bodyEnd = closeBraceIndex === -1 ? source.length : closeBraceIndex;
+    classRanges.push({ start: m.index, end: bodyEnd });
+    extractSpringDecorators(source, openBraceIndex + 1, bodyEnd, classPrefix, routes);
   }
 
+  extractSpringDecorators(source, 0, source.length, null, routes, classRanges);
+  return routes;
+}
+
+function extractSpringDecorators(source, start, end, classPrefix, routes, skipRanges = []) {
   const verbDecoratorRegex = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*\(\s*(?:(?:value|path)\s*=\s*)?\{?\s*(['"])([^'"]*)\2(?:[^)]*method\s*=\s*RequestMethod\.([A-Z]+))?/g;
+  verbDecoratorRegex.lastIndex = start;
   let match;
   while ((match = verbDecoratorRegex.exec(source)) != null) {
-    // Skip the class-level @RequestMapping that we already captured as classPrefix.
-    if (match[1] === "RequestMapping" && match.index === classPrefixIndex && !match[4]) {
-      continue;
-    }
+    if (match.index >= end) break;
+    if (skipRanges.length > 0 && isOffsetInRanges(match.index, skipRanges)) continue;
     let method = "GET";
     if (match[1] === "PostMapping") method = "POST";
     else if (match[1] === "PutMapping") method = "PUT";
@@ -258,7 +310,6 @@ function extractSpringRoutes(source) {
       edge_kind: "route",
     });
   }
-  return routes;
 }
 
 function extractHandlerHint(source, after) {
@@ -304,7 +355,12 @@ function extractRoutesFromSource({ source, language, file }) {
     : SUPPORTED_FRAMEWORKS;
   const all = [];
   if (candidateFrameworks.includes("express")) all.push(...extractExpressRoutes(source));
-  if (candidateFrameworks.includes("fastify")) all.push(...extractKoaFastifyRoutes(source));
+  if (candidateFrameworks.includes("koa") || candidateFrameworks.includes("fastify")) {
+    all.push(...extractKoaFastifyRoutes(source, {
+      includeKoa: candidateFrameworks.includes("koa"),
+      includeFastify: candidateFrameworks.includes("fastify"),
+    }));
+  }
   if (candidateFrameworks.includes("nestjs")) all.push(...extractNestjsRoutes(source));
   if (candidateFrameworks.includes("flask")) all.push(...extractFlaskRoutes(source));
   if (candidateFrameworks.includes("django")) all.push(...extractDjangoRoutes(source));

@@ -94,7 +94,7 @@ After any successful signup, poll email up to 12 times, extract a code/link, com
 
 Orchestrator-driven differentials run outside the wave/hunter loop and feed `severity_class: "security"` rows into `bounty_record_finding`. Web hunters also see the schema corpus through `schema_slice` in their brief once it's seeded.
 
-**Doc-vs-Behavior Differential.** Ingest OpenAPI 3 / GraphQL SDL / Postman v2.1 with `bounty_ingest_schema_doc` (content-hashed, idempotent), confirm coverage with `bounty_query_schema_contracts`, run per auth profile via `bounty_run_doc_delta({ target_domain, base_url, auth_profile, run_id })`, read with `bounty_read_doc_delta_results({ summary_only: true })`. Divergence classes: `security`, `info_leak_potential`, `doc_or_infra`.
+**Doc-vs-Behavior Differential.** Ingest OpenAPI 3 / GraphQL SDL / Postman v2.1 with `bounty_ingest_schema_doc` (content-hashed, idempotent), confirm coverage with `bounty_query_schema_contracts`, run per auth profile via `bounty_run_doc_delta({ target_domain, base_url, auth_profile, run_id })`, read with `bounty_read_doc_delta_results({ target_domain, summary_only: true })`. Divergence classes: `security`, `info_leak_potential`, `doc_or_infra`.
 
 **Multi-Account Differential.** Confirm ≥2 profiles via `bounty_list_auth_profiles`, fan with `bounty_run_auth_differential({ target_domain, base_url, endpoints, auth_profiles, run_id })`. Endpoints come from `bounty_query_schema_contracts` or `attack_surface.json`. Names like `guest`/`anon`/`noauth`/`public`/`unauthenticated` auto-flag `sent_with_auth: false` so `unauth_succeeds_where_auth_blocked` fires; otherwise pass `profile_metadata`. Read with `bounty_read_auth_differential_results({ summary_only: true })`.
 

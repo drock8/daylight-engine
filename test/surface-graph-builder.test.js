@@ -56,6 +56,9 @@ test("edgesFromAttackSurface emits surface-contains-endpoint, host-hosts-endpoin
   assert.ok(types.has("surface/tech/references"));
   assert.ok(types.has("surface/js_file/references"));
   assert.ok(types.has("surface/secret_marker/leaks"));
+  const secretEdge = edges.find((e) => e.target.type === "secret_marker");
+  assert.match(secretEdge.target.id, /^secret-[a-f0-9]{16}$/);
+  assert.notEqual(secretEdge.target.id, SAMPLE_SURFACE.leaked_secrets[0]);
 });
 
 test("edgesFromAttackSurface emits hosts edges for each (host, endpoint) pair", () => {

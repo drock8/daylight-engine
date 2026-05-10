@@ -4,6 +4,7 @@ const fs = require("fs");
 const { attackSurfacePath } = require("./paths.js");
 const { appendEdges } = require("./surface-graph.js");
 const { querySchemaContracts } = require("./schema-contracts-store.js");
+const { hashCanonicalJson } = require("./verification.js");
 
 function isPlainObject(value) {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -93,9 +94,10 @@ function edgesFromAttackSurface(parsedSurface) {
       });
     }
     for (const secret of leakedSecrets) {
+      const markerId = `secret-${hashCanonicalJson({ secret }).slice(0, 16)}`;
       pushEdge(edges, {
         source: { type: "surface", id: surfaceId },
-        target: { type: "secret_marker", id: secret.slice(0, 64) },
+        target: { type: "secret_marker", id: markerId },
         edge_type: "leaks",
         source_artifact: "attack_surface.json",
         confidence: 0.6,

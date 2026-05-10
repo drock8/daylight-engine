@@ -71,6 +71,24 @@ test("Fastify: explicit verb form and fastify.route({ method, url }) shape", () 
   assert.ok(summaries.includes("fastify/POST /login"));
 });
 
+test("Koa: koa-router verb declarations emit koa routes", () => {
+  const source = `
+    const Router = require('koa-router');
+    const router = new Router();
+    router.get('/users', listUsers);
+    router.post('/users', createUser);
+  `;
+  const routes = extractRoutesFromSource({ source, language: "js" });
+  const summaries = routes
+    .filter((r) => r.framework === "koa")
+    .map((r) => `${r.method} ${r.path}`)
+    .sort();
+  assert.deepEqual(summaries, [
+    "GET /users",
+    "POST /users",
+  ]);
+});
+
 test("NestJS: @Controller prefix joins with @Get/@Post path arguments", () => {
   const source = `
     @Controller('/users')
@@ -96,6 +114,28 @@ test("NestJS: @Controller prefix joins with @Get/@Post path arguments", () => {
   const mountEdges = routes.filter((r) => r.edge_kind === "mount");
   assert.equal(mountEdges.length, 1);
   assert.equal(mountEdges[0].path, "/users");
+});
+
+test("NestJS: multiple controllers in one file keep separate prefixes", () => {
+  const source = `
+    @Controller('/users')
+    export class UsersController {
+      @Get('/:id')
+      one() {}
+    }
+
+    @Controller('/admin')
+    export class AdminController {
+      @Post('/audit')
+      audit() {}
+    }
+  `;
+  const routes = extractRoutesFromSource({ source, language: "ts" });
+  const summaries = routes.filter((r) => r.edge_kind === "route").map((r) => `${r.method} ${r.path}`).sort();
+  assert.deepEqual(summaries, [
+    "GET /users/:id",
+    "POST /admin/audit",
+  ]);
 });
 
 test("Flask: @app.route with methods=[] expands one entry per method", () => {
@@ -169,6 +209,30 @@ test("Spring: @RequestMapping class prefix + @GetMapping / @PostMapping methods"
     "DELETE /api/admin",
     "GET /api/users",
     "POST /api/users",
+  ]);
+});
+
+test("Spring: multiple classes in one file keep separate request prefixes", () => {
+  const source = `
+    @RestController
+    @RequestMapping("/api")
+    public class ApiController {
+      @GetMapping("/users")
+      public List<User> list() {}
+    }
+
+    @RestController
+    @RequestMapping("/admin")
+    public class AdminController {
+      @PostMapping("/audit")
+      public void audit() {}
+    }
+  `;
+  const routes = extractRoutesFromSource({ source, language: "java" });
+  const summaries = routes.map((r) => `${r.method} ${r.path}`).sort();
+  assert.deepEqual(summaries, [
+    "GET /api/users",
+    "POST /admin/audit",
   ]);
 });
 

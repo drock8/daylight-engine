@@ -7,6 +7,10 @@ const {
   schemaContractsJsonlPath,
   sessionDir,
 } = require("./paths.js");
+const {
+  withSessionLock,
+  writeFileAtomic,
+} = require("./storage.js");
 
 function ensureSessionDir(domain) {
   const dir = sessionDir(domain);
@@ -42,7 +46,7 @@ function writeJsonlContracts(filePath, records) {
     return 0;
   });
   const body = sorted.map((record) => JSON.stringify(record)).join("\n");
-  fs.writeFileSync(filePath, body.length > 0 ? body + "\n" : "", "utf8");
+  writeFileAtomic(filePath, body.length > 0 ? body + "\n" : "");
 }
 
 function ingestSchemaDoc({ target_domain, raw_doc, source_uri }) {
@@ -65,44 +69,46 @@ function ingestSchemaDoc({ target_domain, raw_doc, source_uri }) {
       parser_warnings: parsed.parser_warnings,
     };
   }
-  ensureSessionDir(domain);
-  const filePath = schemaContractsJsonlPath(domain);
-  const existing = readJsonlContracts(filePath);
-  const byHash = new Map();
-  for (const record of existing) {
-    if (record && typeof record.contract_hash === "string") {
-      byHash.set(record.contract_hash, record);
+  return withSessionLock(domain, () => {
+    ensureSessionDir(domain);
+    const filePath = schemaContractsJsonlPath(domain);
+    const existing = readJsonlContracts(filePath);
+    const byHash = new Map();
+    for (const record of existing) {
+      if (record && typeof record.contract_hash === "string") {
+        byHash.set(record.contract_hash, record);
+      }
     }
-  }
-  let newCount = 0;
-  let replacedCount = 0;
-  for (const contract of parsed.contracts) {
-    const record = {
-      ...contract,
+    let newCount = 0;
+    let replacedCount = 0;
+    for (const contract of parsed.contracts) {
+      const record = {
+        ...contract,
+        schema_format: parsed.schema_format,
+        source_doc_hash: parsed.source_doc_hash,
+        source_uri: sourceUri,
+        ingested_at: ingestedAt,
+      };
+      if (byHash.has(contract.contract_hash)) {
+        replacedCount += 1;
+      } else {
+        newCount += 1;
+      }
+      byHash.set(contract.contract_hash, record);
+    }
+    const records = Array.from(byHash.values());
+    writeJsonlContracts(filePath, records);
+    return {
       schema_format: parsed.schema_format,
+      contract_count: parsed.contracts.length,
+      new_count: newCount,
+      replaced_count: replacedCount,
       source_doc_hash: parsed.source_doc_hash,
       source_uri: sourceUri,
-      ingested_at: ingestedAt,
+      total_in_corpus: records.length,
+      parser_warnings: parsed.parser_warnings,
     };
-    if (byHash.has(contract.contract_hash)) {
-      replacedCount += 1;
-    } else {
-      newCount += 1;
-    }
-    byHash.set(contract.contract_hash, record);
-  }
-  const records = Array.from(byHash.values());
-  writeJsonlContracts(filePath, records);
-  return {
-    schema_format: parsed.schema_format,
-    contract_count: parsed.contracts.length,
-    new_count: newCount,
-    replaced_count: replacedCount,
-    source_doc_hash: parsed.source_doc_hash,
-    source_uri: sourceUri,
-    total_in_corpus: records.length,
-    parser_warnings: parsed.parser_warnings,
-  };
+  });
 }
 
 function querySchemaContracts({ target_domain, endpoint_pattern, method, limit }) {

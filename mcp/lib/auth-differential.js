@@ -132,12 +132,13 @@ function computeResponseSignature(observed) {
     throw new TypeError("observed must be an object");
   }
   const shape = inferBodyShape(observed.body);
+  const bodyHash = observed.body === undefined ? null : hashCanonicalJson(observed.body);
   return {
     status: typeof observed.status === "number" ? observed.status : null,
     status_class: statusClass(observed.status),
     response_class: classifyResponse(observed.status),
     body_shape: shape,
-    body_hash: shape ? hashCanonicalJson(shape) : null,
+    body_hash: bodyHash,
     body_length_bucket: bodyLengthBucket(observed.body),
     sensitive_field_count: countSensitiveFields(observed.body),
     sent_with_auth: observed.sent_with_auth === true,
