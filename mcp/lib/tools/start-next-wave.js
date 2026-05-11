@@ -9,10 +9,11 @@ module.exports = Object.freeze({
   inputSchema: {
     type: "object",
     properties: {
-      target_domain: { type: "string" },
+      target_domain: { type: "string", minLength: 1 },
       dry_run: { type: "boolean" },
     },
     required: ["target_domain"],
+    additionalProperties: false,
   },
   handler: startNextWave,
   role_bundles: ["orchestrator"],

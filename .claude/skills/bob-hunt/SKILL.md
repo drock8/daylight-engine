@@ -194,7 +194,7 @@ Before spawning a wave:
 5. Use each returned assignment's `hunter_agent` as the subagent type and that assignment's `handoff_token` only in its spawn prompt. The MCP capability router has already chosen the correct hunter family per surface; do not branch by `chain_family` in the orchestrator.
 
 Generic hunter spawn template (uses the routed `assignment.hunter_agent`; the brief itself carries chain-specific context):
-```
+```text
 Agent(subagent_type: "[assignment.hunter_agent]", name: "hunter-w[wave]-a[agent]", run_in_background: true, prompt: "
 Domain: [domain]
 Wave: w[wave]

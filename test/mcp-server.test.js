@@ -1240,6 +1240,8 @@ test("bounty_read_capability_playbook reads playbooks and rejects invalid capabi
 test("MCP per-tool modules preserve representative tool behavior", () => {
   const byName = new Map(TOOLS.map((tool) => [tool.name, tool]));
   assert.equal(byName.get("bounty_read_http_audit").inputSchema.required[0], "target_domain");
+  assert.equal(byName.get("bounty_start_next_wave").inputSchema.additionalProperties, false);
+  assert.equal(byName.get("bounty_start_next_wave").inputSchema.properties.target_domain.minLength, 1);
   assert.equal(byName.get("bounty_start_next_wave").inputSchema.properties.dry_run.type, "boolean");
   assert.equal(byName.get("bounty_start_wave").inputSchema.properties.assignments.type, "array");
   assert.deepEqual(TOOL_MANIFEST.bounty_route_surfaces.role_bundles, ["orchestrator", "router"]);

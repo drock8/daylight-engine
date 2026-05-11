@@ -50,7 +50,7 @@ const CLAUDE_LAUNCH_TEMPLATES = Object.freeze({
     "```",
   ].join("\n"),
   "{{SPAWN_HUNTER_AGENT}}": [
-    "```",
+    "```text",
     "Agent(subagent_type: \"[assignment.hunter_agent]\", name: \"hunter-w[wave]-a[agent]\", run_in_background: true, prompt: \"",
     "Domain: [domain]",
     "Wave: w[wave]",
