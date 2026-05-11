@@ -1,6 +1,5 @@
 "use strict";
 
-const fs = require("fs");
 const {
   assertNonEmptyString,
   normalizeOptionalText,
@@ -9,11 +8,8 @@ const {
   readAttackSurfaceStrict,
 } = require("./attack-surface.js");
 const {
-  surfaceRoutesPath,
-} = require("./paths.js");
-const {
-  readJsonFile,
-} = require("./storage.js");
+  readSurfaceRoutesStrict,
+} = require("./surface-router.js");
 const {
   getCapabilityPack,
   getCapabilityPackContextBudget,
@@ -54,21 +50,20 @@ function getContextBudget(args) {
       throw new Error(`Unknown surface_id: ${surfaceId}`);
     }
 
-    const routesPath = surfaceRoutesPath(targetDomain);
-    if (fs.existsSync(routesPath)) {
-      const routes = readJsonFile(routesPath);
-      const route = routes && Array.isArray(routes.routes)
-        ? routes.routes.find((entry) => entry.surface_id === surfaceId)
-        : null;
+    try {
+      const routesInfo = readSurfaceRoutesStrict(targetDomain);
+      const route = routesInfo.document.routes.find((entry) => entry.surface_id === surfaceId) || null;
       if (route) {
         if (route.capability_pack !== capabilityPack) {
           throw new Error(`surface_id ${surfaceId} is routed to capability_pack ${route.capability_pack}`);
         }
-        if (route.brief_profile) briefProfile = route.brief_profile;
-        if (route.capability_pack_version) capabilityPackVersion = route.capability_pack_version;
-        if (route.context_budget && typeof route.context_budget === "object" && !Array.isArray(route.context_budget)) {
-          contextBudget = normalizeContextBudget(route.context_budget, pack);
-        }
+        briefProfile = route.brief_profile;
+        capabilityPackVersion = route.capability_pack_version;
+        contextBudget = normalizeContextBudget(route.context_budget, pack);
+      }
+    } catch (error) {
+      if (!/Missing surface routes JSON:/.test(error.message || String(error))) {
+        throw error;
       }
     }
   }

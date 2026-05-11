@@ -238,6 +238,7 @@ function normalizePipelineEvent(targetDomain, type, fields = {}) {
     ["capability_pack", 128],
     ["lease_scope", 80],
     ["replay_purpose", 80],
+    ["started_by", 120],
   ]) {
     const safe = capString(fields[sourceField], maxChars);
     if (safe) event[sourceField] = safe;
@@ -362,7 +363,7 @@ function normalizePipelineEventForRead(record, expectedDomain) {
     adjudication_plan_hash: 128,
     final_verification_hash: 128,
   };
-  for (const field of ["phase", "from_phase", "to_phase", "agent", "surface_id", "status", "block_code", "source", "kind", "identifier_hint", "verification_attempt_id", "verification_snapshot_hash", "adjudication_plan_hash", "final_verification_hash", "capability_pack", "lease_scope", "replay_purpose"]) {
+  for (const field of ["phase", "from_phase", "to_phase", "agent", "surface_id", "status", "block_code", "source", "kind", "identifier_hint", "verification_attempt_id", "verification_snapshot_hash", "adjudication_plan_hash", "final_verification_hash", "capability_pack", "lease_scope", "replay_purpose", "started_by"]) {
     const safe = capString(record[field], fieldCaps[field] || 120);
     if (safe) event[field] = safe;
   }
@@ -1271,7 +1272,7 @@ function compactEvent(event) {
     target_domain: event.target_domain,
     type: event.type,
   };
-  for (const field of ["phase", "from_phase", "to_phase", "wave_number", "agent", "surface_id", "status", "block_code", "counts", "source", "force_merge", "force_merge_reason", "override", "override_reason", "kind", "identifier_hint", "verification_attempt_id", "verification_snapshot_hash", "adjudication_plan_hash", "final_verification_hash", "capability_pack", "lease_scope", "replay_purpose"]) {
+  for (const field of ["phase", "from_phase", "to_phase", "wave_number", "agent", "surface_id", "status", "block_code", "counts", "source", "force_merge", "force_merge_reason", "override", "override_reason", "kind", "identifier_hint", "verification_attempt_id", "verification_snapshot_hash", "adjudication_plan_hash", "final_verification_hash", "capability_pack", "lease_scope", "replay_purpose", "started_by"]) {
     if (event[field] != null) compact[field] = event[field];
   }
   return compact;

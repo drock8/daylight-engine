@@ -3,6 +3,7 @@
 const TOOL_MODULES = Object.freeze([
   require("./http-scan.js"),
   require("./read-http-audit.js"),
+  require("./start-next-wave.js"),
   require("./start-wave.js"),
   require("./route-surfaces.js"),
   require("./read-surface-routes.js"),

@@ -489,6 +489,9 @@ test("manifest, settings, and generated Claude config keep global MCP permission
   assert.deepEqual(TOOL_MANIFEST.bounty_record_surface_leads.role_bundles, ["hunter-web", "orchestrator"]);
   assert.equal(TOOL_MANIFEST.bounty_record_surface_leads.global_preapproval, true);
   assert.equal(TOOL_MANIFEST.bounty_read_surface_leads.global_preapproval, true);
+  assert.equal(TOOL_MANIFEST.bounty_start_next_wave.global_preapproval, false);
+  assert.equal(TOOL_MANIFEST.bounty_start_next_wave.mutating, true);
+  assert.deepEqual(TOOL_MANIFEST.bounty_start_next_wave.session_artifacts_written, ["surface-routes.json", "wave-N-assignments.json", "state.json", "surface-leads.json", "attack_surface.json"]);
   assert.equal(TOOL_MANIFEST.bounty_promote_surface_leads.global_preapproval, false);
   assert.equal(TOOL_MANIFEST.bounty_promote_surface_leads.mutating, true);
   assert.deepEqual(TOOL_MANIFEST.bounty_get_context_budget.role_bundles, ["hunter-shared", "orchestrator"]);
@@ -523,6 +526,7 @@ test("manifest, settings, and generated Claude config keep global MCP permission
   assert.ok(!generatedAllowed.has("bounty_read_tool_telemetry"));
   assert.ok(!generatedAllowed.has("bounty_read_pipeline_analytics"));
   assert.ok(!generatedAllowed.has("bounty_route_surfaces"));
+  assert.ok(!sourceAllowed.has("bounty_start_next_wave"));
   assert.ok(!sourceAllowed.has("bounty_promote_surface_leads"));
   assert.ok(sourceAllowed.has("bounty_record_surface_leads"));
   assert.ok(sourceAllowed.has("bounty_read_surface_leads"));
@@ -940,6 +944,7 @@ test("bountyagentstatus skill is compact, read-only, and points to next commands
     "Task",
     "Write",
     "Grep",
+    "mcp__bountyagent__bounty_start_next_wave",
     "mcp__bountyagent__bounty_start_wave",
     "mcp__bountyagent__bounty_apply_wave_merge",
     "mcp__bountyagent__bounty_merge_wave_handoffs",
@@ -1025,6 +1030,7 @@ test("bountyagentdebug skill allowed-tools are read-only and exclude mutators", 
   const forbiddenTools = [
     "Task",
     "Write",
+    "mcp__bountyagent__bounty_start_next_wave",
     "mcp__bountyagent__bounty_start_wave",
     "mcp__bountyagent__bounty_apply_wave_merge",
     "mcp__bountyagent__bounty_merge_wave_handoffs",
@@ -1575,7 +1581,7 @@ test("rendered orchestrator catalogue lists every smart-contract pack exactly on
   // Adding a new SC pack auto-extends the catalogue. The test enforces the
   // 1:1 pack -> catalogue line invariant so a renderer regression that
   // double-renders or skips a pack is caught immediately. Catalogue is
-  // keyed by capability_pack (the value bounty_start_wave actually returns
+  // keyed by capability_pack (the value wave-start assignments return
   // on each assignment), not chain_family.
   const rendered = readFile(".claude/skills/bob-hunt/SKILL.md");
   for (const pack of Object.values(CAPABILITY_PACKS)) {
@@ -2438,10 +2444,13 @@ test("orchestrator documents deep mode persistence, recon mode, and lead debt", 
   assert.match(orchestrator, /deep_mode false: Agent\(subagent_type: "recon-agent"/);
   assert.match(orchestrator, /deep_mode true: Agent\(subagent_type: "deep-recon-agent"/);
   assert.doesNotMatch(orchestrator, /MODE=\[normal\|deep\]/);
-  assert.match(orchestrator, /bounty_promote_surface_leads\(\{ target_domain, limit: 8, min_score: 60 \}\)/);
+  assert.doesNotMatch(orchestrator, /After recon, in deep mode call `bounty_promote_surface_leads/);
+  assert.match(orchestrator, /bounty_start_next_wave\(\{ target_domain \}\)/);
   assert.match(orchestrator, /bounty_read_surface_leads\(\{ target_domain, limit: 20 \}\)/);
-  assert.match(orchestrator, /maximum 8/);
-  assert.match(orchestrator, /high-confidence unpromoted leads/);
+  assert.match(orchestrator, /Standard HUNT\/EXPLORE wave assignment policy is MCP-owned/);
+  assert.match(orchestrator, /normal-path deep lead promotion/);
+  assert.match(orchestrator, /call `bounty_start_next_wave`/);
+  assert.doesNotMatch(orchestrator, /maximum 8/);
   assert.match(orchestrator, /surface_leads/);
 });
 
@@ -2619,7 +2628,8 @@ test("bob-hunt routes surfaces after recon and spawns returned hunter agents", (
     reconSection,
     /only after successful routing call `bounty_transition_phase\(\{ target_domain, to_phase: "AUTH" \}\)`/,
   );
-  assert.match(orchestratorPrompt, /assignments\[\]\.hunter_agent/);
+  assert.match(orchestratorPrompt, /result\.data\.assignments\[\]/);
+  assert.match(orchestratorPrompt, /returned assignment's `hunter_agent`/);
   assert.match(orchestratorPrompt, /subagent_type: "\[assignment\.hunter_agent\]"/);
   assert.match(orchestratorPrompt, /Capability pack: \[assignment\.capability_pack\]\. Brief profile: \[assignment\.brief_profile\]/);
   assert.match(orchestratorPrompt, /Context budget: \[assignment\.context_budget\]/);

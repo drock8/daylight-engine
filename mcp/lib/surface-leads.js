@@ -323,19 +323,40 @@ function shouldPromoteLead(lead, { minScore, includeMedium }) {
   return (lead.score || 0) >= minScore;
 }
 
-function promoteSurfaceLeadsInternal(domain, options = {}) {
+function normalizePromotionOptions(options = {}) {
   const limit = options.limit == null ? 8 : assertInteger(options.limit, "limit", { min: 1, max: 50 });
   const minScore = options.min_score == null ? 60 : assertInteger(options.min_score, "min_score", { min: 0, max: 100 });
   const includeMedium = options.include_medium == null ? false : assertBoolean(options.include_medium, "include_medium");
-  const updateState = options.update_state == null ? true : assertBoolean(options.update_state, "update_state");
-  const document = readSurfaceLeadsDocument(domain);
-  const candidates = document.leads
+  return { limit, minScore, includeMedium };
+}
+
+function selectPromotableSurfaceLeads(document, options = {}) {
+  const { limit, minScore, includeMedium } = normalizePromotionOptions(options);
+  return document.leads
     .filter((lead) => shouldPromoteLead(lead, { minScore, includeMedium }))
     .sort((a, b) => {
       if ((b.score || 0) !== (a.score || 0)) return (b.score || 0) - (a.score || 0);
       return String(a.id).localeCompare(String(b.id));
     })
     .slice(0, limit);
+}
+
+function previewSurfaceLeadPromotion(domain, options = {}) {
+  const document = readSurfaceLeadsDocument(domain);
+  const candidates = selectPromotableSurfaceLeads(document, options);
+  return {
+    would_promote: candidates.length,
+    would_promote_lead_ids: candidates.map((lead) => lead.id),
+    leads_path: surfaceLeadsPath(domain),
+    attack_surface_path: attackSurfacePath(domain),
+  };
+}
+
+function promoteSurfaceLeadsInternal(domain, options = {}) {
+  const { limit, minScore, includeMedium } = normalizePromotionOptions(options);
+  const updateState = options.update_state == null ? true : assertBoolean(options.update_state, "update_state");
+  const document = readSurfaceLeadsDocument(domain);
+  const candidates = selectPromotableSurfaceLeads(document, { limit, min_score: minScore, include_medium: includeMedium });
 
   if (candidates.length === 0) {
     return {
@@ -446,9 +467,11 @@ module.exports = {
   normalizeSurfaceLead,
   promoteSurfaceLeads,
   promoteSurfaceLeadsInternal,
+  previewSurfaceLeadPromotion,
   readSurfaceLeads,
   readSurfaceLeadsDocument,
   recordSurfaceLeads,
   recordSurfaceLeadsInternal,
+  selectPromotableSurfaceLeads,
   surfaceLeadsPath,
 };

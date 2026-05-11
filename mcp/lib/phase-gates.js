@@ -42,6 +42,10 @@ function compactErrorMessage(error) {
   return error && error.message ? error.message : String(error);
 }
 
+function surfaceLeadsLib() {
+  return require("./surface-leads.js");
+}
+
 function blocker(code, message, fields = {}) {
   return {
     code,
@@ -201,6 +205,29 @@ function computeHuntToChainGate(domain, state) {
       "latest coverage has unfinished promising, needs_auth, or requeue work",
       { surface_ids: openRequeueSurfaceIds },
     ));
+  }
+
+  if (state.deep_mode === true) {
+    try {
+      const preview = surfaceLeadsLib().previewSurfaceLeadPromotion(domain, {
+        limit: 8,
+        min_score: 60,
+        include_medium: false,
+      });
+      if (preview.would_promote_lead_ids.length > 0) {
+        blockers.push(blocker(
+          "promotable_surface_leads",
+          "deep mode has assignable unpromoted surface leads; call bounty_start_next_wave to promote and assign the next runtime-owned wave",
+          { lead_ids: preview.would_promote_lead_ids },
+        ));
+      }
+    } catch (error) {
+      blockers.push(blocker(
+        "surface_leads_unavailable",
+        "surface leads could not be read for deep-mode HUNT -> CHAIN gating",
+        { error: compactErrorMessage(error) },
+      ));
+    }
   }
 
   return {

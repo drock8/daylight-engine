@@ -69,7 +69,7 @@ function substituteCapabilityPackVerifierTable(document) {
 // structurally and stay on the legacy SPAWN_HUNTER_AGENT body.
 //
 // Catalogue lookup contract: the orchestrator receives `assignment.capability_pack`
-// from `bounty_start_wave.data.assignments[]`. Catalogue lines are keyed by
+// from wave-start result.data.assignments[]. Catalogue lines are keyed by
 // `capability_pack` (not chain_family) because that is the field every
 // downstream consumer — verifier, evidence, reporter — uses for dispatch.
 // Brief-profile dispatch: the orchestrator picks between the generic web
@@ -165,7 +165,7 @@ function renderClaudeSmartContractCanonicalSpawn() {
     "Domain: [domain]",
     "Wave: w[wave]",
     "Agent: a[agent]",
-    "Handoff token: [only this agent's handoff_token from bounty_start_wave.data.assignments]",
+    "Handoff token: [only this agent's handoff_token from wave-start result.data.assignments]",
     "Capability pack: [assignment.capability_pack]. Brief profile: [assignment.brief_profile]. Hunter agent: [assignment.hunter_agent]. Context budget: [assignment.context_budget].",
     "First action: call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }) and use .data, including run_context.context_budget.",
     "Confirm surface_type is smart_contract AND surface.chain_family matches the catalogue line's chain_family for [assignment.capability_pack]; surface.chain_id matches the catalogue line's chain_id description.",

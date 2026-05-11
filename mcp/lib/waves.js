@@ -16,6 +16,9 @@ const {
 } = require("./validation.js");
 const {
   sessionDir,
+  attackSurfacePath,
+  surfaceLeadsPath,
+  surfaceRoutesPath,
   waveAssignmentsPath,
 } = require("./paths.js");
 const {
@@ -45,10 +48,17 @@ const {
 } = require("./surface-router.js");
 const {
   isAssignableSurfaceLead,
+  previewSurfaceLeadPromotion,
   promoteSurfaceLeadsInternal,
   readSurfaceLeadsDocument,
   recordSurfaceLeadsInternal,
 } = require("./surface-leads.js");
+const {
+  rankAttackSurfaces,
+} = require("./ranking.js");
+const {
+  planNextWave,
+} = require("./wave-planner.js");
 const {
   readFindingsFromJsonl,
   summarizeFindings,
@@ -524,7 +534,7 @@ function validateWaveHandoffPayload(payload, {
 function groupBlockedHarnessRuns(entries) {
   const groups = new Map();
   for (const entry of entries) {
-    const key = `${entry.kind} ${entry.harness}`;
+    const key = `${entry.kind}\u0000${entry.harness}`;
     if (!groups.has(key)) {
       groups.set(key, { kind: entry.kind, harness: entry.harness, count: 0, agents: new Set(), surface_ids: new Set() });
     }
@@ -577,7 +587,7 @@ function groupBlockedPrereqs(entries) {
 function groupBypassAttempts(entries) {
   const groups = new Map();
   for (const entry of entries) {
-    const key = `${entry.condition} ${entry.outcome}`;
+    const key = `${entry.condition}\u0000${entry.outcome}`;
     if (!groups.has(key)) {
       groups.set(key, { condition: entry.condition, outcome: entry.outcome, count: 0, agents: new Set(), surface_ids: new Set() });
     }
@@ -650,7 +660,7 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
   const recordedFindingsBySurface = new Map();
   for (const finding of allFindings) {
     if (finding.wave === artifacts.wave) {
-      const runKey = `${finding.wave} ${finding.agent} ${finding.surface_id}`;
+      const runKey = `${finding.wave}\u0000${finding.agent}\u0000${finding.surface_id}`;
       if (!findingsByRun.has(runKey)) findingsByRun.set(runKey, []);
       findingsByRun.get(runKey).push(finding);
       if (!recordedFindingsBySurface.has(finding.surface_id)) recordedFindingsBySurface.set(finding.surface_id, []);
@@ -670,7 +680,7 @@ function mergeWaveHandoffsInternal(domain, waveNumber) {
 
     try {
       const handoffJson = readJsonFile(filePath);
-      const runKey = `${artifacts.wave} ${assignment.agent} ${assignment.surface_id}`;
+      const runKey = `${artifacts.wave}\u0000${assignment.agent}\u0000${assignment.surface_id}`;
       const findingsForRun = findingsByRun.get(runKey) || [];
       const effectiveSurfaceType = assignment.surface_type || null;
       const payload = validateWaveHandoffPayload(handoffJson, {
@@ -848,6 +858,162 @@ function waveStatus(args) {
   });
 }
 
+function assertWaveStartState(state, waveNumber) {
+  if (state.phase !== "HUNT" && state.phase !== "EXPLORE") {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Wave start requires phase HUNT or EXPLORE, found ${state.phase}`);
+  }
+  if (state.pending_wave != null) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Wave start requires pending_wave null, found ${state.pending_wave}`);
+  }
+  if (waveNumber !== state.hunt_wave + 1) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `wave_number must equal hunt_wave + 1 (${state.hunt_wave + 1})`);
+  }
+}
+
+function startWaveLocked(domain, {
+  raw,
+  state,
+  waveNumber,
+  assignments,
+  attackSurfaceInfo = null,
+  source = "bounty_start_wave",
+  startedBy = source,
+  statePatch = null,
+} = {}) {
+  assertWaveStartState(state, waveNumber);
+
+  const assignmentsPath = waveAssignmentsPath(domain, waveNumber);
+  if (fs.existsSync(assignmentsPath)) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Assignment file already exists: ${assignmentsPath}`);
+  }
+
+  const attackSurface = attackSurfaceInfo || readAttackSurfaceStrict(domain);
+  const surfaceTypeById = new Map();
+  for (const surface of attackSurface.document.surfaces || []) {
+    if (!surface || typeof surface !== "object" || Array.isArray(surface)) continue;
+    const surfaceTypeRaw = typeof surface.surface_type === "string" ? surface.surface_type.trim() : "";
+    surfaceTypeById.set(surface.id, surfaceTypeRaw !== "" ? surfaceTypeRaw : null);
+  }
+  for (const assignment of assignments) {
+    if (!attackSurface.surface_id_set.has(assignment.surface_id)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `Unknown surface_id in assignments: ${assignment.surface_id}`);
+    }
+  }
+
+  // Hard write-side filter: terminally-blocked surfaces cannot be
+  // assigned to a wave until an operator clears the block via
+  // bounty_clear_terminal_block. Defends against an orchestrator
+  // regression that drops the soft-prompt exclusion and silently burns
+  // hunter cycles on classified-blocked work.
+  const terminallyBlockedSet = new Set(terminallyBlockedSurfaceIds(state));
+  const blockedAssignments = assignments
+    .filter((assignment) => terminallyBlockedSet.has(assignment.surface_id))
+    .map((assignment) => assignment.surface_id);
+  if (blockedAssignments.length > 0) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `Cannot assign terminally-blocked surfaces to a wave; clear the block via bounty_clear_terminal_block first: ${blockedAssignments.join(", ")}`,
+    );
+  }
+
+  // Capture surface_type from attack_surface.json AT WAVE START into the
+  // immutable, MCP-owned assignment file. This makes the smart_contract
+  // completion gate tamper-resistant — hunters cannot disable enforcement
+  // by mutating attack_surface.json mid-wave.
+  const routedSurfaces = routeSurfacesInternal(domain, { attackSurfaceInfo: attackSurface });
+  const routeBySurfaceId = new Map(
+    routedSurfaces.document.routes.map((route) => [route.surface_id, route]),
+  );
+  for (const assignment of assignments) {
+    if (!routeBySurfaceId.has(assignment.surface_id)) {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `Missing route for surface_id in assignments: ${assignment.surface_id}`);
+    }
+  }
+
+  const persistedAssignments = assignments.map((assignment) => {
+    const token = generateHandoffToken();
+    const route = routeBySurfaceId.get(assignment.surface_id);
+    return {
+      ...assignment,
+      surface_type: surfaceTypeById.get(assignment.surface_id) || null,
+      capability_pack: route.capability_pack,
+      capability_pack_version: route.capability_pack_version,
+      hunter_agent: route.hunter_agent,
+      brief_profile: route.brief_profile,
+      context_budget: route.context_budget,
+      handoff_token_sha256: sha256Hex(token),
+      handoff_token: token,
+    };
+  });
+  const assignmentsForDisk = persistedAssignments.map(({ handoff_token, ...assignment }) => assignment);
+
+  // Snapshot registries BEFORE the assignment file is written. If the
+  // snapshot throws (auth.json malformed, egress config missing, etc.)
+  // we want the wave start to fail cleanly with no orphaned assignment
+  // file — not a half-written session that fails on retry with
+  // "Assignment file already exists".
+  const startSnapshot = snapshotPrereqRegistries(domain);
+  const priorSnapshots = Array.isArray(state.prereq_registry_snapshots) ? state.prereq_registry_snapshots : [];
+  const nextSnapshots = [
+    ...priorSnapshots.filter((s) => s.wave !== waveNumber),
+    { wave: waveNumber, ...startSnapshot },
+  ].sort((a, b) => a.wave - b.wave);
+
+  writeFileAtomic(assignmentsPath, `${JSON.stringify({
+    wave_number: waveNumber,
+    assignments: assignmentsForDisk,
+  }, null, 2)}\n`);
+
+  const nextState = {
+    ...state,
+    ...(statePatch || {}),
+    pending_wave: waveNumber,
+    prereq_registry_snapshots: nextSnapshots,
+  };
+
+  try {
+    writeSessionStateDocument(domain, raw, nextState);
+  } catch (error) {
+    let rollbackSucceeded = false;
+    try {
+      fs.rmSync(assignmentsPath, { force: true });
+      rollbackSucceeded = true;
+    } catch {}
+
+    const rollbackStatus = rollbackSucceeded ? "rollback succeeded" : "rollback failed";
+    throw new ToolError(
+      ERROR_CODES.STATE_CONFLICT,
+      `State write failed after writing assignments; ${rollbackStatus}: ${assignmentsPath} (${error.message || String(error)})`,
+    );
+  }
+  safeAppendPipelineEventDirect(domain, "wave_started", {
+    phase: state.phase,
+    wave_number: waveNumber,
+    status: "started",
+    source,
+    started_by: startedBy,
+    counts: {
+      assignments: assignments.length,
+    },
+  });
+
+  return {
+    wave_number: waveNumber,
+    assignments: persistedAssignments.map((assignment) => ({
+      agent: assignment.agent,
+      surface_id: assignment.surface_id,
+      capability_pack: assignment.capability_pack,
+      capability_pack_version: assignment.capability_pack_version,
+      hunter_agent: assignment.hunter_agent,
+      brief_profile: assignment.brief_profile,
+      context_budget: assignment.context_budget,
+      handoff_token: assignment.handoff_token,
+    })),
+    assignments_path: assignmentsPath,
+    state: compactSessionState(nextState),
+  };
+}
+
 function startWave(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const waveNumber = parseWaveNumber(args.wave_number);
@@ -855,147 +1021,248 @@ function startWave(args) {
 
   return withSessionLock(domain, () => {
     const { raw, state } = readSessionStateStrict(domain);
-    if (state.phase !== "HUNT" && state.phase !== "EXPLORE") {
-      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Wave start requires phase HUNT or EXPLORE, found ${state.phase}`);
-    }
-    if (state.pending_wave != null) {
-      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Wave start requires pending_wave null, found ${state.pending_wave}`);
-    }
-    if (waveNumber !== state.hunt_wave + 1) {
-      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `wave_number must equal hunt_wave + 1 (${state.hunt_wave + 1})`);
-    }
-
-    const assignmentsPath = waveAssignmentsPath(domain, waveNumber);
-    if (fs.existsSync(assignmentsPath)) {
-      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Assignment file already exists: ${assignmentsPath}`);
-    }
-
-    const attackSurface = readAttackSurfaceStrict(domain);
-    const surfaceTypeById = new Map();
-    for (const surface of attackSurface.document.surfaces || []) {
-      if (!surface || typeof surface !== "object" || Array.isArray(surface)) continue;
-      const surfaceTypeRaw = typeof surface.surface_type === "string" ? surface.surface_type.trim() : "";
-      surfaceTypeById.set(surface.id, surfaceTypeRaw !== "" ? surfaceTypeRaw : null);
-    }
-    for (const assignment of assignments) {
-      if (!attackSurface.surface_id_set.has(assignment.surface_id)) {
-        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `Unknown surface_id in assignments: ${assignment.surface_id}`);
-      }
-    }
-
-    // Hard write-side filter: terminally-blocked surfaces cannot be
-    // assigned to a wave until an operator clears the block via
-    // bounty_clear_terminal_block. Defends against an orchestrator
-    // regression that drops the soft-prompt exclusion and silently burns
-    // hunter cycles on classified-blocked work.
-    const terminallyBlockedSet = new Set(terminallyBlockedSurfaceIds(state));
-    const blockedAssignments = assignments
-      .filter((assignment) => terminallyBlockedSet.has(assignment.surface_id))
-      .map((assignment) => assignment.surface_id);
-    if (blockedAssignments.length > 0) {
-      throw new ToolError(
-        ERROR_CODES.INVALID_ARGUMENTS,
-        `Cannot assign terminally-blocked surfaces to a wave; clear the block via bounty_clear_terminal_block first: ${blockedAssignments.join(", ")}`,
-      );
-    }
-
-    // Capture surface_type from attack_surface.json AT WAVE START into the
-    // immutable, MCP-owned assignment file. This makes the smart_contract
-    // completion gate tamper-resistant — hunters cannot disable enforcement
-    // by mutating attack_surface.json mid-wave.
-    const routedSurfaces = routeSurfacesInternal(domain, { attackSurfaceInfo: attackSurface });
-    const routeBySurfaceId = new Map(
-      routedSurfaces.document.routes.map((route) => [route.surface_id, route]),
-    );
-    for (const assignment of assignments) {
-      if (!routeBySurfaceId.has(assignment.surface_id)) {
-        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `Missing route for surface_id in assignments: ${assignment.surface_id}`);
-      }
-    }
-
-
-    const persistedAssignments = assignments.map((assignment) => {
-      const token = generateHandoffToken();
-      const route = routeBySurfaceId.get(assignment.surface_id);
-      return {
-        ...assignment,
-        surface_type: surfaceTypeById.get(assignment.surface_id) || null,
-        capability_pack: route.capability_pack,
-        capability_pack_version: route.capability_pack_version,
-        hunter_agent: route.hunter_agent,
-        brief_profile: route.brief_profile,
-        context_budget: route.context_budget,
-        handoff_token_sha256: sha256Hex(token),
-        handoff_token: token,
-      };
-    });
-    const assignmentsForDisk = persistedAssignments.map(({ handoff_token, ...assignment }) => assignment);
-
-    // Snapshot registries BEFORE the assignment file is written. If the
-    // snapshot throws (auth.json malformed, egress config missing, etc.)
-    // we want the wave start to fail cleanly with no orphaned assignment
-    // file — not a half-written session that fails on retry with
-    // "Assignment file already exists".
-    const startSnapshot = snapshotPrereqRegistries(domain);
-    const priorSnapshots = Array.isArray(state.prereq_registry_snapshots) ? state.prereq_registry_snapshots : [];
-    const nextSnapshots = [
-      ...priorSnapshots.filter((s) => s.wave !== waveNumber),
-      { wave: waveNumber, ...startSnapshot },
-    ].sort((a, b) => a.wave - b.wave);
-
-    writeFileAtomic(assignmentsPath, `${JSON.stringify({
-      wave_number: waveNumber,
-      assignments: assignmentsForDisk,
-    }, null, 2)}\n`);
-
-    const nextState = {
-      ...state,
-      pending_wave: waveNumber,
-      prereq_registry_snapshots: nextSnapshots,
-    };
-
-    try {
-      writeSessionStateDocument(domain, raw, nextState);
-    } catch (error) {
-      let rollbackSucceeded = false;
-      try {
-        fs.rmSync(assignmentsPath, { force: true });
-        rollbackSucceeded = true;
-      } catch {}
-
-      const rollbackStatus = rollbackSucceeded ? "rollback succeeded" : "rollback failed";
-      throw new ToolError(
-        ERROR_CODES.STATE_CONFLICT,
-        `State write failed after writing assignments; ${rollbackStatus}: ${assignmentsPath} (${error.message || String(error)})`,
-      );
-    }
-    safeAppendPipelineEventDirect(domain, "wave_started", {
-      phase: state.phase,
-      wave_number: waveNumber,
-      status: "started",
+    const started = startWaveLocked(domain, {
+      raw,
+      state,
+      waveNumber,
+      assignments,
       source: "bounty_start_wave",
-      counts: {
-        assignments: assignments.length,
-      },
+      startedBy: "bounty_start_wave",
     });
 
     return JSON.stringify({
       version: 1,
       started: true,
-      wave_number: waveNumber,
-      assignments: persistedAssignments.map((assignment) => ({
-        agent: assignment.agent,
-        surface_id: assignment.surface_id,
-        capability_pack: assignment.capability_pack,
-        capability_pack_version: assignment.capability_pack_version,
-        hunter_agent: assignment.hunter_agent,
-        brief_profile: assignment.brief_profile,
-        context_budget: assignment.context_budget,
-        handoff_token: assignment.handoff_token,
-      })),
-      assignments_path: assignmentsPath,
-      state: compactSessionState(nextState),
+      wave_number: started.wave_number,
+      assignments: started.assignments,
+      assignments_path: started.assignments_path,
+      state: started.state,
     });
+  });
+}
+
+function snapshotFileForRollback(filePath) {
+  return {
+    path: filePath,
+    existed: fs.existsSync(filePath),
+    content: fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : null,
+  };
+}
+
+function restoreFileSnapshot(snapshot) {
+  if (!snapshot) return;
+  if (snapshot.existed) {
+    writeFileAtomic(snapshot.path, snapshot.content);
+  } else {
+    fs.rmSync(snapshot.path, { force: true });
+  }
+}
+
+function pushUniqueValues(values, additions) {
+  const result = Array.isArray(values) ? [...values] : [];
+  const seen = new Set(result);
+  pushUnique(result, seen, Array.isArray(additions) ? additions : []);
+  return result;
+}
+
+function buildNextWaveAction(domain, decision, waveNumber) {
+  if (decision === "pending_wave_reconcile") {
+    return {
+      kind: "call_tool",
+      tool: "bounty_apply_wave_merge",
+      arguments: {
+        target_domain: domain,
+        wave_number: waveNumber,
+        force_merge: false,
+      },
+    };
+  }
+  if (decision === "start_wave") {
+    return {
+      kind: "spawn_hunters",
+      wave_number: waveNumber,
+      assignments_source: "top_level_assignments",
+    };
+  }
+  return {
+    kind: "stop",
+    reason: "No assignable candidates; phase decisions belong to the orchestrator.",
+  };
+}
+
+function buildStartNextWaveResponse({
+  domain,
+  dryRun,
+  state,
+  plan,
+  promotion,
+  started = null,
+  reason = null,
+}) {
+  const decision = plan.decision;
+  const nextAction = dryRun && decision === "start_wave"
+    ? {
+        kind: "stop",
+        reason: "dry_run is true; call bounty_start_next_wave with dry_run false to start this planned wave.",
+      }
+    : buildNextWaveAction(domain, decision, decision === "pending_wave_reconcile" ? plan.pending_wave : plan.wave_number);
+  const response = {
+    version: 1,
+    target_domain: domain,
+    dry_run: dryRun,
+    started: started != null,
+    decision,
+    reason: reason || plan.reason,
+    state: compactSessionState(state),
+    promotion,
+    plan,
+    next_action: nextAction,
+  };
+  if (started) {
+    response.wave_number = started.wave_number;
+    response.assignments = started.assignments;
+    response.assignments_path = started.assignments_path;
+    response.state = started.state;
+    response.next_action.assignments_path = started.assignments_path;
+  }
+  return response;
+}
+
+function readRankedAttackSurfacesForPlanning(domain) {
+  const ranked = rankAttackSurfaces(domain, { write: false });
+  if (!ranked) {
+    readAttackSurfaceStrict(domain);
+    return [];
+  }
+  return ranked.surfaces || [];
+}
+
+function startNextWave(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  const dryRun = args.dry_run == null ? false : assertBoolean(args.dry_run, "dry_run");
+
+  return withSessionLock(domain, () => {
+    const { raw, state } = readSessionStateStrict(domain);
+    if (state.phase !== "HUNT" && state.phase !== "EXPLORE") {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Wave start requires phase HUNT or EXPLORE, found ${state.phase}`);
+    }
+
+    const basePromotionPreview = state.deep_mode === true
+      ? previewSurfaceLeadPromotion(domain, {
+          limit: 8,
+          min_score: 60,
+          include_medium: false,
+        })
+      : {
+          would_promote: 0,
+          would_promote_lead_ids: [],
+          leads_path: surfaceLeadsPath(domain),
+          attack_surface_path: attackSurfacePath(domain),
+        };
+    let promotion = {
+      ...basePromotionPreview,
+      promoted: 0,
+      promoted_surface_ids: [],
+    };
+
+    if (state.pending_wave != null) {
+      const plan = planNextWave({ state, surfaces: [] });
+      return JSON.stringify(buildStartNextWaveResponse({
+        domain,
+        dryRun,
+        state,
+        plan,
+        promotion,
+      }));
+    }
+
+    let planningState = state;
+    let rollbackSnapshots = null;
+    let promotedForThisStart = false;
+    try {
+      if (!dryRun && state.deep_mode === true && basePromotionPreview.would_promote_lead_ids.length > 0) {
+        rollbackSnapshots = [
+          snapshotFileForRollback(attackSurfacePath(domain)),
+          snapshotFileForRollback(surfaceLeadsPath(domain)),
+          snapshotFileForRollback(surfaceRoutesPath(domain)),
+        ];
+        const promoted = promoteSurfaceLeadsInternal(domain, {
+          limit: 8,
+          min_score: 60,
+          include_medium: false,
+          update_state: false,
+        });
+        promotedForThisStart = promoted.promoted_surface_ids.length > 0;
+        promotion = {
+          ...basePromotionPreview,
+          promoted: promoted.promoted,
+          promoted_surface_ids: promoted.promoted_surface_ids,
+          leads_path: promoted.leads_path,
+          attack_surface_path: promoted.attack_surface_path,
+        };
+        planningState = {
+          ...state,
+          lead_surface_ids: pushUniqueValues(state.lead_surface_ids, promoted.promoted_surface_ids),
+        };
+      }
+
+      const rankedSurfaces = readRankedAttackSurfacesForPlanning(domain);
+      const coverageRecords = readCoverageRecordsFromJsonl(domain);
+      const plan = planNextWave({
+        state: planningState,
+        surfaces: rankedSurfaces,
+        coverageRecords,
+      });
+
+      if (dryRun || plan.decision !== "start_wave") {
+        if (promotedForThisStart) {
+          for (const snapshot of rollbackSnapshots.slice().reverse()) restoreFileSnapshot(snapshot);
+          promotion = {
+            ...basePromotionPreview,
+            promoted: 0,
+            promoted_surface_ids: [],
+          };
+          planningState = state;
+        }
+        return JSON.stringify(buildStartNextWaveResponse({
+          domain,
+          dryRun,
+          state: planningState,
+          plan,
+          promotion,
+        }));
+      }
+
+      const assignments = normalizeWaveAssignmentsInput(plan.assignments);
+      const started = startWaveLocked(domain, {
+        raw,
+        state: planningState,
+        waveNumber: plan.wave_number,
+        assignments,
+        attackSurfaceInfo: readAttackSurfaceStrict(domain),
+        source: "bounty_start_next_wave",
+        startedBy: "bounty_start_next_wave",
+        statePatch: promotedForThisStart
+          ? { lead_surface_ids: planningState.lead_surface_ids }
+          : null,
+      });
+
+      return JSON.stringify(buildStartNextWaveResponse({
+        domain,
+        dryRun,
+        state: planningState,
+        plan,
+        promotion,
+        started,
+      }));
+    } catch (error) {
+      if (promotedForThisStart && rollbackSnapshots) {
+        for (const snapshot of rollbackSnapshots.slice().reverse()) {
+          try { restoreFileSnapshot(snapshot); } catch {}
+        }
+      }
+      throw error;
+    }
   });
 }
 
@@ -1252,13 +1519,6 @@ function applyWaveMerge(args) {
     const deadEnds = [...state.dead_ends];
     const wafBlockedEndpoints = [...state.waf_blocked_endpoints];
     const leadSurfaceIds = [...state.lead_surface_ids];
-    const deepPromotion = state.deep_mode === true
-      ? promoteSurfaceLeadsInternal(domain, {
-          limit: 8,
-          min_score: 60,
-          update_state: false,
-        })
-      : { promoted_surface_ids: [] };
     const attackSurface = readAttackSurfaceStrict(domain);
 
     // The structured handoff's `surface_status: complete` is the contract;
@@ -1276,7 +1536,6 @@ function applyWaveMerge(args) {
     pushUnique(deadEnds, new Set(deadEnds), merge.dead_ends);
     pushUnique(wafBlockedEndpoints, new Set(wafBlockedEndpoints), merge.waf_blocked_endpoints);
     pushUnique(leadSurfaceIds, new Set(leadSurfaceIds), merge.lead_surface_ids);
-    pushUnique(leadSurfaceIds, new Set(leadSurfaceIds), deepPromotion.promoted_surface_ids || []);
 
     // Disjointness invariant: a surface marked complete in this wave wins
     // over any prior terminal promotion. Strip from terminally_blocked.
@@ -1378,7 +1637,6 @@ function applyWaveMerge(args) {
         bypass_attempts: merge.bypass_attempts,
         bypass_attempts_grouped: merge.bypass_attempts_grouped,
         suspicion_flags: merge.suspicion_flags,
-        ...(state.deep_mode === true ? { deep_promoted_surface_ids: deepPromotion.promoted_surface_ids || [] } : {}),
         provenance: merge.provenance,
       },
       findings,
@@ -1694,6 +1952,7 @@ module.exports = {
   logDeadEnds,
   mergeWaveHandoffs,
   readWaveHandoffs,
+  startNextWave,
   startWave,
   waveHandoffStatus,
   waveStatus,

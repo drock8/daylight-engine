@@ -164,6 +164,7 @@ const {
   sessionDir,
   sessionLockPath,
   sessionsRoot,
+  startNextWave,
   startWave,
   statePath,
   staticArtifactImportDir,
@@ -207,6 +208,7 @@ const {
 const EXPECTED_TOOL_NAMES = [
   "bounty_http_scan",
   "bounty_read_http_audit",
+  "bounty_start_next_wave",
   "bounty_start_wave",
   "bounty_route_surfaces",
   "bounty_read_surface_routes",
@@ -1095,6 +1097,7 @@ test("mcp server public exports remain stable", () => {
     "sessionsRoot",
     "setOperatorNote",
     "signupDetect",
+    "startNextWave",
     "startServer",
     "startWave",
     "statePath",
@@ -1237,6 +1240,9 @@ test("bounty_read_capability_playbook reads playbooks and rejects invalid capabi
 test("MCP per-tool modules preserve representative tool behavior", () => {
   const byName = new Map(TOOLS.map((tool) => [tool.name, tool]));
   assert.equal(byName.get("bounty_read_http_audit").inputSchema.required[0], "target_domain");
+  assert.equal(byName.get("bounty_start_next_wave").inputSchema.additionalProperties, false);
+  assert.equal(byName.get("bounty_start_next_wave").inputSchema.properties.target_domain.minLength, 1);
+  assert.equal(byName.get("bounty_start_next_wave").inputSchema.properties.dry_run.type, "boolean");
   assert.equal(byName.get("bounty_start_wave").inputSchema.properties.assignments.type, "array");
   assert.deepEqual(TOOL_MANIFEST.bounty_route_surfaces.role_bundles, ["orchestrator", "router"]);
   assert.equal(TOOL_MANIFEST.bounty_route_surfaces.mutating, true);
@@ -1267,6 +1273,15 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bounty_build_verification_adjudication.mutating, true);
   assert.equal(TOOL_MANIFEST.bounty_build_verification_adjudication.global_preapproval, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_build_verification_adjudication.session_artifacts_written, ["verification-adjudication.json", "verification-manifest.json"]);
+  assert.equal(TOOL_MANIFEST.bounty_start_next_wave.mutating, true);
+  assert.equal(TOOL_MANIFEST.bounty_start_next_wave.global_preapproval, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_start_next_wave.session_artifacts_written, [
+    "surface-routes.json",
+    "wave-N-assignments.json",
+    "state.json",
+    "surface-leads.json",
+    "attack_surface.json",
+  ]);
   assert.equal(TOOL_MANIFEST.bounty_start_wave.mutating, true);
   assert.equal(TOOL_MANIFEST.bounty_start_wave.global_preapproval, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_start_wave.session_artifacts_written, [
@@ -3211,6 +3226,40 @@ test("bounty_transition_phase treats missing attack surface or malformed coverag
   });
 });
 
+test("bounty_transition_phase blocks deep HUNT -> CHAIN on promotable unpromoted surface leads", () => {
+  withTempHome(() => {
+    const domain = "deep-lead-debt.example.com";
+    seedAttackSurface(domain, ["surface-a"]);
+    seedSessionState(domain, {
+      phase: "HUNT",
+      hunt_wave: 2,
+      deep_mode: true,
+      explored: ["surface-a"],
+    });
+    JSON.parse(recordSurfaceLeads({
+      target_domain: domain,
+      source: "test",
+      leads: [{
+        title: "Promotable lead debt",
+        hosts: [`https://lead.${domain}`],
+        endpoints: ["/api/users"],
+        confidence: "high",
+        score: 80,
+      }],
+    }));
+
+    assert.throws(
+      () => transitionPhase({ target_domain: domain, to_phase: "CHAIN" }),
+      /HUNT -> CHAIN blocked: .*bounty_start_next_wave/,
+    );
+    const status = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.ok(status.transition_blockers.some((blocker) => (
+      blocker.code === "promotable_surface_leads" &&
+      blocker.lead_ids.includes("SL-1")
+    )));
+  });
+});
+
 test("bounty_transition_phase override_reason allows HUNT -> CHAIN and is persisted in pipeline events", () => {
   withTempHome(() => {
     const domain = "example.com";
@@ -3796,6 +3845,174 @@ test("bounty_start_wave rolls back the assignment file if the state write fails"
     }
 
     assert.ok(!fs.existsSync(path.join(sessionDir(domain), "wave-1-assignments.json")));
+    assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).pending_wave, null);
+  });
+});
+
+test("bounty_start_next_wave dry_run plans normal assignments and previews deep promotion without writes", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 0, deep_mode: true });
+    seedAttackSurfaces(domain, [
+      { id: "surface-high", hosts: [`https://${domain}`], priority: "HIGH", ranking: { version: 1, score: 70, priority: "HIGH", reasons: [] } },
+      { id: "surface-med", hosts: [`https://${domain}`], priority: "MEDIUM", ranking: { version: 1, score: 40, priority: "MEDIUM", reasons: [] } },
+    ]);
+    JSON.parse(recordSurfaceLeads({
+      target_domain: domain,
+      source: "test",
+      leads: [{
+        title: "Dry run lead",
+        hosts: [`https://lead.${domain}`],
+        endpoints: ["/graphql"],
+        confidence: "high",
+        score: 88,
+      }],
+    }));
+
+    const attackBefore = fs.readFileSync(attackSurfacePath(domain), "utf8");
+    const leadsBefore = fs.readFileSync(surfaceLeadsPath(domain), "utf8");
+    const result = JSON.parse(startNextWave({ target_domain: domain, dry_run: true }));
+
+    assert.equal(result.started, false);
+    assert.equal(result.decision, "start_wave");
+    assert.equal(result.next_action.kind, "stop");
+    assert.deepEqual(result.promotion.would_promote_lead_ids, ["SL-1"]);
+    assert.deepEqual(result.promotion.promoted_surface_ids, []);
+    assert.deepEqual(result.plan.assignments, [
+      { agent: "a1", surface_id: "surface-high" },
+      { agent: "a2", surface_id: "surface-med" },
+    ]);
+    assert.equal(result.assignments, undefined);
+    assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackBefore);
+    assert.equal(fs.readFileSync(surfaceLeadsPath(domain), "utf8"), leadsBefore);
+    assert.equal(fs.existsSync(surfaceRoutesPath(domain)), false);
+    assert.equal(fs.existsSync(path.join(sessionDir(domain), "wave-1-assignments.json")), false);
+    assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).pending_wave, null);
+  });
+});
+
+test("bounty_start_next_wave promotes deep leads, re-ranks, starts a wave, and attributes the event source", () => {
+  withTempHome(() => {
+    const domain = "example.com";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 0, deep_mode: true });
+    seedAttackSurfaces(domain, [
+      { id: "surface-low", hosts: [`https://${domain}`], priority: "LOW" },
+    ]);
+    JSON.parse(recordSurfaceLeads({
+      target_domain: domain,
+      source: "test",
+      leads: [{
+        title: "Promoted Admin API",
+        hosts: [`https://admin.${domain}`],
+        endpoints: ["/api/admin/users"],
+        priority: "HIGH",
+        surface_type: "admin",
+        confidence: "high",
+        score: 91,
+      }],
+    }));
+
+    const result = JSON.parse(startNextWave({ target_domain: domain }));
+    assert.equal(result.started, true);
+    assert.equal(result.decision, "start_wave");
+    assert.equal(result.wave_number, 1);
+    assert.equal(result.next_action.kind, "spawn_hunters");
+    assert.equal(result.next_action.assignments, undefined);
+    assert.deepEqual(result.promotion.would_promote_lead_ids, ["SL-1"]);
+    assert.deepEqual(result.promotion.promoted_surface_ids, ["lead-promoted-admin-api"]);
+    assert.deepEqual(result.state.lead_surface_ids, ["lead-promoted-admin-api"]);
+    assert.equal(result.assignments[0].surface_id, "lead-promoted-admin-api");
+    assert.match(result.assignments[0].handoff_token, /^[A-Za-z0-9_-]{32}$/);
+
+    const attackSurface = JSON.parse(fs.readFileSync(attackSurfacePath(domain), "utf8"));
+    assert.ok(attackSurface.surfaces.some((surface) => surface.id === "lead-promoted-admin-api"));
+    const leads = JSON.parse(readSurfaceLeads({ target_domain: domain, limit: 10 }));
+    assert.equal(leads.leads[0].status, "promoted");
+
+    const routes = JSON.parse(fs.readFileSync(surfaceRoutesPath(domain), "utf8"));
+    assert.ok(routes.routes.some((route) => route.surface_id === "lead-promoted-admin-api"));
+    const events = JSON.parse(readPipelineAnalytics({ target_domain: domain, include_events: true })).events;
+    const startedEvent = events.find((event) => event.type === "wave_started");
+    assert.equal(startedEvent.source, "bounty_start_next_wave");
+    assert.equal(startedEvent.started_by, "bounty_start_next_wave");
+  });
+});
+
+test("bounty_start_next_wave returns reconcile and no-candidate decisions without writing", () => {
+  withTempHome(() => {
+    const pendingDomain = "pending.example";
+    seedSessionState(pendingDomain, { phase: "HUNT", hunt_wave: 0, pending_wave: 1 });
+    seedAttackSurface(pendingDomain, ["surface-a"]);
+    const pendingBefore = fs.readFileSync(statePath(pendingDomain), "utf8");
+    const pending = JSON.parse(startNextWave({ target_domain: pendingDomain }));
+    assert.equal(pending.started, false);
+    assert.equal(pending.decision, "pending_wave_reconcile");
+    assert.deepEqual(pending.next_action, {
+      kind: "call_tool",
+      tool: "bounty_apply_wave_merge",
+      arguments: {
+        target_domain: pendingDomain,
+        wave_number: 1,
+        force_merge: false,
+      },
+    });
+    assert.equal(fs.readFileSync(statePath(pendingDomain), "utf8"), pendingBefore);
+    assert.equal(fs.existsSync(path.join(sessionDir(pendingDomain), "wave-2-assignments.json")), false);
+
+    const emptyDomain = "empty.example";
+    seedSessionState(emptyDomain, { phase: "EXPLORE", hunt_wave: 2, explored: ["surface-a"] });
+    seedAttackSurface(emptyDomain, ["surface-a"]);
+    const emptyBefore = fs.readFileSync(statePath(emptyDomain), "utf8");
+    const empty = JSON.parse(startNextWave({ target_domain: emptyDomain }));
+    assert.equal(empty.started, false);
+    assert.equal(empty.decision, "no_assignable_candidates");
+    assert.equal(empty.next_action.kind, "stop");
+    assert.match(empty.next_action.reason, /phase decisions belong to the orchestrator/i);
+    assert.equal(fs.readFileSync(statePath(emptyDomain), "utf8"), emptyBefore);
+    assert.equal(fs.existsSync(surfaceRoutesPath(emptyDomain)), false);
+  });
+});
+
+test("bounty_start_next_wave rolls back promotion artifacts if wave start state write fails", () => {
+  withTempHome(() => {
+    const domain = "rollback.example";
+    seedSessionState(domain, { phase: "HUNT", hunt_wave: 0, deep_mode: true });
+    seedAttackSurface(domain, ["surface-a"]);
+    JSON.parse(recordSurfaceLeads({
+      target_domain: domain,
+      source: "test",
+      leads: [{
+        title: "Rollback Lead",
+        hosts: [`https://lead.${domain}`],
+        endpoints: ["/api/rollback"],
+        confidence: "high",
+        score: 90,
+      }],
+    }));
+    const attackBefore = fs.readFileSync(attackSurfacePath(domain), "utf8");
+    const leadsBefore = fs.readFileSync(surfaceLeadsPath(domain), "utf8");
+
+    const originalRenameSync = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (to === statePath(domain)) {
+        throw new Error("boom");
+      }
+      return originalRenameSync(from, to);
+    };
+
+    try {
+      assert.throws(
+        () => startNextWave({ target_domain: domain }),
+        /State write failed after writing assignments; rollback succeeded:/,
+      );
+    } finally {
+      fs.renameSync = originalRenameSync;
+    }
+
+    assert.equal(fs.readFileSync(attackSurfacePath(domain), "utf8"), attackBefore);
+    assert.equal(fs.readFileSync(surfaceLeadsPath(domain), "utf8"), leadsBefore);
+    assert.equal(fs.existsSync(surfaceRoutesPath(domain)), false);
+    assert.equal(fs.existsSync(path.join(sessionDir(domain), "wave-1-assignments.json")), false);
     assert.equal(JSON.parse(fs.readFileSync(statePath(domain), "utf8")).pending_wave, null);
   });
 });
@@ -4422,7 +4639,7 @@ test("bounty_write_wave_handoff persists hunter surface_leads through the sessio
   });
 });
 
-test("deep wave merge promotes high-confidence handoff surface leads into lead_surface_ids", () => {
+test("deep wave merge records handoff surface leads but leaves automatic promotion to bounty_start_next_wave", () => {
   withTempHome(() => {
     const domain = "example.com";
     seedSessionState(domain, { phase: "HUNT", pending_wave: 1, deep_mode: true });
@@ -4455,11 +4672,11 @@ test("deep wave merge promotes high-confidence handoff surface leads into lead_s
       wave_number: 1,
       force_merge: false,
     }));
-    assert.deepEqual(merged.merge.deep_promoted_surface_ids, ["lead-sibling-graphql-api"]);
-    assert.deepEqual(merged.state.lead_surface_ids, ["lead-sibling-graphql-api"]);
+    assert.equal(merged.merge.deep_promoted_surface_ids, undefined);
+    assert.deepEqual(merged.state.lead_surface_ids, []);
     const leads = JSON.parse(readSurfaceLeads({ target_domain: domain, limit: 5 }));
-    assert.equal(leads.high_confidence_unpromoted, 0);
-    assert.equal(leads.leads[0].status, "promoted");
+    assert.equal(leads.high_confidence_unpromoted, 1);
+    assert.equal(leads.leads[0].status, "new");
   });
 });
 
@@ -14678,6 +14895,30 @@ test("context budget and technique-pack MCP tools are deterministic and bounded"
         capability_pack: "web",
       }),
       /unsupported context_budget\.brief_max_tokens/,
+    );
+
+    writeFileAtomic(surfaceRoutesPath(domain), `${JSON.stringify({
+      version: 1,
+      route_version: 1,
+      routes: [{
+        surface_id: "surface-graphql",
+        surface_type: "graphql",
+        capability_pack: "web",
+        capability_pack_version: 7,
+        hunter_agent: "hunter-agent",
+        brief_profile: "smart_contract_evm",
+        context_budget: routeSpecificBudget,
+        confidence: "high",
+        reasons: ["test:mismatched-route-profile"],
+      }],
+    }, null, 2)}\n`);
+    assert.throws(
+      () => getContextBudget({
+        target_domain: domain,
+        surface_id: "surface-graphql",
+        capability_pack: "web",
+      }),
+      /brief_profile smart_contract_evm does not match pack web/,
     );
     JSON.parse(routeSurfaces({ target_domain: domain }));
 

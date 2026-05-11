@@ -34,7 +34,7 @@ RECON → AUTH → HUNT → CHAIN → VERIFY → GRADE → REPORT
 ```
 Never skip phases. Never go backwards except `GRADE → HUNT` on `HOLD` and `REPORT → EXPLORE` on user request.
 
-State is persisted in `~/bounty-agent-sessions/[domain]/state.json`, but access it only through MCP: `bounty_init_session`, `bounty_read_session_state`, `bounty_read_state_summary`, `bounty_read_session_summary`, `bounty_transition_phase`, `bounty_start_wave`, and `bounty_apply_wave_merge`. Do not read protected raw session artifacts directly; use the structured summary tools.
+State is persisted in `~/bounty-agent-sessions/[domain]/state.json`, but access it only through MCP: `bounty_init_session`, `bounty_read_session_state`, `bounty_read_state_summary`, `bounty_read_session_summary`, `bounty_transition_phase`, `bounty_start_next_wave`, `bounty_start_wave`, and `bounty_apply_wave_merge`. Do not read protected raw session artifacts directly; use the structured summary tools.
 
 All Bob MCP calls return `{ ok, data, meta }` or `{ ok: false, error, meta }`. For successful reads and writes, use only `.data` for orchestration decisions. On failure, use `.error.code` and `.error.message`; do not infer success from top-level fields outside `.data`.
 
@@ -48,7 +48,7 @@ MCP-owned session artifacts:
 - `bounty_write_evidence_packs` writes formal pre-grade evidence to `evidence-packs.json`; `bounty_read_evidence_packs` validates final-reportable coverage.
 - `bounty_read_hunter_brief` returns the assigned surface, exclusions, coverage, ranking, run context budget, and a profile-specific context block — web profile carries traffic, audit, circuit-breaker, intel, static scan, bypass table, bounded `technique_packs.selected`, registry warnings, and small legacy technique summaries; smart-contract profiles carry `bob_spec_status` and the chain `rpc_pool` instead.
 - `bounty_read_technique_pack` in `mode: "full"` writes full-read history to `technique-pack-reads.jsonl` and enforces the assignment's `context_budget.full_pack_read_limit`.
-- `bounty_record_surface_leads`, `bounty_read_surface_leads`, and `bounty_promote_surface_leads` own compact `surface-leads.json` and promotion into `attack_surface.json`.
+- `bounty_record_surface_leads` and `bounty_read_surface_leads` own compact `surface-leads.json`; `bounty_start_next_wave` owns normal-path deep lead promotion into `attack_surface.json`. `bounty_promote_surface_leads` is for explicit/manual operator promotion only.
 - `bounty_read_pipeline_analytics` is the metadata-only dashboard for debugging stuck sessions and recent cross-session pipeline health.
 - `bounty_set_operator_note` stores one bounded non-secret operator instruction in state; `bounty_clear_operator_note` removes it.
 
@@ -81,7 +81,7 @@ Use Codex spawn_agent for deep-recon-agent -> Codex worker.
 Wait with `wait_agent` before continuing. After reading the result, call `close_agent` for the host agent.
 ```
 
-After recon, in deep mode call `bounty_promote_surface_leads({ target_domain, limit: 8, min_score: 60 })`, then `bounty_read_surface_leads({ target_domain, limit: 20 })` to inspect remaining leads. Then read `attack_surface.json`; if missing or empty, tell the user `Recon found no attack surfaces for [domain]` and stop. Spawn and wait; only after successful routing call `bounty_transition_phase({ target_domain, to_phase: "AUTH" })`:
+After recon, in deep mode call `bounty_read_surface_leads({ target_domain, limit: 20 })` to inspect compact lead debt; do not manually promote leads on the normal path. Then read `attack_surface.json`; if missing or empty, tell the user `Recon found no attack surfaces for [domain]` and stop. Spawn and wait; only after successful routing call `bounty_transition_phase({ target_domain, to_phase: "AUTH" })`:
 ```text
 Use Codex spawn_agent for surface-router-agent -> Codex worker.
 - agent_type: "worker"
@@ -89,7 +89,7 @@ Use Codex spawn_agent for surface-router-agent -> Codex worker.
 Wait with `wait_agent`. If routing fails or returns zero surfaces, report the error and stop. After reading the result, call `close_agent` for the host agent.
 ```
 
-After the surface-router worker completes, call `bounty_read_surface_routes({ target_domain })` to confirm the per-surface `capability_pack`, `hunter_agent`, and `brief_profile` triples written to `surface-routes.json`. The same triples are returned on each `bounty_start_wave.data.assignments[]` record at HUNT-phase wave start, so this read is for confirmation and operator visibility — verifier/chain/evidence/reporter dispatch on the persisted routing in `findings.jsonl` (written by `bounty_record_finding` from the assignment), not on this tool's output.
+After the surface-router worker completes, call `bounty_read_surface_routes({ target_domain })` to confirm the per-surface `capability_pack`, `hunter_agent`, and `brief_profile` triples written to `surface-routes.json`. The same triples are returned on each wave-start `result.data.assignments[]` record, so this read is for confirmation and operator visibility — verifier/chain/evidence/reporter dispatch on the persisted routing in `findings.jsonl` (written by `bounty_record_finding` from the assignment), not on this tool's output.
 
 ## PHASE 2: AUTH
 If `--no-auth` is set: skip all signup logic, call `bounty_transition_phase({ target_domain, to_phase: "HUNT", auth_status: "unauthenticated" })`, and proceed to HUNT.
@@ -120,25 +120,26 @@ After any successful signup, poll email up to 12 times, extract a code/link, com
 Load playbook guidance with `bounty_read_capability_playbook(capability_id)` when you need the orchestrator-driven differential procedures that feed `severity_class: "security"` rows into `bounty_record_finding`.
 
 ## PHASE 3: HUNT
-Read `attack_surface.json` and `bounty_read_state_summary.data` before every wave. Treat MCP ranking from `bounty_wave_status.data` and `bounty_read_hunter_brief.data.ranking_summary` as runtime prioritization, not as a durable `attack_surface.json` rewrite. `explored` means completed surface IDs only; `dead_ends` and `waf_blocked_endpoints` are endpoint/path exclusions only; `lead_surface_ids` and promoted deep leads route later waves.
+Read `bounty_read_state_summary.data` before every wave. Treat MCP ranking from `bounty_wave_status.data`, `bounty_start_next_wave.data.plan`, and `bounty_read_hunter_brief.data.ranking_summary` as runtime prioritization. `explored` means completed surface IDs only; `dead_ends` and `waf_blocked_endpoints` are endpoint/path exclusions only; `lead_surface_ids` and promoted deep leads route later waves.
 
 Wave policy:
-- Wave 1: all `HIGH` and `CRITICAL` surfaces in parallel.
-- Wave 2+: requeues, then `lead_surface_ids`, then remaining `MEDIUM`, then `LOW` if capacity remains.
-- Minimum 2 waves, target 4, maximum 6. In deep mode, target 6 and maximum 8; still finite.
+- Standard HUNT/EXPLORE wave assignment policy is MCP-owned by `bounty_start_next_wave`.
+- Normal waves use the returned `plan`, `assignments`, and `next_action`; do not compute standard assignments from raw `attack_surface.json`.
+- `bounty_start_wave` remains available only for explicit/manual focused hunts, such as grader-feedback regression hunts.
 
 Before spawning a wave:
-1. If `state.pending_wave` is non-null, stop and require `$bob-hunt resume [domain]`.
-2. Compute assignments from requeue plus wave policy.
-3. Call `bounty_start_wave({ target_domain, wave_number: N, assignments })`; assignment agent IDs must be short `aN`, and MCP returns each assignment's capability routing and context budget.
-4. Spawn hunters only after `bounty_start_wave` succeeds. Use each returned `result.data.assignments[].hunter_agent` as the subagent type and that assignment's `handoff_token` only in its spawn prompt. The MCP capability router has already chosen the correct hunter family per surface; do not branch by `chain_family` in the orchestrator.
+1. Call `bounty_start_next_wave({ target_domain })` and use `result.data`.
+2. If `decision === "pending_wave_reconcile"`, call the `next_action` tool or stop and require `$bob-hunt resume [domain]`.
+3. If `decision === "no_assignable_candidates"`, stop wave launching and let the phase gate decide whether CHAIN is allowed.
+4. Spawn hunters only when `started === true` and `next_action.kind === "spawn_hunters"`. Use top-level `result.data.assignments`; do not use assignments from `next_action`.
+5. Use each returned assignment's `hunter_agent` as the subagent type and that assignment's `handoff_token` only in its spawn prompt. The MCP capability router has already chosen the correct hunter family per surface; do not branch by `chain_family` in the orchestrator.
 
 Generic hunter spawn template (uses the routed `assignment.hunter_agent`; the brief itself carries chain-specific context):
 ```text
-For each assignment, use Codex spawn_agent for the hunter family chosen by the MCP capability router (`assignment.hunter_agent` from bounty_start_wave.data.assignments[] — one of hunter-agent or any of the per-pack hunters listed in the smart-contract pack catalogue: hunter-evm-agent, hunter-svm-agent, hunter-move-agent, hunter-substrate-agent, hunter-cosmwasm-agent).
+For each assignment, use Codex spawn_agent for the hunter family chosen by the MCP capability router (`assignment.hunter_agent` from wave-start result.data.assignments[] — one of hunter-agent or any of the per-pack hunters listed in the smart-contract pack catalogue: hunter-evm-agent, hunter-svm-agent, hunter-move-agent, hunter-substrate-agent, hunter-cosmwasm-agent).
 - agent_type: "worker"
 - message: include the compact run header below plus the full contract for `assignment.hunter_agent` from Codex Worker Role Contracts.
-- Header fields: Domain: [domain]; Wave: w[wave]; Agent: a[agent]; Surface: [surface_id]; Capability pack: [assignment.capability_pack]; Brief profile: [assignment.brief_profile]; Hunter agent: [assignment.hunter_agent]; Context budget: [assignment.context_budget]; Egress profile: [egress_profile]; Block internal hosts: [block_internal_hosts]; Handoff token: [only this agent's handoff_token from bounty_start_wave.data.assignments]; Checkpoint mode: [normal|paranoid|yolo].
+- Header fields: Domain: [domain]; Wave: w[wave]; Agent: a[agent]; Surface: [surface_id]; Capability pack: [assignment.capability_pack]; Brief profile: [assignment.brief_profile]; Hunter agent: [assignment.hunter_agent]; Context budget: [assignment.context_budget]; Egress profile: [egress_profile]; Block internal hosts: [block_internal_hosts]; Handoff token: [only this agent's handoff_token from wave-start result.data.assignments]; Checkpoint mode: [normal|paranoid|yolo].
 - First action inside the worker: call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }) and use .data.run_context.context_budget plus .data.technique_packs.selected when present.
 - For web hunters, call bounty_read_technique_pack(mode="full") only with target_domain/wave/agent/surface_id for relevant selected summaries, and bounty_log_technique_attempt for selections, skips, attempts, and outcomes.
 - Track the local mapping `host_agent_id -> w[wave]/a[agent]/surface_id`; Bob's `aN` value is authoritative even if Codex displays a different nickname.
@@ -180,16 +181,14 @@ Wave reconciliation:
 5. If status is `"merged"`, use returned `state`, `merge`, `findings`, and `readiness`.
 6. `bounty_apply_wave_merge` owns reconciliation-side state mutation.
 7. Use `merge.requeue_surface_ids` for the next wave (already excludes terminally-blocked surfaces); surface `unexpected_agents` in output only.
-8. If `merge.terminally_blocked_promoted` is non-empty, report the promoted surfaces and the blocker tuples to the operator before the next wave — these are classified blocked, not neglected. Do not include them in the next `bounty_start_wave` assignments; `bounty_start_wave` will hard-reject them. When the operator confirms the missing prerequisite material is now registered, call `bounty_clear_terminal_block({ target_domain, surface_id, reason })` (>= 20 char reason) before assigning the surface again.
+8. If `merge.terminally_blocked_promoted` is non-empty, report the promoted surfaces and the blocker tuples to the operator before the next wave — these are classified blocked, not neglected. Do not include them in the next wave assignments; wave start will hard-reject them. When the operator confirms the missing prerequisite material is now registered, call `bounty_clear_terminal_block({ target_domain, surface_id, reason })` (>= 20 char reason) before assigning the surface again.
 9. After merge, continue automatically to the next wave decision or CHAIN.
 
-Wave decisions use `bounty_wave_status({ target_domain }).data`:
-- `wave < 2` → run another wave.
-- `wave >= 2` and `has_high_or_critical` plus `coverage.coverage_pct >= 70` → CHAIN.
-- `wave >= 4` and `coverage.unexplored_high === 0` → CHAIN.
-- In deep mode, do not CHAIN while high-confidence unpromoted leads or promoted `lead_surface_ids` remain and `wave < 8`; assign promoted leads before ending exploration.
-- If live surfaces remain and `wave < 6` (or `< 8` in deep mode) → next wave.
-- On `HOLD`, run a targeted hunt wave with grader feedback, then re-run CHAIN before VERIFY.
+Wave decisions use `bounty_wave_status({ target_domain }).data` and `bounty_transition_phase({ target_domain, to_phase: "CHAIN" })`:
+- If `bounty_start_next_wave` starts a wave, launch hunters and obey the launch-turn barrier.
+- If it returns `no_assignable_candidates`, attempt `bounty_transition_phase({ target_domain, to_phase: "CHAIN" })`; MCP phase gates block pending waves, uncovered high-priority surfaces, open requeue coverage, terminal blockers, and deep promotable lead debt.
+- In deep mode, do not manually call `bounty_promote_surface_leads` to satisfy lead debt; call `bounty_start_next_wave`.
+- On `HOLD`, run a targeted manual hunt wave with `bounty_start_wave` using grader feedback, then re-run CHAIN before VERIFY.
 
 ## PHASE 4: CHAIN
 Call `bounty_transition_phase({ target_domain, to_phase: "CHAIN" })`.
@@ -293,7 +292,7 @@ Post-REPORT user intent stays flexible:
 - A post-report evidence hunter prompt must say `Mode: post-report evidence`, include `Egress profile: [egress_profile]` and require it on every `bounty_http_scan` call, omit wave/agent/handoff token fields, tell the hunter not to call `bounty_read_hunter_brief`, `bounty_record_finding`, or `bounty_write_wave_handoff`, and require this final marker: `BOB_HUNTER_DONE {"target_domain":"[domain]","mode":"evidence","surface_id":"F-N or evidence topic","summary":"short evidence result"}`.
 
 ## PHASE 8: EXPLORE
-On user request after REPORT, call `bounty_transition_phase({ target_domain, to_phase: "EXPLORE" })`, read `attack_surface.json` and `bounty_read_state_summary.data`, run the same wave system and launch barrier as HUNT, then transition to CHAIN and run CHAIN → VERIFY → GRADE → REPORT on all findings.
+On user request after REPORT, call `bounty_transition_phase({ target_domain, to_phase: "EXPLORE" })`, read `bounty_read_state_summary.data`, run the same MCP-owned wave system and launch barrier as HUNT, then transition to CHAIN and run CHAIN → VERIFY → GRADE → REPORT on all findings.
 
 Final reminder: agents own recon, hunt, chain, verify, evidence, grade, and report work; the root orchestrator coordinates MCP state and never performs ad-hoc target testing outside AUTH.
 
