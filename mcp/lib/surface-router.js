@@ -17,6 +17,8 @@ const {
 } = require("./validation.js");
 const {
   classifySurfaceCapability,
+  getCapabilityPack,
+  normalizeContextBudget,
 } = require("./capability-packs.js");
 
 const SURFACE_ROUTES_VERSION = 1;
@@ -61,6 +63,41 @@ function countRoutesByCapabilityPack(routes) {
   return counts;
 }
 
+function validateSurfaceRoute(route, index, filePath) {
+  if (route == null || typeof route !== "object" || Array.isArray(route)) {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] must be an object)`);
+  }
+  const surfaceId = assertNonEmptyString(route.surface_id, `routes[${index}].surface_id`);
+  const capabilityPack = assertNonEmptyString(route.capability_pack, `routes[${index}].capability_pack`);
+  const hunterAgent = assertNonEmptyString(route.hunter_agent, `routes[${index}].hunter_agent`);
+  const briefProfile = assertNonEmptyString(route.brief_profile, `routes[${index}].brief_profile`);
+  const pack = getCapabilityPack(capabilityPack);
+  if (!pack) {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] references unknown capability_pack: ${capabilityPack})`);
+  }
+  if (hunterAgent !== pack.hunter_agent) {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].hunter_agent ${hunterAgent} does not match pack ${capabilityPack})`);
+  }
+  if (briefProfile !== pack.brief_profile) {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].brief_profile ${briefProfile} does not match pack ${capabilityPack})`);
+  }
+  const capabilityPackVersion = route.capability_pack_version == null
+    ? pack.capability_pack_version
+    : route.capability_pack_version;
+  if (!Number.isInteger(capabilityPackVersion) || capabilityPackVersion <= 0) {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].capability_pack_version must be a positive integer)`);
+  }
+  return {
+    ...route,
+    surface_id: surfaceId,
+    capability_pack: capabilityPack,
+    capability_pack_version: capabilityPackVersion,
+    hunter_agent: hunterAgent,
+    brief_profile: briefProfile,
+    context_budget: normalizeContextBudget(route.context_budget, pack),
+  };
+}
+
 function routeSurfacesInternal(domain, { attackSurfaceInfo = null } = {}) {
   const targetDomain = assertNonEmptyString(domain, "target_domain");
   const document = buildSurfaceRoutesDocument(targetDomain, { attackSurfaceInfo });
@@ -95,7 +132,16 @@ function readSurfaceRoutesStrict(domain) {
   ) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (expected versioned routes document)`);
   }
-  return { path: filePath, document: parsed };
+  const seenSurfaceIds = new Set();
+  const routes = parsed.routes.map((route, index) => {
+    const normalized = validateSurfaceRoute(route, index, filePath);
+    if (seenSurfaceIds.has(normalized.surface_id)) {
+      throw new Error(`Malformed surface routes JSON: ${filePath} (duplicate surface_id: ${normalized.surface_id})`);
+    }
+    seenSurfaceIds.add(normalized.surface_id);
+    return normalized;
+  });
+  return { path: filePath, document: { ...parsed, routes } };
 }
 
 function routeSurfaces(args) {
@@ -122,4 +168,5 @@ module.exports = {
   readSurfaceRoutesStrict,
   routeSurfaces,
   routeSurfacesInternal,
+  validateSurfaceRoute,
 };
