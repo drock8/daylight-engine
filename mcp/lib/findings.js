@@ -1202,7 +1202,7 @@ function writeVerificationRound(args) {
   const round = assertEnumValue(args.round, VERIFICATION_ROUND_VALUES, "round");
   const notes = normalizeOptionalText(args.notes, "notes");
   if (!Array.isArray(args.results)) {
-    throw new Error("results must be an array");
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "results must be an array");
   }
 
   const schemaVersion = verificationLib().selectVerificationWriteSchemaVersion(domain);
@@ -1222,7 +1222,7 @@ function writeVerificationRound(args) {
   let results = args.results.map((result) => {
     const normalizedResult = normalizeVerificationResult(result, findingIdSet, { schemaVersion });
     if (seenIds.has(normalizedResult.finding_id)) {
-      throw new Error(`Duplicate finding_id in results: ${normalizedResult.finding_id}`);
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `Duplicate finding_id in results: ${normalizedResult.finding_id}`);
     }
     seenIds.add(normalizedResult.finding_id);
     return normalizedResult;
@@ -1251,7 +1251,10 @@ function writeVerificationRound(args) {
     verificationLib().assertExactFindingCoverage(results, v2Snapshot.finding_ids, round);
     results = sortVerificationResultsByFindingIds(results, v2Snapshot.finding_ids);
     if (round === "final") {
-      const adjudicationPlanHash = assertNonEmptyString(args.adjudication_plan_hash, "adjudication_plan_hash");
+      const adjudicationPlanHash = normalizeOptionalText(args.adjudication_plan_hash, "adjudication_plan_hash");
+      if (!adjudicationPlanHash) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "adjudication_plan_hash must be a non-empty string");
+      }
       v2Adjudication = verificationLib().requireCurrentAdjudication(domain, {
         adjudicationPlanHash,
         state: v2State,
@@ -1519,19 +1522,25 @@ function writeGradeVerdict(args) {
   const totalScore = assertInteger(args.total_score, "total_score", { min: 0 });
   const feedback = normalizeOptionalText(args.feedback, "feedback");
   if (!Array.isArray(args.findings)) {
-    throw new Error("findings must be an array");
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "findings must be an array");
   }
 
   const findingIdSet = new Set(readFindingsFromJsonl(domain).map((finding) => finding.id));
-  const seenIds = new Set();
-  const findings = args.findings.map((finding) => {
-    const normalizedFinding = normalizeGradeFinding(finding, findingIdSet);
-    if (seenIds.has(normalizedFinding.finding_id)) {
-      throw new Error(`Duplicate finding_id in findings: ${normalizedFinding.finding_id}`);
-    }
-    seenIds.add(normalizedFinding.finding_id);
-    return normalizedFinding;
-  });
+  let findings;
+  try {
+    const seenIds = new Set();
+    findings = args.findings.map((finding) => {
+      const normalizedFinding = normalizeGradeFinding(finding, findingIdSet);
+      if (seenIds.has(normalizedFinding.finding_id)) {
+        throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `Duplicate finding_id in findings: ${normalizedFinding.finding_id}`);
+      }
+      seenIds.add(normalizedFinding.finding_id);
+      return normalizedFinding;
+    });
+  } catch (error) {
+    if (error instanceof ToolError) throw error;
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, error.message || String(error));
+  }
 
   const document = {
     version: 1,
@@ -1541,9 +1550,14 @@ function writeGradeVerdict(args) {
     findings,
     feedback,
   };
-  enforceGradeVerdictConsistency(document, {
-    finalReportableSeveritySet: requireFinalReportableSeveritySet(domain, findingIdSet),
-  });
+  try {
+    enforceGradeVerdictConsistency(document, {
+      finalReportableSeveritySet: requireFinalReportableSeveritySet(domain, findingIdSet),
+    });
+  } catch (error) {
+    if (error instanceof ToolError) throw error;
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, error.message || String(error));
+  }
   verificationLib().requireVerificationCompleteForGrade(domain, { findingIdSet });
 
   const paths = gradeArtifactPaths(domain);

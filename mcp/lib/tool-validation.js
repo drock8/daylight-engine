@@ -118,7 +118,7 @@ function validateObject(value, schema, pathParts) {
     : false;
 
   for (const key of required) {
-    if (!hasOwn(value, key) || value[key] == null) {
+    if (!hasOwn(value, key) || value[key] === undefined) {
       throw new Error(`${formatPath([...pathParts, key])} is required`);
     }
   }

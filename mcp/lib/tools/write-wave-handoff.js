@@ -119,8 +119,8 @@ module.exports = Object.freeze({
           "type": "object",
           "required": ["condition", "attempt_summary", "outcome"],
           "properties": {
-            "condition": { "type": "string", "minLength": 4, "maxLength": 120 },
-            "attempt_summary": { "type": "string", "minLength": 30, "maxLength": 500 },
+            "condition": { "type": "string", "minLength": 4, "maxLength": 120, "x-autoTruncate": true },
+            "attempt_summary": { "type": "string", "minLength": 30, "maxLength": 500, "x-autoTruncate": true },
             "outcome": {
               "type": "string",
               "enum": ["no_finding", "partial_evidence", "finding_recorded", "blocked"]

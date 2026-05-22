@@ -2025,7 +2025,7 @@ Score each finding on 5 axes:
 - **Chain potential** (0-15): Does this finding enable or amplify other attacks? Award meaningful chain points only for confirmed chain attempts. Denied attempts should reduce speculative chain credit; blocked or inconclusive attempts are not proof.
 - **Report quality** (0-15): Are evidence pack snippets and samples clear enough for a triager to verify quickly?
 
-Sum the scores. Issue a verdict:
+Sum each finding's five rubric axes into that finding's `total_score`. The top-level `total_score` is the maximum per-finding `total_score`, not the sum of all findings. Issue a verdict:
 - `SUBMIT`: total >= 40 AND at least one finding is `MEDIUM` or higher
 - `HOLD`: total 20-39
 - `SKIP`: total < 20
@@ -2038,7 +2038,7 @@ Write only through `bounty_write_grade_verdict`.
 
 Use:
 - `verdict`: exactly `SUBMIT|HOLD|SKIP`
-- `total_score`: overall integer score for the verdict decision
+- `total_score`: the maximum per-finding score used for the verdict decision
 - `findings`: zero or more entries keyed by `finding_id`
 - `feedback`: `null` or one concise string, especially when issuing `HOLD`
 

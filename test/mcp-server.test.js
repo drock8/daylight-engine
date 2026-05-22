@@ -1428,6 +1428,40 @@ test("OSS native-code surfaces can select and log a compatible technique pack", 
   });
 });
 
+test("bounty_log_technique_attempt auto-truncates overlong evidence and outcome through the tool path", async () => {
+  await withTempHome(async () => {
+    const domain = "repo-technique-truncate.example.com";
+    seedSessionState(domain, { phase: "HUNT" });
+    seedAttackSurfaces(domain, [{
+      id: "surface-a",
+      hosts: [`https://${domain}`],
+      priority: "HIGH",
+    }]);
+    JSON.parse(startWave({
+      target_domain: domain,
+      wave_number: 1,
+      assignments: [{ agent: "a1", surface_id: "surface-a" }],
+    }));
+
+    const result = await executeTool("bounty_log_technique_attempt", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      pack_id: "generic-rest-api",
+      status: "attempted",
+      outcome: "o".repeat(250),
+      evidence: "e".repeat(2500),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.data.truncated.outcome, true);
+    assert.equal(result.data.truncated.evidence, true);
+    assert.equal(result.data.record.outcome.length, 200);
+    assert.equal(result.data.record.evidence.length, 2000);
+  });
+});
+
 test("MCP tool registry validation rejects incomplete or inconsistent entries", () => {
   const completeModule = {
     name: "bounty_test_tool",
@@ -5763,6 +5797,34 @@ test("bounty_write_wave_handoff auto-truncates overlong chain_notes through tool
     const payload = JSON.parse(fs.readFileSync(result.data.written_json, "utf8"));
     assert.equal(payload.chain_notes.length, 1);
     assert.equal(payload.chain_notes[0].length, 300);
+  });
+});
+
+test("bounty_write_wave_handoff auto-truncates overlong bypass attempts through tool validation", async () => {
+  await withTempHome(async () => {
+    const domain = "example.com";
+    seedAssignments(domain, 1, [{ agent: "a1", surface_id: "surface-a" }]);
+
+    const result = await executeTool("bounty_write_wave_handoff", {
+      target_domain: domain,
+      wave: "w1",
+      agent: "a1",
+      surface_id: "surface-a",
+      surface_status: "complete",
+      summary: "Freeform handoff summary.",
+      bypass_attempts: [{
+        condition: "c".repeat(160),
+        attempt_summary: "a".repeat(700),
+        outcome: "no_finding",
+      }],
+      content: "# Handoff\n",
+    });
+    assert.equal(result.ok, true);
+
+    const payload = JSON.parse(fs.readFileSync(result.data.written_json, "utf8"));
+    assert.equal(payload.bypass_attempts.length, 1);
+    assert.equal(payload.bypass_attempts[0].condition.length, 120);
+    assert.equal(payload.bypass_attempts[0].attempt_summary.length, 500);
   });
 });
 
@@ -10959,6 +11021,28 @@ test("verification v2 manifest treats no-reportable final evidence as skipped wi
   });
 });
 
+test("bounty_write_verification_round reports missing final v2 adjudication hash as invalid arguments", async () => {
+  await withTempHome(async () => {
+    const domain = "missing-final-adjudication-hash.example.com";
+    enterVerifyV2(domain);
+    const context = JSON.parse(readVerificationContext({ target_domain: domain }));
+
+    const result = await executeTool("bounty_write_verification_round", {
+      target_domain: domain,
+      round: "final",
+      notes: null,
+      verification_attempt_id: context.current_attempt_id,
+      verification_snapshot_hash: context.snapshot_hash,
+      round_profile: "final",
+      results: [v2VerificationResult("F-1")],
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "INVALID_ARGUMENTS");
+    assert.match(result.error.message, /adjudication_plan_hash must be a non-empty string/);
+  });
+});
+
 test("verification v2 blocks grading when adjudication goes stale after final evidence", () => {
   withTempHome(() => {
     const domain = "stale-after-final.example.com";
@@ -11946,6 +12030,17 @@ test("bounty_write_grade_verdict enforces score totals, thresholds, and final re
     assert.throws(() => writeGradeVerdict({
       target_domain: domain,
       verdict: "SUBMIT",
+      total_score: 46,
+      findings: [{
+        ...gradeFinding,
+        total_score: 46,
+      }],
+      feedback: null,
+    }), /finding F-1 total_score must equal the sum of rubric scores/);
+
+    assert.throws(() => writeGradeVerdict({
+      target_domain: domain,
+      verdict: "SUBMIT",
       total_score: 44,
       findings: [gradeFinding],
       feedback: null,
@@ -11958,6 +12053,57 @@ test("bounty_write_grade_verdict enforces score totals, thresholds, and final re
       findings: [gradeFinding],
       feedback: null,
     }), /expected SUBMIT/);
+  });
+});
+
+test("bounty_write_grade_verdict reports score-shape mistakes as invalid arguments", async () => {
+  await withTempHome(async () => {
+    const domain = "grade-invalid-arguments.example.com";
+    seedFinding(domain, { severity: "high" });
+    seedVerificationPipeline(domain, [{
+      finding_id: "F-1",
+      disposition: "confirmed",
+      severity: "high",
+      reportable: true,
+      reasoning: "Confirmed.",
+    }]);
+    JSON.parse(writeEvidencePacks({ target_domain: domain, packs: [evidencePack("F-1")] }));
+
+    const gradeFinding = {
+      finding_id: "F-1",
+      impact: 20,
+      proof_quality: 10,
+      severity_accuracy: 5,
+      chain_potential: 5,
+      report_quality: 5,
+      total_score: 45,
+      feedback: null,
+    };
+
+    const wrongTopLevelScore = await executeTool("bounty_write_grade_verdict", {
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 44,
+      findings: [gradeFinding],
+      feedback: null,
+    });
+    assert.equal(wrongTopLevelScore.ok, false);
+    assert.equal(wrongTopLevelScore.error.code, "INVALID_ARGUMENTS");
+    assert.match(wrongTopLevelScore.error.message, /total_score must equal the maximum per-finding score/);
+
+    const wrongFindingScore = await executeTool("bounty_write_grade_verdict", {
+      target_domain: domain,
+      verdict: "SUBMIT",
+      total_score: 46,
+      findings: [{
+        ...gradeFinding,
+        total_score: 46,
+      }],
+      feedback: null,
+    });
+    assert.equal(wrongFindingScore.ok, false);
+    assert.equal(wrongFindingScore.error.code, "INVALID_ARGUMENTS");
+    assert.match(wrongFindingScore.error.message, /finding F-1 total_score must equal the sum of rubric scores/);
   });
 });
 
