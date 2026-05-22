@@ -507,6 +507,72 @@ function issue(code, severity, message, evidence = {}) {
   return { code, severity, message, evidence };
 }
 
+function reportCompletionTimestampMs(events, artifacts) {
+  const eventTimestamps = events
+    .filter((event) => event.type === "report_written")
+    .map((event) => timestampMs(event.ts))
+    .filter((value) => value > 0);
+  const artifactTimestamp = timestampMs(artifacts && artifacts.report && artifacts.report.mtime);
+  const candidates = artifactTimestamp > 0 ? [artifactTimestamp, ...eventTimestamps] : eventTimestamps;
+  return candidates.length > 0 ? Math.min(...candidates) : 0;
+}
+
+function classifyPostReportHunterStop(event) {
+  const evidenceModeAllowed = (
+    event.source === "hunter-evidence-stop" &&
+    event.wave_number == null &&
+    event.agent == null &&
+    event.status === "allowed" &&
+    typeof event.surface_id === "string" &&
+    event.surface_id.length > 0
+  );
+  if (evidenceModeAllowed) {
+    return {
+      classification: "evidence_mode_allowed",
+      action: "allowed",
+    };
+  }
+  if (event.wave_number != null || event.agent != null) {
+    return {
+      classification: "wave_hunter_after_report",
+      action: "needs_attention",
+    };
+  }
+  return {
+    classification: "unproven_post_report_hunter_stop",
+    action: "needs_attention",
+  };
+}
+
+function summarizeLateHunterTelemetry(events, artifacts, limit) {
+  const reportMs = reportCompletionTimestampMs(events, artifacts);
+  if (reportMs <= 0) {
+    return {
+      report_reference_ts: null,
+      total_post_report: 0,
+      allowed_evidence_mode: 0,
+      needs_attention: 0,
+      events: [],
+    };
+  }
+  const classified = events
+    .filter((event) => event.type === "hunter_stopped" && timestampMs(event.ts) > reportMs)
+    .map((event) => {
+      const classification = classifyPostReportHunterStop(event);
+      return {
+        ...compactEvent(event),
+        ...classification,
+      };
+    });
+  return {
+    report_reference_ts: new Date(reportMs).toISOString(),
+    total_post_report: classified.length,
+    allowed_evidence_mode: classified.filter((event) => event.classification === "evidence_mode_allowed").length,
+    needs_attention: classified.filter((event) => event.action === "needs_attention").length,
+    events: classified.slice(-limit),
+  };
+}
+
 function analyzeSession(targetDomain, {
   cutoffMs = null,
   limit = DEFAULT_LIMIT,
@@ -607,6 +673,20 @@ function analyzeSession(targetDomain, {
         canonical_report_path: artifacts.report.path,
       },
     ));
+  }
+
+  const lateHunterTelemetry = summarizeLateHunterTelemetry(allEvents, artifacts, limit);
+  if (lateHunterTelemetry.needs_attention > 0) {
+    const latestAttention = [...lateHunterTelemetry.events]
+      .reverse()
+      .find((event) => event.action === "needs_attention");
+    issues.push(issue("post_report_hunter_stop", "needs_attention", "Hunter stop telemetry was recorded after report completion outside the explicit post-report evidence shape.", {
+      report_reference_ts: lateHunterTelemetry.report_reference_ts,
+      total_post_report: lateHunterTelemetry.total_post_report,
+      allowed_evidence_mode: lateHunterTelemetry.allowed_evidence_mode,
+      needs_attention: lateHunterTelemetry.needs_attention,
+      latest_event: latestAttention || null,
+    }));
   }
 
   const toolCalls = toolHealth.totals.calls;
@@ -776,6 +856,7 @@ function analyzeSession(targetDomain, {
     },
     grade_verdict: artifacts.grade.verdict,
     report_present: artifacts.report.present,
+    late_hunter_telemetry: lateHunterTelemetry,
     latest_event: compactEvent(latest),
     latest_activity_ts: latestActivityTs,
     health: {
@@ -894,6 +975,7 @@ function actionForBottleneck(bottleneck) {
     missing_grade: "Write a valid grade verdict before report completion.",
     missing_report: "Write report.md or move the session out of REPORT if report writing is still pending.",
     report_pending_canonical_path: "Write or move the consolidated report to the canonical session report.md path, then call bounty_report_written.",
+    post_report_hunter_stop: "Inspect the post-report hunter stop source; allow only explicit evidence-mode stops and treat wave hunter stops after report as runtime noise to fix.",
     stale_pending_wave: "Re-enter resume flow for the stale pending wave and reconcile handoffs.",
   };
   return {

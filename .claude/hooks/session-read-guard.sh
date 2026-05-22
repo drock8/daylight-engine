@@ -43,6 +43,10 @@ BLOCKED_EXACT = {
     "surface-routes.json",
     "static-artifacts.jsonl",
     "static-scan-results.jsonl",
+    "mobile-artifacts.jsonl",
+    "mobile-static-scan-results.jsonl",
+    "mobile-device-profiles.jsonl",
+    "mobile-device-leases.jsonl",
     "pipeline-events.jsonl",
     "report.md",
     "chains.md",
@@ -58,6 +62,11 @@ ALLOWED_EXACT = {
 
 BLOCKED_DIRS = {
     "static-imports",
+    "mobile-apps",
+    "mobile-traces",
+    "screenshots",
+    "device-logs",
+    "app-containers",
 }
 
 BLOCKED_PATTERNS = [

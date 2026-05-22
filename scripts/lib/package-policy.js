@@ -91,6 +91,9 @@ const DISALLOWED_PACKED_FILE_PATTERNS = Object.freeze([
   /(^|\/)\.env(?:\.|$)/,
   /(^|\/)[^/]+\.local\.[^/]+$/,
   /(^|\/)[^/]+\.(?:bak|old|orig|tmp)$/,
+  /(^|\/)[^/]+\.(?:apk|aab|xapk|ipa|app|pcap|pcapng|sqlite|sqlite3|db)$/i,
+  /(^|\/)(?:mobile-apps|mobile-traces|screenshots|device-logs|app-containers)(?:\/|$)/,
+  /(^|\/)(?:mobile-artifacts|mobile-static-scan-results|mobile-device-profiles|mobile-device-leases)\.jsonl$/,
   /~$/,
 ]);
 
@@ -128,6 +131,10 @@ function isPackableBobResource(file) {
 
 function isPackedTextFile(file) {
   return PACKED_TEXT_EXTENSIONS.has(path.extname(file));
+}
+
+function isDisallowedPackedFile(file) {
+  return DISALLOWED_PACKED_FILE_PATTERNS.some((pattern) => pattern.test(file));
 }
 
 function isExcludedCanonicalPackageFile(file) {
@@ -173,7 +180,10 @@ function expectedCanonicalFiles(root = DEFAULT_ROOT) {
     ...sourceTreeFiles(root, "prompts"),
     ...sourceTreeFiles(root, "scripts").filter(isPackableScript),
     ...sourceTreeFiles(root, "testing/policy-replay"),
-  ])).filter((file) => !isExcludedCanonicalPackageFile(file)).sort();
+  ])).filter((file) =>
+    !isExcludedCanonicalPackageFile(file) &&
+    !isDisallowedPackedFile(file)
+  ).sort();
 }
 
 module.exports = {
@@ -186,6 +196,7 @@ module.exports = {
   STALE_HOOK_SCRIPT_NAMES,
   WRAPPER_PACKAGE_SPECS,
   expectedCanonicalFiles,
+  isDisallowedPackedFile,
   isInternalRefactorScratch,
   isInternalRefactorDoc,
   isExcludedCanonicalPackageFile,

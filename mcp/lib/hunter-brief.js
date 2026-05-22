@@ -42,6 +42,12 @@ const {
   summarizeStaticScanHints,
 } = require("./static-artifacts.js");
 const {
+  summarizeMobileArtifactsForSurface,
+} = require("./mobile-artifacts.js");
+const {
+  summarizeMobileDeviceProfilesForBrief,
+} = require("./mobile-device-profiles.js");
+const {
   summarizeSchemaSliceForSurface,
 } = require("./schema-contracts-store.js");
 const {
@@ -104,6 +110,11 @@ const HUNTER_BRIEF_SURFACE_SCALAR_LIMITS = Object.freeze({
   surface_type: 80,
   chain_family: 40,
   chain_id: 20,
+  platform: 20,
+  package_name: 160,
+  bundle_id: 160,
+  app_id: 160,
+  app_version: 80,
   // Per-chain harness paths. Each smart-contract hunter prompt expects a
   // chain-specific scalar — whitelisting them all keeps slim surfaces lossy
   // only on cap, not on field name. Adding a new chain pack is one entry.
@@ -166,9 +177,18 @@ const SMART_CONTRACT_BRIEF_SLICE_REGISTRY = Object.freeze([
   briefSliceEntry("surface_graph_slice", 8192, (context) => context.surfaceGraphSlice),
 ]);
 
+const MOBILE_BRIEF_SLICE_REGISTRY = Object.freeze([
+  briefSliceEntry("mobile_artifacts", 8192, (context) => context.mobileArtifacts),
+  briefSliceEntry("mobile_device_profiles", 4096, (context) => context.mobileDeviceProfiles),
+  briefSliceEntry("backend_leads", 4096, (context) => context.backendLeads),
+  briefSliceEntry("priors_slice", 8192, (context) => context.priorsSlice),
+  briefSliceEntry("surface_graph_slice", 8192, (context) => context.surfaceGraphSlice),
+]);
+
 const HUNTER_BRIEF_SLICE_REGISTRY = Object.freeze({
   web: WEB_BRIEF_SLICE_REGISTRY,
   smart_contract: SMART_CONTRACT_BRIEF_SLICE_REGISTRY,
+  mobile: MOBILE_BRIEF_SLICE_REGISTRY,
 });
 
 function briefSliceRegistryForProfile(profile) {
@@ -177,6 +197,9 @@ function briefSliceRegistryForProfile(profile) {
   }
   if (typeof profile === "string" && profile.startsWith("smart_contract_")) {
     return SMART_CONTRACT_BRIEF_SLICE_REGISTRY;
+  }
+  if (typeof profile === "string" && profile.startsWith("mobile_")) {
+    return MOBILE_BRIEF_SLICE_REGISTRY;
   }
   return null;
 }
@@ -324,8 +347,8 @@ function readHunterBrief(args) {
   // Ranking summarizes traffic + public intel per surface, neither of which
   // a smart-contract hunter consumes. Skip it for non-web profiles to avoid
   // paying that I/O cost for a result we'd just drop.
-  const isSmartContractBrief = routeMetadata.brief_profile !== "web";
-  if (!isSmartContractBrief) {
+  const isNonWebBrief = routeMetadata.brief_profile !== "web";
+  if (!isNonWebBrief) {
     try {
       const ranked = rankAttackSurfaces(domain);
       if (ranked && Array.isArray(ranked.surfaces)) {
@@ -413,6 +436,9 @@ function buildBriefExtrasForProfile(profile, { domain, surface, assignment, rout
   }
   if (registry === SMART_CONTRACT_BRIEF_SLICE_REGISTRY) {
     return buildSmartContractBriefExtras(domain, surface, assignment);
+  }
+  if (registry === MOBILE_BRIEF_SLICE_REGISTRY) {
+    return buildMobileBriefExtras(domain, surface, assignment, routeMetadata);
   }
   throw new Error(`Unsupported brief profile: ${profile}`);
 }
@@ -536,6 +562,33 @@ function buildSmartContractBriefExtras(domain, surfaceObj, assignment) {
     surfaceGraphSlice: summarizeSurfaceGraphForSurface(domain, surfaceObj),
   };
   return buildBriefExtrasFromRegistry(SMART_CONTRACT_BRIEF_SLICE_REGISTRY, smartContractBriefContext);
+}
+
+function platformFromBriefProfile(profile) {
+  if (profile === "mobile_android") return "android";
+  if (profile === "mobile_ios") return "ios";
+  return null;
+}
+
+function buildMobileBriefExtras(domain, surfaceObj, assignment, routeMetadata) {
+  const platform = platformFromBriefProfile(routeMetadata.brief_profile) || surfaceObj.platform || null;
+  const mobileArtifacts = summarizeMobileArtifactsForSurface(domain, { surface: surfaceObj });
+  const mobileDeviceProfiles = summarizeMobileDeviceProfilesForBrief(domain, platform);
+  const backendLeads = {
+    source: "mobile_static_scan",
+    note: "Mobile-derived backend endpoints must remain web/API findings unless independently validated through web/API evidence.",
+    leads: mobileArtifacts.static_scan_hints
+      .flatMap((scan) => Array.isArray(scan.backend_leads) ? scan.backend_leads : [])
+      .slice(0, 15),
+  };
+  const mobileBriefContext = {
+    mobileArtifacts,
+    mobileDeviceProfiles,
+    backendLeads,
+    priorsSlice: summarizePriorFindingsForSurface(domain, surfaceObj),
+    surfaceGraphSlice: summarizeSurfaceGraphForSurface(domain, surfaceObj),
+  };
+  return buildBriefExtrasFromRegistry(MOBILE_BRIEF_SLICE_REGISTRY, mobileBriefContext);
 }
 
 module.exports = {

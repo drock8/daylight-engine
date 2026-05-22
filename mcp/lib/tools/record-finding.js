@@ -1,6 +1,11 @@
 "use strict";
 
-const { recordFinding } = require("../finding-store.js");
+const {
+  FINDING_TEXT_LIMITS,
+  recordFinding,
+} = require("../finding-store.js");
+
+const TEXT_FIELD_WARNING = "Do not include raw request/response bodies, cookies, tokens, Authorization headers, passwords, API keys, full PII values, or huge dumps.";
 
 module.exports = Object.freeze({
   name: "bounty_record_finding",
@@ -13,7 +18,9 @@ module.exports = Object.freeze({
         "type": "string"
       },
       "title": {
-        "type": "string"
+        "type": "string",
+        "maxLength": FINDING_TEXT_LIMITS.title,
+        "description": "Short bounded finding title."
       },
       "severity": {
         "type": "string",
@@ -26,25 +33,39 @@ module.exports = Object.freeze({
         ]
       },
       "cwe": {
-        "type": "string"
+        "type": "string",
+        "maxLength": FINDING_TEXT_LIMITS.cwe,
+        "description": "Optional CWE identifier or short class label."
       },
       "endpoint": {
-        "type": "string"
+        "type": "string",
+        "maxLength": FINDING_TEXT_LIMITS.endpoint,
+        "description": `Affected method/path/route or contract/function locator. ${TEXT_FIELD_WARNING}`
       },
       "description": {
-        "type": "string"
+        "type": "string",
+        "maxLength": FINDING_TEXT_LIMITS.description,
+        "description": `Bounded, redacted vulnerability summary. Cite MCP artifact/request IDs where useful. ${TEXT_FIELD_WARNING}`
       },
       "proof_of_concept": {
-        "type": "string"
+        "type": "string",
+        "maxLength": FINDING_TEXT_LIMITS.proof_of_concept,
+        "description": `Bounded, redacted reproduction summary with exact method/path, parameters, auth profile, and MCP artifact/request references. ${TEXT_FIELD_WARNING}`
       },
       "response_evidence": {
-        "type": "string"
+        "type": "string",
+        "maxLength": FINDING_TEXT_LIMITS.response_evidence,
+        "description": `Short redacted observation summary proving the result, with artifact/request references instead of copied raw bodies. ${TEXT_FIELD_WARNING}`
       },
       "impact": {
-        "type": "string"
+        "type": "string",
+        "maxLength": FINDING_TEXT_LIMITS.impact,
+        "description": `Bounded, redacted impact statement. ${TEXT_FIELD_WARNING}`
       },
       "auth_profile": {
-        "type": "string"
+        "type": "string",
+        "maxLength": FINDING_TEXT_LIMITS.auth_profile,
+        "description": "Optional registered auth profile handle, not credentials."
       },
       "surface_id": {
         "type": "string"
@@ -116,6 +137,53 @@ module.exports = Object.freeze({
           }
         },
         "required": ["chain_id", "contract_address", "harness_path", "match_test"]
+      },
+      "mobile_evidence": {
+        "type": "object",
+        "description": "Structured static/dynamic replay handle for mobile_app findings. Required when the assigned surface is mobile_app; rejected otherwise so verifier/evidence agents do not parse prose PoCs.",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "enum": ["android", "ios"]
+          },
+          "evidence_type": {
+            "type": "string",
+            "enum": ["static_analysis", "dynamic_replay", "hybrid"]
+          },
+          "mobile_artifact_id": {
+            "type": "string",
+            "pattern": "^MA-[1-9][0-9]*$"
+          },
+          "artifact_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "app_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "app_version": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "static_scan_id": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "analyzer_version": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "component": { "type": "string", "minLength": 1, "maxLength": 240 },
+          "risk_class": {
+            "type": "string",
+            "enum": ["exported_component", "deeplink", "permission", "network_config", "hardcoded_endpoint", "secret_hint", "other"]
+          },
+          "reproduction_limit": {
+            "type": "string",
+            "enum": ["static_only", "requires_device", "requires_backend_validation"]
+          },
+          "device_profile_class": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "trace_artifact_ids": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "type": "string", "pattern": "^MA-[1-9][0-9]*$" }
+          },
+          "action_sequence": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+          }
+        },
+        "required": ["platform", "evidence_type", "mobile_artifact_id", "artifact_sha256", "reproduction_limit"]
       }
     },
     "required": [

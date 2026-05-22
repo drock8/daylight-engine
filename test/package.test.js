@@ -12,6 +12,7 @@ const {
   REQUIRED_SUPPORT_SURFACES,
   STALE_HOOK_SCRIPT_NAMES,
   expectedCanonicalFiles,
+  isDisallowedPackedFile,
   isExcludedCanonicalPackageFile,
   isInternalRefactorDoc,
   isInternalRefactorScratch,
@@ -218,15 +219,52 @@ test("canonical package excludes internal refactor docs and scratch topology", (
   }
 });
 
+test("package policy denies mobile binaries, traces, device logs, and mobile JSONL stores", () => {
+  for (const denied of [
+    "mcp/mobile-apps/target.apk",
+    "mcp/mobile-apps/target.aab",
+    "mcp/mobile-apps/target.xapk",
+    "mcp/mobile-apps/target.ipa",
+    "mcp/mobile-apps/Target.app",
+    "mcp/mobile-traces/session.pcap",
+    "mcp/mobile-traces/session.pcapng",
+    "mcp/screenshots/login.png",
+    "mcp/device-logs/logcat.txt",
+    "mcp/app-containers/app.sqlite",
+    "mcp/app-containers/app.sqlite3",
+    "mcp/app-containers/app.db",
+    "mcp/mobile-artifacts.jsonl",
+    "mcp/mobile-static-scan-results.jsonl",
+    "mcp/mobile-device-profiles.jsonl",
+    "mcp/mobile-device-leases.jsonl",
+  ]) {
+    assert.equal(isDisallowedPackedFile(denied), true, `${denied} should be denied`);
+  }
+});
+
 test("package policy excludes denied files even if they exist in the source tree", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bob-package-policy-"));
   try {
     fs.mkdirSync(path.join(root, "docs"), { recursive: true });
     fs.mkdirSync(path.join(root, ".claude", "hooks"), { recursive: true });
+    fs.mkdirSync(path.join(root, "mcp", "mobile-apps"), { recursive: true });
+    fs.mkdirSync(path.join(root, "mcp", "mobile-traces"), { recursive: true });
+    fs.mkdirSync(path.join(root, "mcp", "screenshots"), { recursive: true });
+    fs.mkdirSync(path.join(root, "mcp", "device-logs"), { recursive: true });
+    fs.mkdirSync(path.join(root, "mcp", "app-containers"), { recursive: true });
     fs.mkdirSync(path.join(root, "scripts", "replay-prompts"), { recursive: true });
     fs.writeFileSync(path.join(root, ".claude", "hooks", "scope-guard.sh"), "stale\n");
     fs.writeFileSync(path.join(root, ".claude", "hooks", "scope-guard-mcp.sh"), "stale\n");
     fs.writeFileSync(path.join(root, "docs", "hacker-bob-offline-guide.pdf"), "stale\n");
+    fs.writeFileSync(path.join(root, "mcp", "mobile-apps", "target.apk"), "binary\n");
+    fs.writeFileSync(path.join(root, "mcp", "mobile-traces", "session.pcapng"), "trace\n");
+    fs.writeFileSync(path.join(root, "mcp", "screenshots", "login.png"), "image\n");
+    fs.writeFileSync(path.join(root, "mcp", "device-logs", "logcat.txt"), "log\n");
+    fs.writeFileSync(path.join(root, "mcp", "app-containers", "app.sqlite"), "db\n");
+    fs.writeFileSync(path.join(root, "mcp", "mobile-artifacts.jsonl"), "{}\n");
+    fs.writeFileSync(path.join(root, "mcp", "mobile-static-scan-results.jsonl"), "{}\n");
+    fs.writeFileSync(path.join(root, "mcp", "mobile-device-profiles.jsonl"), "{}\n");
+    fs.writeFileSync(path.join(root, "mcp", "mobile-device-leases.jsonl"), "{}\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-refusal.js"), "stale\n");
     fs.writeFileSync(path.join(root, "scripts", "replay-prompts", "00-baseline.md"), "stale\n");
     fs.writeFileSync(path.join(root, "scripts", "keep.js"), "keep\n");
@@ -235,6 +273,19 @@ test("package policy excludes denied files even if they exist in the source tree
     assert.ok(expectedFiles.includes("scripts/keep.js"));
     for (const excluded of EXCLUDED_CANONICAL_PACKAGE_FILES) {
       assert.ok(!expectedFiles.includes(excluded), `${excluded} should not be expected`);
+    }
+    for (const denied of [
+      "mcp/mobile-apps/target.apk",
+      "mcp/mobile-traces/session.pcapng",
+      "mcp/screenshots/login.png",
+      "mcp/device-logs/logcat.txt",
+      "mcp/app-containers/app.sqlite",
+      "mcp/mobile-artifacts.jsonl",
+      "mcp/mobile-static-scan-results.jsonl",
+      "mcp/mobile-device-profiles.jsonl",
+      "mcp/mobile-device-leases.jsonl",
+    ]) {
+      assert.ok(!expectedFiles.includes(denied), `${denied} should not be expected`);
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

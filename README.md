@@ -243,6 +243,7 @@ Detailed guides:
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Adapters](docs/ADAPTERS.md)
 - [Package surfaces](docs/PACKAGE_SURFACES.md)
+- [Mobile capability](docs/MOBILE_CAPABILITY.md)
 - [Roadmap](docs/ROADMAP.md)
 
 ## Data And Security Model

@@ -20,6 +20,7 @@ const {
 const {
   attackSurfacePath,
   pipelineEventsJsonlPath,
+  reportMarkdownPath,
   statePath,
   waveAssignmentsPath,
 } = require("../mcp/lib/paths.js");
@@ -276,6 +277,72 @@ test("session artifact analytics preserves artifact summary shape and value sema
     assert.equal(summary.report.present, false);
     assert.equal(summary.latest_artifact_ts, surfaceMtime.toISOString());
     assert.deepEqual(summary.artifact_errors, []);
+  });
+});
+
+test("pipeline analytics classifies post-report hunter stop telemetry without rewriting chronology", () => {
+  withTempHome(() => {
+    const domain = "late-hunter-stop.example.com";
+    const dir = path.dirname(statePath(domain));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(statePath(domain), `${JSON.stringify({
+      target: domain,
+      target_url: `https://${domain}`,
+      phase: "REPORT",
+      hunt_wave: 3,
+      pending_wave: null,
+      explored: ["surface-a"],
+      terminally_blocked: [],
+    }, null, 2)}\n`, "utf8");
+    fs.writeFileSync(reportMarkdownPath(domain), "# Report\n", "utf8");
+
+    const events = [
+      normalizePipelineEvent(domain, "report_written", {
+        ts: "2026-05-22T00:00:00.000Z",
+        status: "written",
+        source: "bounty_report_written",
+      }),
+      normalizePipelineEvent(domain, "hunter_stopped", {
+        ts: "2026-05-22T00:05:00.000Z",
+        wave: "w3",
+        agent: "a1",
+        surface_id: "surface-a",
+        status: "allowed",
+        source: "hunter-subagent-stop",
+      }),
+      normalizePipelineEvent(domain, "hunter_stopped", {
+        ts: "2026-05-22T00:06:00.000Z",
+        surface_id: "F-1",
+        status: "allowed",
+        source: "hunter-evidence-stop",
+      }),
+    ];
+    fs.writeFileSync(
+      pipelineEventsJsonlPath(domain),
+      events.map((event) => JSON.stringify(event)).join("\n") + "\n",
+      "utf8",
+    );
+
+    const analytics = JSON.parse(readPipelineAnalytics({
+      target_domain: domain,
+      include_events: true,
+      limit: 20,
+    }));
+    const row = analytics.sessions[0];
+    assert.equal(row.late_hunter_telemetry.total_post_report, 2);
+    assert.equal(row.late_hunter_telemetry.allowed_evidence_mode, 1);
+    assert.equal(row.late_hunter_telemetry.needs_attention, 1);
+    assert.deepEqual(
+      row.late_hunter_telemetry.events.map((event) => event.classification),
+      ["wave_hunter_after_report", "evidence_mode_allowed"],
+    );
+    assert.ok(row.health.reasons.includes("post_report_hunter_stop"));
+    assert.ok(analytics.bottlenecks.some((item) => item.code === "post_report_hunter_stop"));
+    assert.deepEqual(
+      analytics.events.map((event) => event.type),
+      ["report_written", "hunter_stopped", "hunter_stopped"],
+      "include_events should preserve chronological event order",
+    );
   });
 });
 

@@ -8,6 +8,10 @@ const {
   APTOS_NETWORK_VALUES,
   CHAIN_FAMILY_VALUES,
   COSMWASM_NETWORK_VALUES,
+  MOBILE_EVIDENCE_REPRODUCTION_LIMIT_VALUES,
+  MOBILE_EVIDENCE_RISK_CLASS_VALUES,
+  MOBILE_EVIDENCE_TYPE_VALUES,
+  MOBILE_PLATFORM_VALUES,
   SEVERITY_VALUES,
   SUBSTRATE_NETWORK_VALUES,
   SUI_NETWORK_VALUES,
@@ -181,6 +185,7 @@ function normalizeBech32Address(input) {
 }
 
 const SC_EVIDENCE_REQUIRED_FIELDS = ["chain_id", "contract_address", "harness_path", "match_test"];
+const MOBILE_EVIDENCE_REQUIRED_FIELDS = ["platform", "evidence_type", "mobile_artifact_id", "artifact_sha256", "reproduction_limit"];
 
 function realpathHome() {
   try {
@@ -366,6 +371,87 @@ function normalizeScEvidence(value) {
   return normalized;
 }
 
+function normalizeMobileEvidence(value) {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("mobile_evidence must be an object");
+  }
+  for (const field of MOBILE_EVIDENCE_REQUIRED_FIELDS) {
+    if (value[field] == null) {
+      throw new Error(`mobile_evidence.${field} is required`);
+    }
+  }
+  const platform = assertEnumValue(value.platform, MOBILE_PLATFORM_VALUES, "mobile_evidence.platform");
+  const evidenceType = assertEnumValue(value.evidence_type, MOBILE_EVIDENCE_TYPE_VALUES, "mobile_evidence.evidence_type");
+  const mobileArtifactId = assertNonEmptyString(value.mobile_artifact_id, "mobile_evidence.mobile_artifact_id");
+  if (!/^MA-[1-9]\d*$/.test(mobileArtifactId)) {
+    throw new Error("mobile_evidence.mobile_artifact_id must match MA-N");
+  }
+  const artifactSha256 = assertNonEmptyString(value.artifact_sha256, "mobile_evidence.artifact_sha256");
+  if (!/^[0-9a-f]{64}$/.test(artifactSha256)) {
+    throw new Error("mobile_evidence.artifact_sha256 must be a lowercase sha256 hex digest");
+  }
+  const reproductionLimit = assertEnumValue(
+    value.reproduction_limit,
+    MOBILE_EVIDENCE_REPRODUCTION_LIMIT_VALUES,
+    "mobile_evidence.reproduction_limit",
+  );
+  const normalized = {
+    platform,
+    evidence_type: evidenceType,
+    mobile_artifact_id: mobileArtifactId,
+    artifact_sha256: artifactSha256,
+    reproduction_limit: reproductionLimit,
+  };
+
+  if (value.app_id != null) {
+    normalized.app_id = assertNonEmptyString(value.app_id, "mobile_evidence.app_id").slice(0, 200);
+  }
+  if (value.app_version != null) {
+    normalized.app_version = assertNonEmptyString(value.app_version, "mobile_evidence.app_version").slice(0, 120);
+  }
+  if (value.static_scan_id != null) {
+    normalized.static_scan_id = assertNonEmptyString(value.static_scan_id, "mobile_evidence.static_scan_id").slice(0, 120);
+  }
+  if (value.analyzer_version != null) {
+    normalized.analyzer_version = assertNonEmptyString(value.analyzer_version, "mobile_evidence.analyzer_version").slice(0, 120);
+  }
+  if (value.component != null) {
+    normalized.component = assertNonEmptyString(value.component, "mobile_evidence.component").slice(0, 240);
+  }
+  if (value.risk_class != null) {
+    normalized.risk_class = assertEnumValue(value.risk_class, MOBILE_EVIDENCE_RISK_CLASS_VALUES, "mobile_evidence.risk_class");
+  }
+  if (value.device_profile_class != null) {
+    normalized.device_profile_class = assertNonEmptyString(value.device_profile_class, "mobile_evidence.device_profile_class").slice(0, 80);
+  }
+  if (value.trace_artifact_ids != null) {
+    if (!Array.isArray(value.trace_artifact_ids)) {
+      throw new Error("mobile_evidence.trace_artifact_ids must be an array");
+    }
+    normalized.trace_artifact_ids = value.trace_artifact_ids.slice(0, 20).map((item, index) => {
+      const artifactId = assertNonEmptyString(item, `mobile_evidence.trace_artifact_ids[${index}]`);
+      if (!/^MA-[1-9]\d*$/.test(artifactId)) {
+        throw new Error(`mobile_evidence.trace_artifact_ids[${index}] must match MA-N`);
+      }
+      return artifactId;
+    });
+  }
+  if (value.action_sequence != null) {
+    if (!Array.isArray(value.action_sequence)) {
+      throw new Error("mobile_evidence.action_sequence must be an array");
+    }
+    normalized.action_sequence = value.action_sequence.slice(0, 20).map((item, index) => {
+      const action = assertNonEmptyString(item, `mobile_evidence.action_sequence[${index}]`);
+      if (action.length > 200) {
+        throw new Error(`mobile_evidence.action_sequence[${index}] must be at most 200 chars`);
+      }
+      return action;
+    });
+  }
+  return normalized;
+}
+
 function computeFindingDedupeKey(record) {
   const endpoint = normalizeEndpointForDedupe(record.endpoint);
   const classification = normalizeTextForDedupe(record.title || record.cwe || record.severity);
@@ -417,6 +503,7 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       hunter_agent: normalizeOptionalText(record.hunter_agent, "hunter_agent"),
       brief_profile: normalizeOptionalText(record.brief_profile, "brief_profile"),
       sc_evidence: normalizeScEvidence(record.sc_evidence),
+      mobile_evidence: normalizeMobileEvidence(record.mobile_evidence),
       auth_profile: normalizeOptionalText(record.auth_profile, "auth_profile"),
       dedupe_key: normalizeOptionalText(record.dedupe_key, "dedupe_key"),
     };
@@ -425,6 +512,7 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
       const backfill = capabilityPackForLegacyFinding({
         surface_type: finding.surface_type,
         sc_evidence: finding.sc_evidence,
+        mobile_evidence: finding.mobile_evidence,
       });
       if (backfill) {
         if (!finding.capability_pack) finding.capability_pack = backfill.capability_pack;
@@ -437,6 +525,12 @@ function normalizeFindingRecord(record, { expectedDomain = null, lineNumber = nu
     }
     if (finding.surface_type !== "smart_contract" && finding.sc_evidence) {
       throw new Error("sc_evidence is only allowed on smart_contract findings");
+    }
+    if (finding.surface_type === "mobile_app" && !finding.mobile_evidence) {
+      throw new Error("mobile_app findings must include mobile_evidence");
+    }
+    if (finding.surface_type !== "mobile_app" && finding.mobile_evidence) {
+      throw new Error("mobile_evidence is only allowed on mobile_app findings");
     }
     if (!finding.dedupe_key) {
       finding.dedupe_key = computeFindingDedupeKey(record);
@@ -501,6 +595,24 @@ function renderFindingMarkdownEntry(finding) {
     if (e.function_signature) lines.push(`  - function: ${e.function_signature}`);
     scBlock = lines.join("\n");
   }
+  let mobileBlock = "";
+  if (finding.mobile_evidence) {
+    const e = finding.mobile_evidence;
+    const lines = [
+      `\n- **Mobile Evidence:**`,
+      `  - platform: ${e.platform}`,
+      `  - evidence_type: ${e.evidence_type}`,
+      `  - mobile_artifact_id: ${e.mobile_artifact_id}`,
+      `  - artifact_sha256: ${e.artifact_sha256}`,
+      `  - reproduction_limit: ${e.reproduction_limit}`,
+    ];
+    if (e.app_id) lines.push(`  - app_id: ${e.app_id}`);
+    if (e.app_version) lines.push(`  - app_version: ${e.app_version}`);
+    if (e.risk_class) lines.push(`  - risk_class: ${e.risk_class}`);
+    if (e.component) lines.push(`  - component: ${e.component}`);
+    if (e.analyzer_version) lines.push(`  - analyzer_version: ${e.analyzer_version}`);
+    mobileBlock = lines.join("\n");
+  }
 
   return [
     `## FINDING ${finding.id.slice(2)} (${finding.severity.toUpperCase()}): ${finding.title}`,
@@ -520,6 +632,7 @@ function renderFindingMarkdownEntry(finding) {
     routing,
     authProfile,
     scBlock,
+    mobileBlock,
     "---\n\n",
   ].join("\n");
 }
@@ -528,6 +641,7 @@ module.exports = {
   computeFindingDedupeKey,
   normalizeBech32Address,
   normalizeFindingRecord,
+  normalizeMobileEvidence,
   normalizeScEvidence,
   normalizeSs58Address,
   renderFindingMarkdownEntry,

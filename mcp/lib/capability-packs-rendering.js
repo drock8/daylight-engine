@@ -2,6 +2,7 @@
 
 const {
   CAPABILITY_PACKS,
+  mobileCapabilityPacks,
   smartContractCapabilityPacks,
 } = require("./capability-packs.js");
 const writeWaveHandoffTool = require("./tools/write-wave-handoff.js");
@@ -117,7 +118,27 @@ const BLOCKED_PREREQ_KINDS = Object.freeze([
   "funded_wallet_missing",
   "key_material_missing",
   "external_credential_missing",
+  "device_missing",
+  "emulator_unavailable",
+  "simulator_unavailable",
+  "app_artifact_missing",
+  "pairing_or_signing_failed",
+  "proxy_cert_missing",
+  "pinning_bypass_not_authorized",
+  "instrumentation_not_authorized",
 ]);
+
+function assertBlockedPrereqKindOptions(pack) {
+  const raw = assertSpawnField(pack, "blocked_prereq_kind_options");
+  const tokens = raw.split(/\s+or\s+/).map((t) => t.trim()).filter(Boolean);
+  for (const token of tokens) {
+    if (!BLOCKED_PREREQ_KINDS.includes(token)) {
+      throw new Error(
+        `pack ${pack.id} spawn.blocked_prereq_kind_options token "${token}" is not in the write-wave-handoff schema enum`,
+      );
+    }
+  }
+}
 
 function assertBlockedHarnessKindOptions(pack) {
   const raw = assertSpawnField(pack, "blocked_harness_kind_options");
@@ -145,13 +166,33 @@ function eachSmartContractPackValidated() {
   return packs;
 }
 
+function eachMobilePackValidated() {
+  const packs = mobileCapabilityPacks();
+  for (const pack of packs) {
+    assertSpawnField(pack, "platform");
+    assertSpawnField(pack, "workflow_summary");
+    assertSpawnField(pack, "hunter_name_prefix");
+    assertBlockedPrereqKindOptions(pack);
+  }
+  return packs;
+}
+
 function renderHunterPackCataloguePreamble() {
   return [
     "Smart-contract spawn dispatch:",
     "- If `assignment.brief_profile === \"web\"` -> use the generic hunter spawn template above; do not use the SC template below.",
-    "- Otherwise -> use the canonical smart-contract template below and look up the matching catalogue line by `assignment.capability_pack`.",
+    "- If `assignment.brief_profile` starts with `smart_contract_` -> use the canonical smart-contract template below and look up the matching catalogue line by `assignment.capability_pack`.",
+    "- If `assignment.brief_profile` starts with `mobile_` -> use the canonical mobile template below and look up the matching catalogue line by `assignment.capability_pack`.",
     "",
     "Pack metadata is the source of truth in `mcp/lib/capability-packs.js`; adding a chain pack auto-extends the catalogue at next prompt regeneration.",
+  ].join("\n");
+}
+
+function renderClaudeMobileCanonicalSpawn() {
+  return [
+    "```",
+    "Agent(subagent_type: \"[assignment.hunter_agent]\", name: \"[assignment.hunter_agent]-w[wave]-a[agent]\", run_in_background: true, prompt: \"Domain: [domain]\\nWave: w[wave]\\nAgent: a[agent]\\nHandoff token: [only this agent's handoff_token from wave-start result.data.assignments]\\nCapability pack: [assignment.capability_pack]. Brief profile: [assignment.brief_profile]. Hunter agent: [assignment.hunter_agent]. Context budget: [assignment.context_budget].\\nFirst action: bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }); confirm surface_type=mobile_app and platform matches catalogue. Workflow: <copy catalogue workflow>. Device/emulator/simulator/proxy/instrumentation/storage actions require authorized profile + active lease; otherwise write blocked_prereqs[] using catalogue blocked kinds. Android static MVP: bounty_import_mobile_artifact -> bounty_android_static_scan; app-local findings require mobile_evidence; backend endpoints become surface_leads until web/API replay. Final: bounty_write_wave_handoff once with coverage_mode, then bounty_finalize_hunter_run.\")",
+    "```",
   ].join("\n");
 }
 
@@ -180,33 +221,51 @@ function renderClaudeSmartContractCanonicalSpawn() {
 }
 
 function renderClaudeHunterPackCatalogue() {
-  const packs = eachSmartContractPackValidated();
-  const lines = packs.map((pack) =>
+  const scPacks = eachSmartContractPackValidated();
+  const mobilePacks = eachMobilePackValidated();
+  const scLines = scPacks.map((pack) =>
     `- \`capability_pack: "${pack.id}"\` (chain_family \`${pack.spawn.chain_family}\`) -> hunter_agent \`${pack.hunter_agent}\`. chain_id: ${pack.spawn.chain_id_description}. Workflow: ${pack.spawn.workflow_summary} CLI dependency: ${pack.spawn.cli_dependency}; blocked_harness_runs[] kind: ${pack.spawn.blocked_harness_kind_options}.`,
+  );
+  const mobileLines = mobilePacks.map((pack) =>
+    `- \`capability_pack: "${pack.id}"\` (platform \`${pack.spawn.platform}\`) -> hunter_agent \`${pack.hunter_agent}\`. Workflow: ${pack.spawn.workflow_summary} blocked_prereqs[] kind: ${pack.spawn.blocked_prereq_kind_options}.`,
   );
   return [
     renderHunterPackCataloguePreamble(),
     renderClaudeSmartContractCanonicalSpawn(),
     "",
-    "Pack catalogue (lookup by `assignment.capability_pack`):",
-    ...lines,
+    "Mobile canonical spawn template:",
+    renderClaudeMobileCanonicalSpawn(),
+    "",
+    "Smart-contract pack catalogue (lookup by `assignment.capability_pack`):",
+    ...scLines,
+    "",
+    "Mobile pack catalogue (lookup by `assignment.capability_pack`):",
+    ...mobileLines,
   ].join("\n");
 }
 
 function renderCodexHunterPackCatalogue(codexWorkerLabelFor) {
-  const packs = eachSmartContractPackValidated();
-  const lines = packs.map((pack) => {
+  const scPacks = eachSmartContractPackValidated();
+  const mobilePacks = eachMobilePackValidated();
+  const scLines = scPacks.map((pack) => {
     const label = codexWorkerLabelFor(pack);
     return `- \`capability_pack: "${pack.id}"\` (chain_family \`${pack.spawn.chain_family}\`) -> ${label}. chain_id: ${pack.spawn.chain_id_description}. Workflow: ${pack.spawn.workflow_summary} CLI dependency: ${pack.spawn.cli_dependency}; blocked_harness_runs[] kind: ${pack.spawn.blocked_harness_kind_options}.`;
+  });
+  const mobileLines = mobilePacks.map((pack) => {
+    const label = codexWorkerLabelFor(pack);
+    return `- \`capability_pack: "${pack.id}"\` (platform \`${pack.spawn.platform}\`) -> ${label}. Workflow: ${pack.spawn.workflow_summary} blocked_prereqs[] kind: ${pack.spawn.blocked_prereq_kind_options}.`;
   });
   return [
     renderHunterPackCataloguePreamble(),
     "```text",
-    "For each smart-contract assignment, use Codex spawn_agent with `agent_type: \"worker\"` and a message that: (1) includes the run header (Domain, Wave, Agent, Surface, Capability pack, Brief profile, Hunter agent, Context budget, Egress profile, Block internal hosts, Handoff token, Checkpoint mode), (2) instructs the first action to call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }), (3) inlines the workflow summary, CLI dependency, and blocked_harness_runs[] kind copied verbatim from the catalogue line for [assignment.capability_pack], and (4) includes the worker contract for [assignment.hunter_agent] from Codex Worker Role Contracts.",
+    "For each non-web assignment, use Codex spawn_agent with `agent_type: \"worker\"` and a message that: (1) includes the run header (Domain, Wave, Agent, Surface, Capability pack, Brief profile, Hunter agent, Context budget, Egress profile, Block internal hosts, Handoff token, Checkpoint mode), (2) instructs the first action to call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }), (3) inlines the workflow summary and blocked kind copied verbatim from the catalogue line for [assignment.capability_pack], and (4) includes the worker contract for [assignment.hunter_agent] from Codex Worker Role Contracts.",
     "```",
     "",
-    "Pack catalogue (lookup by `assignment.capability_pack`):",
-    ...lines,
+    "Smart-contract pack catalogue (lookup by `assignment.capability_pack`):",
+    ...scLines,
+    "",
+    "Mobile pack catalogue (lookup by `assignment.capability_pack`):",
+    ...mobileLines,
   ].join("\n");
 }
 

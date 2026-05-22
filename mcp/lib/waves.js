@@ -88,9 +88,13 @@ const {
   computeHuntToChainGate,
 } = require("./phase-gates.js");
 const {
+  summarizeAcceptedCoverageGaps,
+} = require("./coverage-gaps.js");
+const {
   WAVE_HANDOFF_CONTENT_MAX_CHARS,
   assertBlockedHarnessConsistency,
   assertBlockedPrereqConsistency,
+  assertMobileCompletionEvidence,
   assertSmartContractCompletionEvidence,
   generateHandoffToken,
   HANDOFF_PROVENANCE_MODEL,
@@ -98,6 +102,7 @@ const {
   normalizeBlockedPrereqs,
   normalizeBypassAttempts,
   normalizeChainNotes,
+  normalizeCoverageMode,
   normalizeHandoffSummary,
   sha256Hex,
   signHandoffProvenance,
@@ -138,11 +143,16 @@ function waveStatus(args) {
   // Compute transition-gate inputs for deterministic wave decisions.
   let coverage = null;
   let transitionBlockers = [];
+  let acceptedCoverageGaps = null;
   try {
     const { state } = readSessionStateStrict(domain);
     const gate = computeHuntToChainGate(domain, state);
     coverage = gate.coverage;
     transitionBlockers = gate.transition_blockers;
+    acceptedCoverageGaps = summarizeAcceptedCoverageGaps(state);
+    if (acceptedCoverageGaps.accepted) {
+      transitionBlockers = transitionBlockers.filter((blocker) => blocker.code !== "blocked_high_surfaces");
+    }
   } catch (error) {
     transitionBlockers = [{
       code: "state_unavailable",
@@ -177,6 +187,7 @@ function waveStatus(args) {
   return JSON.stringify({
     ...summary,
     coverage,
+    accepted_coverage_gaps: acceptedCoverageGaps,
     transition_blockers: transitionBlockers,
     http_audit: auditSummary,
     traffic: trafficSummary,
@@ -1090,6 +1101,7 @@ function writeWaveHandoff(args) {
     // at start_wave time). Reading from agent-writable attack_surface.json would
     // let a hunter disable the smart_contract gate via Bash mutation.
     const surfaceType = assignment.surface_type || null;
+    const coverageMode = normalizeCoverageMode(args.coverage_mode, { surfaceType });
     const findingsForRun = readFindingsFromJsonl(domain).filter((finding) => (
       finding.wave === wave &&
       finding.agent === agent &&
@@ -1111,6 +1123,14 @@ function writeWaveHandoff(args) {
       source_agent: agent,
       source_surface_id: surfaceId,
     });
+    const leadSurfaceIds = normalizeStringArray(args.lead_surface_ids, "lead_surface_ids");
+    assertMobileCompletionEvidence({
+      surfaceType,
+      surfaceStatus,
+      coverageMode,
+      findingCount: findingsForRun.length,
+      leadSurfaceCount: leadSurfaceIds.length + surfaceLeadResult.lead_ids.length,
+    });
 
     const handoff = {
       target_domain: domain,
@@ -1127,10 +1147,13 @@ function writeWaveHandoff(args) {
       bypass_attempts: bypassAttempts,
       dead_ends: normalizeStringArray(args.dead_ends, "dead_ends"),
       waf_blocked_endpoints: normalizeStringArray(args.waf_blocked_endpoints, "waf_blocked_endpoints"),
-      lead_surface_ids: normalizeStringArray(args.lead_surface_ids, "lead_surface_ids"),
+      lead_surface_ids: leadSurfaceIds,
     };
     if (surfaceLeadResult.lead_ids.length > 0) {
       handoff.surface_lead_ids = surfaceLeadResult.lead_ids;
+    }
+    if (coverageMode != null) {
+      handoff.coverage_mode = coverageMode;
     }
     const persistedHandoff = provenance === "verified"
       ? signHandoffProvenance(handoff, ensureHandoffSigningKey(domain), { assignment })

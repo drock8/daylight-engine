@@ -43,6 +43,8 @@ const REQUIRED_FIELDS = Object.freeze([
   "session_artifacts_written",
 ]);
 
+const DEVICE_ACCESS_ACTION_PATTERN = /^[a-z][a-z0-9_:-]{0,63}$/;
+
 function assertBooleanField(entry, field) {
   if (typeof entry[field] !== "boolean") {
     throw new Error(`tool registry entry for ${entry.name} has invalid ${field}`);
@@ -96,6 +98,51 @@ function normalizeCapabilityId(entry) {
     throw new Error(`tool registry entry for ${entry.name} has invalid capability_id`);
   }
   return entry.capability_id;
+}
+
+function normalizeDeviceAccess(entry) {
+  const value = Object.prototype.hasOwnProperty.call(entry, "device_access")
+    ? entry.device_access
+    : false;
+  if (value === false) return Object.freeze({ required: false, actions: Object.freeze([]), profile_required: false, lease_required: false });
+  if (value == null || value === true || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`tool registry entry for ${entry.name} has invalid device_access`);
+  }
+  if (typeof value.required !== "boolean") {
+    throw new Error(`tool registry entry for ${entry.name} has invalid device_access.required`);
+  }
+  const profileRequired = value.profile_required == null ? value.required : value.profile_required;
+  const leaseRequired = value.lease_required == null ? value.required : value.lease_required;
+  if (typeof profileRequired !== "boolean") {
+    throw new Error(`tool registry entry for ${entry.name} has invalid device_access.profile_required`);
+  }
+  if (typeof leaseRequired !== "boolean") {
+    throw new Error(`tool registry entry for ${entry.name} has invalid device_access.lease_required`);
+  }
+  const actions = value.actions == null ? [] : value.actions;
+  if (!Array.isArray(actions)) {
+    throw new Error(`tool registry entry for ${entry.name} has invalid device_access.actions`);
+  }
+  const normalizedActions = [];
+  const seen = new Set();
+  for (const action of actions) {
+    if (typeof action !== "string" || !DEVICE_ACCESS_ACTION_PATTERN.test(action)) {
+      throw new Error(`tool registry entry for ${entry.name} has invalid device_access.actions`);
+    }
+    if (!seen.has(action)) {
+      seen.add(action);
+      normalizedActions.push(action);
+    }
+  }
+  if (value.required && normalizedActions.length === 0) {
+    throw new Error(`tool registry entry for ${entry.name} requires device_access but declares no actions`);
+  }
+  return Object.freeze({
+    required: value.required,
+    actions: frozenStringArray(normalizedActions),
+    profile_required: profileRequired,
+    lease_required: leaseRequired,
+  });
 }
 
 function normalizeScopeUrlFields(entry) {
@@ -157,6 +204,7 @@ function defineTool(entry) {
     role_bundles: frozenStringArray(entry.role_bundles),
     session_artifacts_written: frozenStringArray(entry.session_artifacts_written),
     capability_id: normalizeCapabilityId(entry),
+    device_access: normalizeDeviceAccess(entry),
     scope_url_fields: normalizeScopeUrlFields(entry),
   });
 }
@@ -196,6 +244,7 @@ const TOOL_MANIFEST = Object.freeze(TOOL_REGISTRY.reduce((manifest, tool) => {
     global_preapproval: tool.global_preapproval,
     network_access: tool.network_access,
     browser_access: tool.browser_access,
+    device_access: tool.device_access,
     scope_required: tool.scope_required,
     sensitive_output: tool.sensitive_output,
     session_artifacts_written: frozenStringArray(tool.session_artifacts_written),

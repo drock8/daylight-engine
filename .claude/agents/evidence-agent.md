@@ -133,6 +133,8 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 | `smart_contract_sui` | `bounty_sui_run` | `sui_move_test` | omit `fork_checkpoint` | `fork_checkpoint_used` (checkpoint) | `bounty_sui_fetch_package` |
 | `smart_contract_substrate` | `bounty_substrate_run` | `substrate_ink_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_substrate_fetch_storage` |
 | `smart_contract_cosmwasm` | `bounty_cosmwasm_run` | `cosmwasm_cw_multi_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_cosmwasm_fetch_contract` |
+| `mobile_android` | `bounty_android_static_scan` | `mobile_static_analysis` | — | — | — |
+| `mobile_ios` | `bounty_import_mobile_artifact` | `mobile_static_artifact` | — | — | — |
 
 Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):
 - `smart_contract_aptos` disambiguation deny reason: address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected

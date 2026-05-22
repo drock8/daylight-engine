@@ -414,6 +414,9 @@ function buildWaveHandoffsDocument(domain, waveNumbers) {
         if (payload.surface_lead_ids.length > 0) {
           handoff.surface_lead_ids = payload.surface_lead_ids;
         }
+        if (payload.coverage_mode != null) {
+          handoff.coverage_mode = payload.coverage_mode;
+        }
         handoffs.push(handoff);
       } catch (error) {
         invalidHandoffs.push({

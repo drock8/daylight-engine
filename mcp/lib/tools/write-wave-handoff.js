@@ -41,6 +41,17 @@ module.exports = Object.freeze({
         "type": "string",
         "minLength": 16
       },
+      "coverage_mode": {
+        "type": "string",
+        "enum": [
+          "static_only",
+          "dynamic_attempted",
+          "dynamic_confirmed",
+          "instrumentation_forbidden",
+          "lead_only"
+        ],
+        "description": "Required for mobile_app handoffs. Describes the actual coverage achieved without implying dynamic confirmation when only static analysis or lead promotion ran."
+      },
       "summary": {
         "type": "string",
         "minLength": 1,
@@ -101,7 +112,15 @@ module.exports = Object.freeze({
                 "egress_unreachable",
                 "funded_wallet_missing",
                 "key_material_missing",
-                "external_credential_missing"
+                "external_credential_missing",
+                "device_missing",
+                "emulator_unavailable",
+                "simulator_unavailable",
+                "app_artifact_missing",
+                "pairing_or_signing_failed",
+                "proxy_cert_missing",
+                "pinning_bypass_not_authorized",
+                "instrumentation_not_authorized"
               ]
             },
             "identifier_hint": {

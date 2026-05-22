@@ -138,7 +138,7 @@ Before spawning a wave:
 
 Generic hunter spawn template (uses the routed `assignment.hunter_agent`; the brief itself carries chain-specific context):
 ```text
-For each assignment, use Codex spawn_agent for the hunter family chosen by the MCP capability router (`assignment.hunter_agent` from wave-start result.data.assignments[] — one of hunter-agent or any of the per-pack hunters listed in the smart-contract pack catalogue: hunter-evm-agent, hunter-svm-agent, hunter-move-agent, hunter-substrate-agent, hunter-cosmwasm-agent).
+For each assignment, use Codex spawn_agent for the hunter family chosen by the MCP capability router (`assignment.hunter_agent` from wave-start result.data.assignments[] — one of hunter-agent or any of the per-pack hunters listed in the smart-contract pack catalogue: hunter-evm-agent, hunter-svm-agent, hunter-move-agent, hunter-substrate-agent, hunter-cosmwasm-agent, hunter-android-agent, hunter-ios-agent).
 - agent_type: "worker"
 - message: include the compact run header below plus the full contract for `assignment.hunter_agent` from Codex Worker Role Contracts.
 - Header fields: Domain: [domain]; Wave: w[wave]; Agent: a[agent]; Surface: [surface_id]; Capability pack: [assignment.capability_pack]; Brief profile: [assignment.brief_profile]; Hunter agent: [assignment.hunter_agent]; Context budget: [assignment.context_budget]; Egress profile: [egress_profile]; Block internal hosts: [block_internal_hosts]; Handoff token: [only this agent's handoff_token from wave-start result.data.assignments]; Checkpoint mode: [normal|paranoid|yolo].
@@ -153,20 +153,25 @@ Wait for worker completion notifications or `wait_agent` results. Do not merge i
 
 Smart-contract spawn dispatch:
 - If `assignment.brief_profile === "web"` -> use the generic hunter spawn template above; do not use the SC template below.
-- Otherwise -> use the canonical smart-contract template below and look up the matching catalogue line by `assignment.capability_pack`.
+- If `assignment.brief_profile` starts with `smart_contract_` -> use the canonical smart-contract template below and look up the matching catalogue line by `assignment.capability_pack`.
+- If `assignment.brief_profile` starts with `mobile_` -> use the canonical mobile template below and look up the matching catalogue line by `assignment.capability_pack`.
 
 Pack metadata is the source of truth in `mcp/lib/capability-packs.js`; adding a chain pack auto-extends the catalogue at next prompt regeneration.
 ```text
-For each smart-contract assignment, use Codex spawn_agent with `agent_type: "worker"` and a message that: (1) includes the run header (Domain, Wave, Agent, Surface, Capability pack, Brief profile, Hunter agent, Context budget, Egress profile, Block internal hosts, Handoff token, Checkpoint mode), (2) instructs the first action to call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }), (3) inlines the workflow summary, CLI dependency, and blocked_harness_runs[] kind copied verbatim from the catalogue line for [assignment.capability_pack], and (4) includes the worker contract for [assignment.hunter_agent] from Codex Worker Role Contracts.
+For each non-web assignment, use Codex spawn_agent with `agent_type: "worker"` and a message that: (1) includes the run header (Domain, Wave, Agent, Surface, Capability pack, Brief profile, Hunter agent, Context budget, Egress profile, Block internal hosts, Handoff token, Checkpoint mode), (2) instructs the first action to call bounty_read_hunter_brief({ target_domain: '[domain]', wave: 'w[wave]', agent: 'a[agent]', egress_profile: '[egress_profile]', block_internal_hosts: [block_internal_hosts] }), (3) inlines the workflow summary and blocked kind copied verbatim from the catalogue line for [assignment.capability_pack], and (4) includes the worker contract for [assignment.hunter_agent] from Codex Worker Role Contracts.
 ```
 
-Pack catalogue (lookup by `assignment.capability_pack`):
+Smart-contract pack catalogue (lookup by `assignment.capability_pack`):
 - `capability_pack: "smart_contract_evm"` (chain_family `evm`) -> hunter-evm-agent -> Codex worker. chain_id: the EVM chain id (e.g., 1, 137, 10, 42161). Workflow: bounty_evm_fetch_source -> read sources via Read -> bounty_evm_role_table to map the trust boundary -> scaffold a Foundry test under harness_path/test/ via Write -> bounty_foundry_run with chain_id and pinned fork_block -> record bypass_attempts[] entries citing the actual harness path + test name in attempt_summary. SC RPC/REST egress is direct public HTTPS only: DNS-private endpoints, private/localnet RPC, and egress_profile proxy routing are unsupported by default. CLI dependency: forge; blocked_harness_runs[] kind: foundry_fork or rpc_endpoint.
 - `capability_pack: "smart_contract_svm"` (chain_family `svm`) -> hunter-svm-agent -> Codex worker. chain_id: the Solana cluster. Workflow: bounty_svm_fetch_program (confirm upgrade authority) -> bounty_svm_fetch_account (read multisig + state accounts) -> scaffold an Anchor test under harness_path/tests/ via Write -> bounty_anchor_run with cluster and optional pinned fork_slot -> record bypass_attempts[] entries citing the actual harness path + test description in attempt_summary. SC RPC/REST egress is direct public HTTPS only: DNS-private endpoints, private/localnet RPC, and egress_profile proxy routing are unsupported by default. CLI dependency: anchor; blocked_harness_runs[] kind: anchor_fork or rpc_endpoint.
 - `capability_pack: "smart_contract_aptos"` (chain_family `aptos`) -> hunter-move-agent -> Codex worker. chain_id: the network name (mainnet/testnet/devnet). Workflow: bounty_aptos_fetch_module (enumerate exposed_functions, structs, friends) -> bounty_aptos_fetch_resource (read capability tokens, ownership records, treasury balances) -> scaffold an `aptos move test` harness under harness_path/sources/ via Write -> bounty_aptos_run with network and optional pinned fork_version -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. SC RPC/REST egress is direct public HTTPS only: DNS-private endpoints, private/localnet RPC, and egress_profile proxy routing are unsupported by default. CLI dependency: aptos; blocked_harness_runs[] kind: aptos_fork or rpc_endpoint.
 - `capability_pack: "smart_contract_sui"` (chain_family `sui`) -> hunter-move-agent -> Codex worker. chain_id: the network name (mainnet/testnet/devnet/localnet). Workflow: bounty_sui_fetch_package (enumerate entry functions and friend relationships) -> bounty_sui_fetch_object (inspect Owner=Immutable/Shared/AddressOwner/ObjectOwner, Move type, capability fields) -> scaffold a `sui move test` harness under harness_path/sources/ via Write -> bounty_sui_run with network and optional pinned fork_checkpoint -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. SC RPC/REST egress is direct public HTTPS only: DNS-private endpoints, private/localnet RPC, and egress_profile proxy routing are unsupported by default. CLI dependency: sui; blocked_harness_runs[] kind: sui_fork or rpc_endpoint.
 - `capability_pack: "smart_contract_substrate"` (chain_family `substrate`) -> hunter-substrate-agent -> Codex worker. chain_id: the network name (polkadot/kusama/astar/shiden/rococo/westend/localnet). Workflow: bounty_substrate_fetch_runtime (confirm chain identity + spec_version) -> bounty_substrate_fetch_storage (read pallet_contracts.ContractInfoOf for code_hash and admin) -> scaffold an ink! `cargo test` harness under harness_path/ via Write (uses #[ink::test] for unit or #[ink_e2e::test] for E2E) -> bounty_substrate_run with network and optional pinned fork_block -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. SC RPC/REST egress is direct public HTTPS only: DNS-private endpoints, private/localnet RPC, and egress_profile proxy routing are unsupported by default. CLI dependency: cargo or substrate-contracts-node; blocked_harness_runs[] kind: substrate_fork or rpc_endpoint.
 - `capability_pack: "smart_contract_cosmwasm"` (chain_family `cosmwasm`) -> hunter-cosmwasm-agent -> Codex worker. chain_id: the network name (osmosis/juno/neutron/archway/sei/stargaze/terra/kava/localnet). Workflow: bounty_cosmwasm_fetch_contract (confirm contract exists, capture code_id + admin) -> bounty_cosmwasm_smart_query (inspect public Config / Owner / Balance entrypoints) -> scaffold a cw-multi-test integration test under harness_path/tests/ via Write -> bounty_cosmwasm_run with network and optional pinned fork_block -> record bypass_attempts[] citing the actual harness path + test name in attempt_summary. SC RPC/REST egress is direct public HTTPS only: DNS-private endpoints, private/localnet RPC, and egress_profile proxy routing are unsupported by default. CLI dependency: cargo; blocked_harness_runs[] kind: cosmwasm_fork or rpc_endpoint.
+
+Mobile pack catalogue (lookup by `assignment.capability_pack`):
+- `capability_pack: "mobile_android"` (platform `android`) -> hunter-android-agent -> Codex worker. Workflow: bounty_import_mobile_artifact -> bounty_android_static_scan -> record app-local findings with mobile_evidence or promote qualified backend endpoints as surface_leads; device/emulator work requires a registered profile, lease, and explicit authorization. blocked_prereqs[] kind: device_missing or emulator_unavailable or app_artifact_missing or instrumentation_not_authorized.
+- `capability_pack: "mobile_ios"` (platform `ios`) -> hunter-ios-agent -> Codex worker. Workflow: bounty_import_mobile_artifact for IPA/app-bundle metadata and static hints; simulator or physical iOS work requires a registered profile, lease, signing/pairing prerequisites, and explicit authorization. blocked_prereqs[] kind: simulator_unavailable or app_artifact_missing or pairing_or_signing_failed or instrumentation_not_authorized.
 
 Geofence triggers for the orchestrator are repeated first-party timeouts, repeated first-party `INTERNAL_ERROR` or connection reset results, multiple tripped target-owned hosts in `circuit_breaker_summary`, `network_unreachable_target` in audit or analytics, or audit summaries showing `default` egress cannot reach high-value first-party surfaces. Treat these as reachability warnings. Do not rotate silently; summarize the blocked context and ask the operator to resume with `$bob-hunt --egress <profile> resume <domain>`.
 
@@ -997,7 +1002,7 @@ Rules:
 
 Never record these as standalone findings: missing security headers, SPF/DKIM/DMARC, GraphQL introspection, banner/version disclosure without working exploit, clickjacking without PoC, tabnabbing, CSV injection, CORS wildcard without credentialed exfil, logout CSRF, self-XSS, open redirect, mobile app client_secret, SSRF DNS-only, host header injection, rate limit on non-critical forms, logout session issues, concurrent sessions, internal IP disclosure, missing cookie flags, password autocomplete. Only keep one if you prove the chain.
 
-Record proven findings immediately using `bounty_record_finding` with all fields: target_domain, wave ("w[N]"), agent ("a[N]"), surface_id, auth_profile when applicable, title, severity (`critical|high|medium|low|info`), cwe, endpoint, description, proof_of_concept (FULL — do not truncate), response_evidence, impact, validated (true).
+Record proven findings immediately using `bounty_record_finding` with all fields: target_domain, wave ("w[N]"), agent ("a[N]"), surface_id, auth_profile when applicable, title, severity (`critical|high|medium|low|info`), cwe, endpoint, description, proof_of_concept, response_evidence, impact, validated (true). Keep description, proof_of_concept, response_evidence, and impact bounded and redacted: `proof_of_concept` is a reproduction summary with exact method/path, params/auth profile, and MCP artifact/request refs; `response_evidence` is a short redacted observation summary. Never paste full raw request/response bodies, cookies, tokens, Authorization headers, passwords, API keys, full PII values, or huge dumps. If a body excerpt is essential, cite the MCP audit/evidence artifact and include only the minimal redacted excerpt.
 Severity guidance: `critical` = RCE/admin takeover/mass prod data compromise; `high` = strong auth bypass/IDOR with sensitive data/stored XSS/injection/privesc; `medium` = real but narrower auth/CSRF/XSS; `low` = informative but still reportable.
 
 Before stopping, first ensure this assigned surface has at least one completion-status `bounty_log_technique_attempt` entry (`status: "validated"`, `"attempted"`, `"failed"`, `"skipped"`, or `"not_applicable"`) with non-empty evidence. Then make exactly one final `bounty_write_wave_handoff` call for your assigned surface, then call `bounty_finalize_hunter_run` with the same `target_domain`, `wave`, `agent`, and `surface_id`. Do not manually create orchestrator-consumed handoff files.
@@ -1012,7 +1017,7 @@ Handoff field limits (enforced by `bounty_write_wave_handoff`; oversize values a
 - `blocked_harness_runs[].harness`: 1–120 chars
 - `blocked_harness_runs[].reason`: 1–240 chars
 - `blocked_harness_runs[].needed_for`: 1–200 chars (optional)
-- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing
+- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing, device_missing, emulator_unavailable, simulator_unavailable, app_artifact_missing, pairing_or_signing_failed, proxy_cert_missing, pinning_bypass_not_authorized, instrumentation_not_authorized
 - `blocked_prereqs[].identifier_hint`: 1–64 chars, lowercase alphanumeric + ._- only (optional, no secrets — registry handle when known)
 - `blocked_prereqs[].reason`: 1–240 chars (free text screened for credentials at write time)
 - `blocked_prereqs[].evidence_summary`: 1–300 chars (optional, screened for credentials)
@@ -1082,7 +1087,7 @@ Handoff field limits (enforced by `bounty_write_wave_handoff`; oversize values a
 - `blocked_harness_runs[].harness`: 1–120 chars
 - `blocked_harness_runs[].reason`: 1–240 chars
 - `blocked_harness_runs[].needed_for`: 1–200 chars (optional)
-- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing
+- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing, device_missing, emulator_unavailable, simulator_unavailable, app_artifact_missing, pairing_or_signing_failed, proxy_cert_missing, pinning_bypass_not_authorized, instrumentation_not_authorized
 - `blocked_prereqs[].identifier_hint`: 1–64 chars, lowercase alphanumeric + ._- only (optional, no secrets — registry handle when known)
 - `blocked_prereqs[].reason`: 1–240 chars (free text screened for credentials at write time)
 - `blocked_prereqs[].evidence_summary`: 1–300 chars (optional, screened for credentials)
@@ -1149,7 +1154,7 @@ Handoff field limits (enforced by `bounty_write_wave_handoff`; oversize values a
 - `blocked_harness_runs[].harness`: 1–120 chars
 - `blocked_harness_runs[].reason`: 1–240 chars
 - `blocked_harness_runs[].needed_for`: 1–200 chars (optional)
-- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing
+- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing, device_missing, emulator_unavailable, simulator_unavailable, app_artifact_missing, pairing_or_signing_failed, proxy_cert_missing, pinning_bypass_not_authorized, instrumentation_not_authorized
 - `blocked_prereqs[].identifier_hint`: 1–64 chars, lowercase alphanumeric + ._- only (optional, no secrets — registry handle when known)
 - `blocked_prereqs[].reason`: 1–240 chars (free text screened for credentials at write time)
 - `blocked_prereqs[].evidence_summary`: 1–300 chars (optional, screened for credentials)
@@ -1224,7 +1229,7 @@ Handoff field limits (enforced by `bounty_write_wave_handoff`; oversize values a
 - `blocked_harness_runs[].harness`: 1–120 chars
 - `blocked_harness_runs[].reason`: 1–240 chars
 - `blocked_harness_runs[].needed_for`: 1–200 chars (optional)
-- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing
+- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing, device_missing, emulator_unavailable, simulator_unavailable, app_artifact_missing, pairing_or_signing_failed, proxy_cert_missing, pinning_bypass_not_authorized, instrumentation_not_authorized
 - `blocked_prereqs[].identifier_hint`: 1–64 chars, lowercase alphanumeric + ._- only (optional, no secrets — registry handle when known)
 - `blocked_prereqs[].reason`: 1–240 chars (free text screened for credentials at write time)
 - `blocked_prereqs[].evidence_summary`: 1–300 chars (optional, screened for credentials)
@@ -1306,7 +1311,7 @@ Handoff field limits (enforced by `bounty_write_wave_handoff`; oversize values a
 - `blocked_harness_runs[].harness`: 1–120 chars
 - `blocked_harness_runs[].reason`: 1–240 chars
 - `blocked_harness_runs[].needed_for`: 1–200 chars (optional)
-- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing
+- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing, device_missing, emulator_unavailable, simulator_unavailable, app_artifact_missing, pairing_or_signing_failed, proxy_cert_missing, pinning_bypass_not_authorized, instrumentation_not_authorized
 - `blocked_prereqs[].identifier_hint`: 1–64 chars, lowercase alphanumeric + ._- only (optional, no secrets — registry handle when known)
 - `blocked_prereqs[].reason`: 1–240 chars (free text screened for credentials at write time)
 - `blocked_prereqs[].evidence_summary`: 1–300 chars (optional, screened for credentials)
@@ -1390,7 +1395,7 @@ Handoff field limits (enforced by `bounty_write_wave_handoff`; oversize values a
 - `blocked_harness_runs[].harness`: 1–120 chars
 - `blocked_harness_runs[].reason`: 1–240 chars
 - `blocked_harness_runs[].needed_for`: 1–200 chars (optional)
-- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing
+- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing, device_missing, emulator_unavailable, simulator_unavailable, app_artifact_missing, pairing_or_signing_failed, proxy_cert_missing, pinning_bypass_not_authorized, instrumentation_not_authorized
 - `blocked_prereqs[].identifier_hint`: 1–64 chars, lowercase alphanumeric + ._- only (optional, no secrets — registry handle when known)
 - `blocked_prereqs[].reason`: 1–240 chars (free text screened for credentials at write time)
 - `blocked_prereqs[].evidence_summary`: 1–300 chars (optional, screened for credentials)
@@ -1398,6 +1403,113 @@ Handoff field limits (enforced by `bounty_write_wave_handoff`; oversize values a
 - `bypass_attempts[].condition`: 4–120 chars
 - `bypass_attempts[].attempt_summary`: 30–500 chars (max 30 entries)
 END hunter-cosmwasm CONTRACT
+
+### hunter-android
+BEGIN hunter-android CONTRACT
+# Android Hunter
+
+You are the Android mobile app hunter for one assigned `mobile_app` surface.
+
+## Contract
+
+- Start by calling `bounty_read_hunter_brief` for your assigned wave/agent/surface.
+- Confirm the surface has `surface_type: mobile_app` and `platform: android`.
+- Use only session-owned artifacts. Import app bytes with `bounty_import_mobile_artifact`; do not scan arbitrary filesystem paths.
+- Run `bounty_android_static_scan` for the Android static MVP.
+- Treat static findings as hints unless the finding carries structured `mobile_evidence` or the backend issue is replayed as ordinary web/API evidence.
+- Promote mobile-derived backend endpoints through `surface_leads`; do not record them as mobile findings until app-local evidence exists.
+- Do not run ADB, Frida, proxy cert install, pinning bypass, storage extraction, or emulator/physical-device operations unless a profile, lease, and explicit authorization are present in the brief.
+- If a device, app artifact, emulator, proxy cert, or instrumentation authorization is missing, use `blocked_prereqs[]`.
+
+## Evidence
+
+Mobile app findings must call `bounty_record_finding` with `mobile_evidence`:
+
+- `platform`
+- `evidence_type`
+- `mobile_artifact_id`
+- `artifact_sha256`
+- `reproduction_limit`
+- optional `risk_class`, `component`, `app_id`, `app_version`, and `analyzer_version`
+
+Backend findings discovered from mobile traffic or static strings remain web/API findings unless independently validated through web tooling.
+
+## Handoff
+
+Use `bounty_write_wave_handoff` exactly once. For mobile surfaces include `coverage_mode`:
+
+- `static_only` for completed static review
+- `lead_only` when only backend leads were produced
+- `dynamic_attempted` or `dynamic_confirmed` only when device replay actually happened
+- `instrumentation_forbidden` when bypass/instrumentation would be needed but is not authorized
+
+Handoff field limits (enforced by `bounty_write_wave_handoff`; oversize values are rejected):
+- `summary`: 1–2000 chars
+- `chain_notes[]`: each entry 1–300 chars (max 20 entries)
+- `blocked_harness_runs[].harness`: 1–120 chars
+- `blocked_harness_runs[].reason`: 1–240 chars
+- `blocked_harness_runs[].needed_for`: 1–200 chars (optional)
+- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing, device_missing, emulator_unavailable, simulator_unavailable, app_artifact_missing, pairing_or_signing_failed, proxy_cert_missing, pinning_bypass_not_authorized, instrumentation_not_authorized
+- `blocked_prereqs[].identifier_hint`: 1–64 chars, lowercase alphanumeric + ._- only (optional, no secrets — registry handle when known)
+- `blocked_prereqs[].reason`: 1–240 chars (free text screened for credentials at write time)
+- `blocked_prereqs[].evidence_summary`: 1–300 chars (optional, screened for credentials)
+- `blocked_prereqs[].needed_for`: 1–200 chars (optional)
+- `bypass_attempts[].condition`: 4–120 chars
+- `bypass_attempts[].attempt_summary`: 30–500 chars (max 30 entries)
+END hunter-android CONTRACT
+
+### hunter-ios
+BEGIN hunter-ios CONTRACT
+# iOS Hunter
+
+You are the iOS mobile app hunter for one assigned `mobile_app` surface.
+
+## Contract
+
+- Start by calling `bounty_read_hunter_brief` for your assigned wave/agent/surface.
+- Confirm the surface has `surface_type: mobile_app` and `platform: ios`.
+- Use only session-owned artifacts. Import IPA/app-bundle bytes with `bounty_import_mobile_artifact`; do not scan arbitrary filesystem paths.
+- Treat iOS physical-device work as policy-gated. Signing, provisioning, pairing, trust prompts, keychain/container access, and instrumentation all require explicit operator authorization.
+- Simulator work requires a registered simulator profile and active lease before any install, launch, or deeplink action.
+- If simulator, app artifact, signing, pairing, proxy cert, or instrumentation authorization is missing, use `blocked_prereqs[]`.
+- Promote mobile-derived backend endpoints through `surface_leads`; do not record them as mobile findings until app-local evidence exists.
+
+## Evidence
+
+Mobile app findings must call `bounty_record_finding` with `mobile_evidence`:
+
+- `platform`
+- `evidence_type`
+- `mobile_artifact_id`
+- `artifact_sha256`
+- `reproduction_limit`
+- optional `risk_class`, `component`, `app_id`, `app_version`, and `analyzer_version`
+
+Backend findings discovered from mobile traffic or static strings remain web/API findings unless independently validated through web tooling.
+
+## Handoff
+
+Use `bounty_write_wave_handoff` exactly once. For mobile surfaces include `coverage_mode`:
+
+- `static_only` for completed static review
+- `lead_only` when only backend leads were produced
+- `dynamic_attempted` or `dynamic_confirmed` only when simulator/device replay actually happened
+- `instrumentation_forbidden` when bypass/instrumentation would be needed but is not authorized
+
+Handoff field limits (enforced by `bounty_write_wave_handoff`; oversize values are rejected):
+- `summary`: 1–2000 chars
+- `chain_notes[]`: each entry 1–300 chars (max 20 entries)
+- `blocked_harness_runs[].harness`: 1–120 chars
+- `blocked_harness_runs[].reason`: 1–240 chars
+- `blocked_harness_runs[].needed_for`: 1–200 chars (optional)
+- `blocked_prereqs[].kind`: one of auth_missing, egress_unreachable, funded_wallet_missing, key_material_missing, external_credential_missing, device_missing, emulator_unavailable, simulator_unavailable, app_artifact_missing, pairing_or_signing_failed, proxy_cert_missing, pinning_bypass_not_authorized, instrumentation_not_authorized
+- `blocked_prereqs[].identifier_hint`: 1–64 chars, lowercase alphanumeric + ._- only (optional, no secrets — registry handle when known)
+- `blocked_prereqs[].reason`: 1–240 chars (free text screened for credentials at write time)
+- `blocked_prereqs[].evidence_summary`: 1–300 chars (optional, screened for credentials)
+- `blocked_prereqs[].needed_for`: 1–200 chars (optional)
+- `bypass_attempts[].condition`: 4–120 chars
+- `bypass_attempts[].attempt_summary`: 30–500 chars (max 30 entries)
+END hunter-ios CONTRACT
 
 ### chain
 BEGIN chain CONTRACT
@@ -1534,6 +1646,8 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 | `smart_contract_sui` | `bounty_sui_run` | `sui_move_test` | omit `fork_checkpoint` | `fork_checkpoint_used` (checkpoint) | `bounty_sui_fetch_package` |
 | `smart_contract_substrate` | `bounty_substrate_run` | `substrate_ink_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_substrate_fetch_storage` |
 | `smart_contract_cosmwasm` | `bounty_cosmwasm_run` | `cosmwasm_cw_multi_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_cosmwasm_fetch_contract` |
+| `mobile_android` | `bounty_android_static_scan` | `mobile_static_analysis` | — | — | — |
+| `mobile_ios` | `bounty_import_mobile_artifact` | `mobile_static_artifact` | — | — | — |
 
 Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):
 - `smart_contract_aptos` disambiguation deny reason: address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected
@@ -1746,6 +1860,8 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 | `smart_contract_sui` | `bounty_sui_run` | `sui_move_test` | omit `fork_checkpoint` | `fork_checkpoint_used` (checkpoint) | `bounty_sui_fetch_package` |
 | `smart_contract_substrate` | `bounty_substrate_run` | `substrate_ink_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_substrate_fetch_storage` |
 | `smart_contract_cosmwasm` | `bounty_cosmwasm_run` | `cosmwasm_cw_multi_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_cosmwasm_fetch_contract` |
+| `mobile_android` | `bounty_android_static_scan` | `mobile_static_analysis` | — | — | — |
+| `mobile_ios` | `bounty_import_mobile_artifact` | `mobile_static_artifact` | — | — | — |
 
 Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):
 - `smart_contract_aptos` disambiguation deny reason: address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected
@@ -1850,6 +1966,8 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 | `smart_contract_sui` | `bounty_sui_run` | `sui_move_test` | omit `fork_checkpoint` | `fork_checkpoint_used` (checkpoint) | `bounty_sui_fetch_package` |
 | `smart_contract_substrate` | `bounty_substrate_run` | `substrate_ink_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_substrate_fetch_storage` |
 | `smart_contract_cosmwasm` | `bounty_cosmwasm_run` | `cosmwasm_cw_multi_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_cosmwasm_fetch_contract` |
+| `mobile_android` | `bounty_android_static_scan` | `mobile_static_analysis` | — | — | — |
+| `mobile_ios` | `bounty_import_mobile_artifact` | `mobile_static_artifact` | — | — | — |
 
 Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):
 - `smart_contract_aptos` disambiguation deny reason: address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected
@@ -1983,6 +2101,8 @@ Generated from `mcp/lib/capability-packs.js`. Adding a new pack updates this tab
 | `smart_contract_sui` | `bounty_sui_run` | `sui_move_test` | omit `fork_checkpoint` | `fork_checkpoint_used` (checkpoint) | `bounty_sui_fetch_package` |
 | `smart_contract_substrate` | `bounty_substrate_run` | `substrate_ink_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_substrate_fetch_storage` |
 | `smart_contract_cosmwasm` | `bounty_cosmwasm_run` | `cosmwasm_cw_multi_test` | omit `fork_block` | `fork_block_used` (block) | `bounty_cosmwasm_fetch_contract` |
+| `mobile_android` | `bounty_android_static_scan` | `mobile_static_analysis` | — | — | — |
+| `mobile_ios` | `bounty_import_mobile_artifact` | `mobile_static_artifact` | — | — | — |
 
 Disambiguation deny reasons (use as `reasoning` when the disambiguation read does not resolve):
 - `smart_contract_aptos` disambiguation deny reason: address does not resolve on the claimed Aptos network; chain_family/chain_id mismatch suspected

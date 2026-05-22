@@ -674,6 +674,25 @@ test("hunter prompt teaches the blocked_prereqs[] policy and orchestrator handle
   assert.match(reporterPrompt, /canonical session report/, "reporter prompt must require canonical report.md path");
 });
 
+test("hunter finding guidance requires bounded redacted evidence summaries", () => {
+  const sourcePrompt = readFile("prompts/roles/hunter.md");
+  const generatedPrompt = readFile(".claude/agents/hunter-agent.md");
+  const generatedSkill = readFile("adapters/codex/skills/bob-hunt/SKILL.md");
+
+  for (const [label, content] of [
+    ["source hunter prompt", sourcePrompt],
+    ["generated hunter prompt", generatedPrompt],
+    ["generated Codex skill", generatedSkill],
+  ]) {
+    assert.doesNotMatch(content, /FULL\s+—\s+do not truncate/, `${label} still asks hunters for unbounded PoC text`);
+    assert.match(content, /bounded and redacted/i, `${label} missing bounded/redacted finding guidance`);
+    assert.match(content, /MCP artifact\/request refs/i, `${label} missing MCP artifact/request reference guidance`);
+    assert.match(content, /Never paste full raw request\/response bodies/i, `${label} missing raw body prohibition`);
+    assert.match(content, /Authorization headers/i, `${label} missing auth header prohibition`);
+    assert.match(content, /huge dumps/i, `${label} missing huge dump prohibition`);
+  }
+});
+
 test("bob-spec loader is wired into the hunter brief", () => {
   const briefSource = readFile("mcp/lib/hunter-brief.js");
   assert.match(
@@ -703,7 +722,7 @@ test("bob-spec loader is wired into the hunter brief", () => {
 
 test("bountyagent skill stays orchestration-sized and preserves FSM shape", () => {
   const orchestrator = readFile(".claude/skills/bob-hunt/SKILL.md");
-  // Line cap is 360: web orchestration plus the EVM/SVM/Move/Substrate/
+  // Line cap is 380: web/mobile orchestration plus the EVM/SVM/Move/Substrate/
   // CosmWasm spawn templates fit, plus the post-v2 capability tool surface
   // (C2 doc-vs-behavior, C4 multi-account, I1 surface graph, I6 findings index,
   // I7 chain state tree, IP4 audit reports + I5 invariant templates, X3 + X5
@@ -711,7 +730,7 @@ test("bountyagent skill stays orchestration-sized and preserves FSM shape", () =
   // extract per-family spawn details to separate skill files
   // (e.g., bob-spawn-substrate.md, bob-spawn-cosmwasm.md) and reference them
   // from this orchestrator skill via @-includes or short cross-links.
-  assert.ok(lineCount(".claude/skills/bob-hunt/SKILL.md") <= 360, "bountyagent skill is too large");
+  assert.ok(lineCount(".claude/skills/bob-hunt/SKILL.md") <= 380, "bountyagent skill is too large");
   assert.match(orchestrator, /RECON\s*→\s*AUTH\s*→\s*HUNT\s*→\s*CHAIN\s*→\s*VERIFY\s*→\s*GRADE\s*→\s*REPORT/);
   for (const phase of ["RECON", "AUTH", "HUNT", "CHAIN", "VERIFY", "GRADE", "REPORT", "EXPLORE"]) {
     assert.match(orchestrator, new RegExp(`PHASE [0-9]+: ${phase}|${phase}`), `missing ${phase}`);
@@ -2422,6 +2441,26 @@ test("bounty_record_finding inputSchema requires sc_evidence sub-fields for SC f
   // regex enforcement runs at normalizeScEvidence time, not in JSON schema.
   assert.equal(sc.properties.contract_address.type, "string");
   assert.equal(sc.properties.match_test.type, "string");
+});
+
+test("bounty_record_finding inputSchema mirrors canonical text limits and redaction contract", () => {
+  const { FINDING_TEXT_LIMITS } = require("../mcp/lib/finding-store.js");
+  const tool = TOOLS.find((entry) => entry.name === "bounty_record_finding");
+  assert.ok(tool, "bounty_record_finding tool not registered");
+
+  for (const field of ["title", "cwe", "endpoint", "description", "proof_of_concept", "response_evidence", "impact", "auth_profile"]) {
+    assert.equal(
+      tool.inputSchema.properties[field].maxLength,
+      FINDING_TEXT_LIMITS[field],
+      `${field} schema maxLength must match the runtime validator`,
+    );
+  }
+
+  for (const field of ["description", "proof_of_concept", "response_evidence", "impact"]) {
+    const description = tool.inputSchema.properties[field].description || "";
+    assert.match(description, /redacted|raw request\/response bodies/i, `${field} must warn against raw evidence dumps`);
+    assert.match(description, /Authorization headers|tokens|cookies/i, `${field} must warn against credential material`);
+  }
 });
 
 test("REPORT phase uses compact session summary instead of root reading report markdown", () => {

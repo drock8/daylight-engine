@@ -68,7 +68,12 @@
       "Bash(echo *)",
       "Read",
       "Glob",
-      "Grep"
+      "Grep",
+      "mcp__bountyagent__bounty_import_mobile_artifact",
+      "mcp__bountyagent__bounty_android_static_scan",
+      "mcp__bountyagent__bounty_list_mobile_device_profiles",
+      "mcp__bountyagent__bounty_acquire_mobile_device_lease",
+      "mcp__bountyagent__bounty_release_mobile_device_lease"
     ]
   },
   "hooks": {
@@ -174,6 +179,26 @@
       },
       {
         "matcher": "hunter-cosmwasm-agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/hunter-subagent-stop.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "hunter-android-agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/hunter-subagent-stop.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "hunter-ios-agent",
         "hooks": [
           {
             "type": "command",

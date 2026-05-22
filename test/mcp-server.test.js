@@ -331,6 +331,12 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_import_http_traffic",
   "bounty_public_intel",
   "bounty_import_static_artifact",
+  "bounty_import_mobile_artifact",
+  "bounty_android_static_scan",
+  "bounty_register_mobile_device_profile",
+  "bounty_list_mobile_device_profiles",
+  "bounty_acquire_mobile_device_lease",
+  "bounty_release_mobile_device_lease",
   "bounty_ingest_schema_doc",
   "bounty_query_schema_contracts",
   "bounty_run_doc_delta",
@@ -1413,6 +1419,10 @@ test("MCP tool manifest exposes required policy metadata for every tool", () => 
     assert.equal(typeof metadata.global_preapproval, "boolean");
     assert.equal(typeof metadata.network_access, "boolean");
     assert.equal(typeof metadata.browser_access, "boolean");
+    assert.equal(typeof metadata.device_access, "object");
+    assert.equal(typeof metadata.device_access.required, "boolean");
+    assert.ok(Array.isArray(metadata.device_access.actions));
+    assert.equal(Object.isFrozen(metadata.device_access.actions), true, `${tool.name} device_access.actions should be frozen`);
     assert.equal(typeof metadata.scope_required, "boolean");
     assert.equal(typeof metadata.sensitive_output, "boolean");
     assert.ok(Array.isArray(metadata.session_artifacts_written));
@@ -1502,6 +1512,18 @@ test("MCP per-tool modules preserve representative tool behavior", () => {
   assert.equal(TOOL_MANIFEST.bounty_route_surfaces.browser_access, false);
   assert.equal(TOOL_MANIFEST.bounty_route_surfaces.sensitive_output, false);
   assert.deepEqual(TOOL_MANIFEST.bounty_route_surfaces.session_artifacts_written, ["surface-routes.json"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_import_mobile_artifact.role_bundles, ["hunter-android", "hunter-ios", "orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_import_mobile_artifact.mutating, true);
+  assert.equal(TOOL_MANIFEST.bounty_import_mobile_artifact.device_access.required, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_import_mobile_artifact.session_artifacts_written, ["mobile-apps", "mobile-artifacts.jsonl"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_android_static_scan.role_bundles, ["hunter-android", "orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_android_static_scan.mutating, true);
+  assert.deepEqual(TOOL_MANIFEST.bounty_android_static_scan.session_artifacts_written, ["mobile-static-scan-results.jsonl"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_register_mobile_device_profile.role_bundles, ["orchestrator"]);
+  assert.equal(TOOL_MANIFEST.bounty_register_mobile_device_profile.global_preapproval, false);
+  assert.deepEqual(TOOL_MANIFEST.bounty_list_mobile_device_profiles.role_bundles, ["hunter-android", "hunter-ios", "orchestrator"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_acquire_mobile_device_lease.session_artifacts_written, ["mobile-device-leases.jsonl"]);
+  assert.deepEqual(TOOL_MANIFEST.bounty_release_mobile_device_lease.session_artifacts_written, ["mobile-device-leases.jsonl"]);
   assert.equal(byName.get("bounty_http_scan").inputSchema.properties.url.type, "string");
   assert.equal(byName.get("bounty_http_scan").inputSchema.properties.egress_profile.type, "string");
   assert.deepEqual(byName.get("bounty_http_scan").inputSchema.required, ["method", "url", "target_domain"]);
@@ -3947,6 +3969,9 @@ test("bounty_read_session_summary aggregates blocked_prereqs by (kind, identifie
     });
     const summary = JSON.parse(readSessionSummary({ target_domain: domain })).summary;
     assert.equal(summary.blocked_prereqs.total_blocked_surfaces, 3);
+    assert.equal(summary.accepted_coverage_gaps.status, "accepted_terminal_gap");
+    assert.equal(summary.accepted_coverage_gaps.accepted, true);
+    assert.deepEqual(summary.accepted_coverage_gaps.surface_ids, ["surface-a", "surface-b", "surface-c"]);
     // by_kind ordered by actionability: auth_missing (rank 0) before egress_unreachable (rank 1).
     assert.equal(summary.blocked_prereqs.by_kind[0].kind, "auth_missing");
     assert.equal(summary.blocked_prereqs.by_kind[1].kind, "egress_unreachable");
@@ -8993,6 +9018,7 @@ test("bounty_record_finding appends findings.jsonl and bounty_read_findings pres
           hunter_agent: "hunter-agent",
           brief_profile: "web",
           sc_evidence: null,
+          mobile_evidence: null,
           auth_profile: null,
         },
         {
@@ -9015,6 +9041,7 @@ test("bounty_record_finding appends findings.jsonl and bounty_read_findings pres
           hunter_agent: "hunter-agent",
           brief_profile: "web",
           sc_evidence: null,
+          mobile_evidence: null,
           auth_profile: null,
         },
       ],
@@ -11858,6 +11885,7 @@ test("bounty_read_findings, bounty_list_findings, and bounty_wave_status return 
       by_severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
       has_high_or_critical: false,
       coverage: null,
+      accepted_coverage_gaps: null,
       transition_blockers: [{
         code: "state_unavailable",
         message: "session state could not be read for HUNT -> CHAIN gating",
@@ -11953,6 +11981,7 @@ test("bounty_list_findings and bounty_wave_status keep their external shapes whi
       by_severity: { critical: 1, high: 0, medium: 0, low: 1, info: 0 },
       has_high_or_critical: true,
       coverage: null,
+      accepted_coverage_gaps: null,
       transition_blockers: [{
         code: "state_unavailable",
         message: "session state could not be read for HUNT -> CHAIN gating",
@@ -18729,6 +18758,38 @@ test("bounty_wave_status excludes explored surfaces from open_requeue_surface_id
     assert.equal(
       result.transition_blockers.some((item) => item.code === "open_requeue_coverage"),
       false,
+    );
+  });
+});
+
+test("bounty_wave_status marks accepted terminal coverage gaps after HUNT", () => {
+  withTempHome(() => {
+    const domain = "accepted-gap-status.example.com";
+    seedSessionState(domain, {
+      phase: "REPORT",
+      hunt_wave: 2,
+      pending_wave: null,
+      explored: ["surface-a"],
+      terminally_blocked: [
+        buildTerminallyBlockedEntry("surface-b", "auth_missing", "attacker", { reason: "needs attacker account" }),
+      ],
+    });
+    seedAttackSurfaces(domain, [
+      { id: "surface-a", hosts: [`https://${domain}`], priority: "HIGH" },
+      { id: "surface-b", hosts: [`https://${domain}/upload`], priority: "HIGH" },
+    ]);
+
+    const result = JSON.parse(waveStatus({ target_domain: domain }));
+    assert.equal(result.coverage.coverage_pct, 50);
+    assert.equal(result.coverage.closed_pct, 100);
+    assert.equal(result.coverage.blocked_high, 1);
+    assert.equal(result.accepted_coverage_gaps.status, "accepted_terminal_gap");
+    assert.equal(result.accepted_coverage_gaps.accepted, true);
+    assert.deepEqual(result.accepted_coverage_gaps.surface_ids, ["surface-b"]);
+    assert.equal(
+      result.transition_blockers.some((item) => item.code === "blocked_high_surfaces"),
+      false,
+      "accepted terminal gaps should not remain active wave_status blockers after HUNT",
     );
   });
 });

@@ -3,6 +3,9 @@
 const os = require("os");
 const path = require("path");
 const {
+  MOBILE_ARTIFACT_ID_RE,
+  MOBILE_DEVICE_LEASE_ID_RE,
+  MOBILE_DEVICE_PROFILE_ID_RE,
   SESSION_LOCK_NAME,
   STATIC_ARTIFACT_ID_RE,
   VERIFICATION_ROUND_FILE_MAP,
@@ -118,6 +121,30 @@ function assertStaticArtifactId(artifactId) {
   return normalized;
 }
 
+function assertMobileArtifactId(artifactId) {
+  const normalized = assertNonEmptyString(artifactId, "mobile_artifact_id");
+  if (!MOBILE_ARTIFACT_ID_RE.test(normalized)) {
+    throw new Error("mobile_artifact_id must match MA-N");
+  }
+  return normalized;
+}
+
+function assertMobileDeviceProfileId(profileId) {
+  const normalized = assertNonEmptyString(profileId, "profile_id");
+  if (!MOBILE_DEVICE_PROFILE_ID_RE.test(normalized)) {
+    throw new Error("profile_id must match MDP-N");
+  }
+  return normalized;
+}
+
+function assertMobileDeviceLeaseId(leaseId) {
+  const normalized = assertNonEmptyString(leaseId, "lease_id");
+  if (!MOBILE_DEVICE_LEASE_ID_RE.test(normalized)) {
+    throw new Error("lease_id must match MDL-N");
+  }
+  return normalized;
+}
+
 function staticArtifactImportDir(domain) {
   return path.join(sessionDir(domain), "static-imports");
 }
@@ -168,6 +195,30 @@ function symbolSurfaceIndexPath(domain) {
 
 function staticScanResultsJsonlPath(domain) {
   return path.join(sessionDir(domain), "static-scan-results.jsonl");
+}
+
+function mobileArtifactImportDir(domain) {
+  return path.join(sessionDir(domain), "mobile-apps");
+}
+
+function mobileArtifactPath(domain, artifactId) {
+  return path.join(mobileArtifactImportDir(domain), `${assertMobileArtifactId(artifactId)}.bin`);
+}
+
+function mobileArtifactsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "mobile-artifacts.jsonl");
+}
+
+function mobileStaticScanResultsJsonlPath(domain) {
+  return path.join(sessionDir(domain), "mobile-static-scan-results.jsonl");
+}
+
+function mobileDeviceProfilesJsonlPath(domain) {
+  return path.join(sessionDir(domain), "mobile-device-profiles.jsonl");
+}
+
+function mobileDeviceLeasesJsonlPath(domain) {
+  return path.join(sessionDir(domain), "mobile-device-leases.jsonl");
 }
 
 function verificationRoundPaths(domain, round) {
@@ -223,6 +274,9 @@ function reportMarkdownPath(domain) {
 
 module.exports = {
   assertSafeDomain,
+  assertMobileArtifactId,
+  assertMobileDeviceLeaseId,
+  assertMobileDeviceProfileId,
   assertStaticArtifactId,
   attackSurfacePath,
   bobSpecPath,
@@ -260,6 +314,12 @@ module.exports = {
   staticArtifactPath,
   staticArtifactsJsonlPath,
   staticScanResultsJsonlPath,
+  mobileArtifactImportDir,
+  mobileArtifactPath,
+  mobileArtifactsJsonlPath,
+  mobileStaticScanResultsJsonlPath,
+  mobileDeviceLeasesJsonlPath,
+  mobileDeviceProfilesJsonlPath,
   trafficJsonlPath,
   verificationAdjudicationPath,
   verificationAttemptsDir,

@@ -5,8 +5,47 @@ const WAVE_ID_RE = /^w([1-9]\d*)$/;
 const AGENT_ID_RE = /^a([1-9]\d*)$/;
 
 const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"];
-const SURFACE_TYPE_VALUES = ["web", "smart_contract"];
+const SURFACE_TYPE_VALUES = ["web", "smart_contract", "mobile_app"];
 const CHAIN_FAMILY_VALUES = ["evm", "svm", "aptos", "sui", "substrate", "cosmwasm"];
+const MOBILE_PLATFORM_VALUES = ["android", "ios"];
+const MOBILE_ARTIFACT_ID_RE = /^MA-([1-9]\d*)$/;
+const MOBILE_ARTIFACT_TYPE_VALUES = ["android_apk", "android_aab", "android_xapk", "ios_ipa", "ios_app_bundle"];
+const MOBILE_ARTIFACT_MAX_BYTES = 25_000_000;
+const MOBILE_ARTIFACT_LOG_MAX_RECORDS = 500;
+const MOBILE_STATIC_SCAN_RESULTS_MAX_RECORDS = 1_000;
+const MOBILE_STATIC_SCAN_HINT_MAX_ITEMS = 10;
+const MOBILE_BACKEND_LEAD_MAX_ITEMS = 15;
+const MOBILE_DEVICE_PROFILE_ID_RE = /^MDP-([1-9]\d*)$/;
+const MOBILE_DEVICE_LEASE_ID_RE = /^MDL-([1-9]\d*)$/;
+const MOBILE_DEVICE_PROFILE_KIND_VALUES = ["android_emulator", "android_physical", "ios_simulator", "ios_physical"];
+const MOBILE_DEVICE_ACTION_VALUES = [
+  "install_launch",
+  "deeplink_probe",
+  "log_capture",
+  "storage_probe",
+  "proxy_intercept",
+  "instrumentation",
+  "pinning_bypass",
+  "keychain_container_access",
+];
+const MOBILE_EVIDENCE_TYPE_VALUES = ["static_analysis", "dynamic_replay", "hybrid"];
+const MOBILE_EVIDENCE_RISK_CLASS_VALUES = [
+  "exported_component",
+  "deeplink",
+  "permission",
+  "network_config",
+  "hardcoded_endpoint",
+  "secret_hint",
+  "other",
+];
+const MOBILE_EVIDENCE_REPRODUCTION_LIMIT_VALUES = ["static_only", "requires_device", "requires_backend_validation"];
+const MOBILE_COVERAGE_MODE_VALUES = [
+  "static_only",
+  "dynamic_attempted",
+  "dynamic_confirmed",
+  "instrumentation_forbidden",
+  "lead_only",
+];
 const SVM_CLUSTER_VALUES = ["mainnet-beta", "devnet", "testnet"];
 // Aptos and Sui both identify networks by string name in tooling and RPC URLs.
 // Integer chain IDs exist on Aptos (1, 2, ...), but they're used for replay
@@ -158,6 +197,22 @@ module.exports = {
   GRADE_VERDICT_VALUES,
   HTTP_AUDIT_LOG_MAX_RECORDS,
   HTTP_AUDIT_SUMMARY_MAX_ITEMS,
+  MOBILE_ARTIFACT_ID_RE,
+  MOBILE_ARTIFACT_LOG_MAX_RECORDS,
+  MOBILE_ARTIFACT_MAX_BYTES,
+  MOBILE_ARTIFACT_TYPE_VALUES,
+  MOBILE_BACKEND_LEAD_MAX_ITEMS,
+  MOBILE_COVERAGE_MODE_VALUES,
+  MOBILE_DEVICE_ACTION_VALUES,
+  MOBILE_DEVICE_LEASE_ID_RE,
+  MOBILE_DEVICE_PROFILE_ID_RE,
+  MOBILE_DEVICE_PROFILE_KIND_VALUES,
+  MOBILE_EVIDENCE_REPRODUCTION_LIMIT_VALUES,
+  MOBILE_EVIDENCE_RISK_CLASS_VALUES,
+  MOBILE_EVIDENCE_TYPE_VALUES,
+  MOBILE_PLATFORM_VALUES,
+  MOBILE_STATIC_SCAN_HINT_MAX_ITEMS,
+  MOBILE_STATIC_SCAN_RESULTS_MAX_RECORDS,
   PHASE_VALUES,
   PUBLIC_INTEL_MAX_ITEMS,
   PUBLIC_INTEL_MAX_RESPONSE_BYTES,

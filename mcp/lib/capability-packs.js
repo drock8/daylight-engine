@@ -30,6 +30,12 @@ const SMART_CONTRACT_CONTEXT_BUDGET = Object.freeze({
   attempt_log_required: false,
 });
 
+const MOBILE_CONTEXT_BUDGET = Object.freeze({
+  candidate_pack_limit: 5,
+  full_pack_read_limit: 2,
+  attempt_log_required: false,
+});
+
 const DEFAULT_REPLAY_SAFETY = Object.freeze({
   mode: "serialized",
   lease_scope: "attempt_pack",
@@ -302,6 +308,66 @@ const SMART_CONTRACT_COSMWASM_CAPABILITY_PACK = Object.freeze({
   }),
 });
 
+const MOBILE_ANDROID_CAPABILITY_PACK = Object.freeze({
+  id: "mobile_android",
+  capability_pack_version: 1,
+  hunter_agent: "hunter-android-agent",
+  brief_profile: "mobile_android",
+  role_bundles: Object.freeze(["hunter-shared", "hunter-android"]),
+  completion_gate: "mobile_wave_handoff",
+  context_budget: MOBILE_CONTEXT_BUDGET,
+  verifier: Object.freeze({
+    replay_tool: "bounty_android_static_scan",
+    sample_type: "mobile_static_analysis",
+    fresh_state_omit_field: null,
+    block_reference_field: null,
+    disambiguation: null,
+    replay_safety: DEFAULT_REPLAY_SAFETY,
+  }),
+  evidence: Object.freeze({
+    runner: "bounty_android_static_scan",
+    sample_type: "mobile_static_analysis",
+  }),
+  spawn: Object.freeze({
+    profile: "mobile",
+    platform: "android",
+    role_id: "hunter-android",
+    hunter_name_prefix: "hunter-android",
+    workflow_summary: "bounty_import_mobile_artifact -> bounty_android_static_scan -> record app-local findings with mobile_evidence or promote qualified backend endpoints as surface_leads; device/emulator work requires a registered profile, lease, and explicit authorization.",
+    blocked_prereq_kind_options: "device_missing or emulator_unavailable or app_artifact_missing or instrumentation_not_authorized",
+  }),
+});
+
+const MOBILE_IOS_CAPABILITY_PACK = Object.freeze({
+  id: "mobile_ios",
+  capability_pack_version: 1,
+  hunter_agent: "hunter-ios-agent",
+  brief_profile: "mobile_ios",
+  role_bundles: Object.freeze(["hunter-shared", "hunter-ios"]),
+  completion_gate: "mobile_wave_handoff",
+  context_budget: MOBILE_CONTEXT_BUDGET,
+  verifier: Object.freeze({
+    replay_tool: "bounty_import_mobile_artifact",
+    sample_type: "mobile_static_artifact",
+    fresh_state_omit_field: null,
+    block_reference_field: null,
+    disambiguation: null,
+    replay_safety: DEFAULT_REPLAY_SAFETY,
+  }),
+  evidence: Object.freeze({
+    runner: "bounty_import_mobile_artifact",
+    sample_type: "mobile_static_artifact",
+  }),
+  spawn: Object.freeze({
+    profile: "mobile",
+    platform: "ios",
+    role_id: "hunter-ios",
+    hunter_name_prefix: "hunter-ios",
+    workflow_summary: "bounty_import_mobile_artifact for IPA/app-bundle metadata and static hints; simulator or physical iOS work requires a registered profile, lease, signing/pairing prerequisites, and explicit authorization.",
+    blocked_prereq_kind_options: "simulator_unavailable or app_artifact_missing or pairing_or_signing_failed or instrumentation_not_authorized",
+  }),
+});
+
 const CAPABILITY_PACKS = Object.freeze({
   web: WEB_CAPABILITY_PACK,
   smart_contract_evm: SMART_CONTRACT_EVM_CAPABILITY_PACK,
@@ -310,6 +376,8 @@ const CAPABILITY_PACKS = Object.freeze({
   smart_contract_sui: SMART_CONTRACT_SUI_CAPABILITY_PACK,
   smart_contract_substrate: SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK,
   smart_contract_cosmwasm: SMART_CONTRACT_COSMWASM_CAPABILITY_PACK,
+  mobile_android: MOBILE_ANDROID_CAPABILITY_PACK,
+  mobile_ios: MOBILE_IOS_CAPABILITY_PACK,
 });
 
 // Hunter-role registry — keyed by role_id, deduped across packs. Multiple
@@ -366,6 +434,22 @@ const HUNTER_ROLES = Object.freeze({
     role_bundles: Object.freeze(["hunter-shared", "hunter-cosmwasm"]),
     prompt_body_filename: "hunter-cosmwasm.md",
   }),
+  "hunter-android": Object.freeze({
+    role_id: "hunter-android",
+    name: "hunter-android-agent",
+    description: "Android mobile app bug bounty hunter — spawned per mobile_app surface with platform=android, imports in-scope app artifacts, runs static analysis, and records mobile_evidence or qualified backend leads",
+    color: "green",
+    role_bundles: Object.freeze(["hunter-shared", "hunter-android"]),
+    prompt_body_filename: "hunter-android.md",
+  }),
+  "hunter-ios": Object.freeze({
+    role_id: "hunter-ios",
+    name: "hunter-ios-agent",
+    description: "iOS mobile app bug bounty hunter — spawned per mobile_app surface with platform=ios, handles IPA/app-bundle static context and simulator/physical-device blockers under explicit policy",
+    color: "orange",
+    role_bundles: Object.freeze(["hunter-shared", "hunter-ios"]),
+    prompt_body_filename: "hunter-ios.md",
+  }),
 });
 
 const WEB_SURFACE_TYPES = Object.freeze([
@@ -397,6 +481,11 @@ const SMART_CONTRACT_CHAIN_FAMILY_TO_PACK = Object.freeze({
   sui: SMART_CONTRACT_SUI_CAPABILITY_PACK,
   substrate: SMART_CONTRACT_SUBSTRATE_CAPABILITY_PACK,
   cosmwasm: SMART_CONTRACT_COSMWASM_CAPABILITY_PACK,
+});
+
+const MOBILE_PLATFORM_TO_PACK = Object.freeze({
+  android: MOBILE_ANDROID_CAPABILITY_PACK,
+  ios: MOBILE_IOS_CAPABILITY_PACK,
 });
 
 function normalizeSurfaceType(value) {
@@ -436,6 +525,12 @@ function hunterAgentNamesForCapabilityPacks() {
 function smartContractCapabilityPacks() {
   return Object.values(CAPABILITY_PACKS).filter(
     (pack) => pack && pack.spawn && pack.spawn.profile === "smart_contract",
+  );
+}
+
+function mobileCapabilityPacks() {
+  return Object.values(CAPABILITY_PACKS).filter(
+    (pack) => pack && pack.spawn && pack.spawn.profile === "mobile",
   );
 }
 
@@ -509,6 +604,33 @@ function classifySurfaceCapability(surface) {
     }
     throw new Error(
       `smart_contract surface ${surface && surface.id ? surface.id : "(unknown)"} is missing chain_family; capability routing requires it`,
+    );
+  }
+
+  if (normalizedType === "mobile_app") {
+    const rawPlatform = surface && typeof surface === "object" ? surface.platform : null;
+    const normalizedPlatform = normalizeSurfaceType(rawPlatform);
+    if (normalizedPlatform) {
+      const pack = MOBILE_PLATFORM_TO_PACK[normalizedPlatform];
+      if (pack) {
+        reasons.push(`platform:${normalizedPlatform}`);
+        return {
+          surface_type: surfaceType,
+          capability_pack: pack.id,
+          capability_pack_version: pack.capability_pack_version,
+          hunter_agent: pack.hunter_agent,
+          brief_profile: pack.brief_profile,
+          context_budget: cloneContextBudget(pack.context_budget),
+          confidence: "high",
+          reasons,
+        };
+      }
+      throw new Error(
+        `mobile_app surface ${surface && surface.id ? surface.id : "(unknown)"} has unsupported platform ${normalizedPlatform}; register a capability pack or correct the surface`,
+      );
+    }
+    throw new Error(
+      `mobile_app surface ${surface && surface.id ? surface.id : "(unknown)"} is missing platform; capability routing requires it`,
     );
   }
 
@@ -607,6 +729,11 @@ function normalizeAssignmentRouteMetadata(assignment) {
         "assignment with surface_type=smart_contract is missing capability_pack/hunter_agent/brief_profile; route the surface via bounty_route_surfaces before starting the wave",
       );
     }
+    if (surfaceType === "mobile_app") {
+      throw new Error(
+        "assignment with surface_type=mobile_app is missing capability_pack/hunter_agent/brief_profile; route the surface via bounty_route_surfaces before starting the wave",
+      );
+    }
     return defaultWebRouteMetadata();
   }
 
@@ -643,7 +770,7 @@ function normalizeAssignmentRouteMetadata(assignment) {
 // at read time keeps verifier/evidence/grader/reporter consumers from
 // each having to implement the same fallback. Returns null when the
 // record carries no usable signal.
-function capabilityPackForLegacyFinding({ surface_type: surfaceType, sc_evidence: scEvidence } = {}) {
+function capabilityPackForLegacyFinding({ surface_type: surfaceType, sc_evidence: scEvidence, mobile_evidence: mobileEvidence } = {}) {
   if (surfaceType === "smart_contract") {
     const chainFamily = scEvidence && typeof scEvidence === "object" ? scEvidence.chain_family : null;
     const normalized = normalizeSurfaceType(chainFamily);
@@ -661,6 +788,18 @@ function capabilityPackForLegacyFinding({ surface_type: surfaceType, sc_evidence
     // Caller decides whether to leave nulls or treat as malformed.
     return null;
   }
+  if (surfaceType === "mobile_app") {
+    const platform = mobileEvidence && typeof mobileEvidence === "object" ? normalizeSurfaceType(mobileEvidence.platform) : null;
+    if (platform && MOBILE_PLATFORM_TO_PACK[platform]) {
+      const pack = MOBILE_PLATFORM_TO_PACK[platform];
+      return {
+        capability_pack: pack.id,
+        hunter_agent: pack.hunter_agent,
+        brief_profile: pack.brief_profile,
+      };
+    }
+    return null;
+  }
   // Any non-SC legacy row maps to the web pack.
   return defaultWebRouteMetadata();
 }
@@ -670,6 +809,7 @@ module.exports = {
   DEFAULT_CONTEXT_BUDGET,
   DEFAULT_REPLAY_SAFETY,
   HUNTER_ROLES,
+  MOBILE_CONTEXT_BUDGET,
   WEB_SURFACE_TYPES,
   capabilityPackForLegacyFinding,
   chainSpecificHunterBundles,
@@ -680,6 +820,7 @@ module.exports = {
   hunterAgentNamesForCapabilityPacks,
   hunterRoleSpec,
   hunterRoleSpecs,
+  mobileCapabilityPacks,
   normalizeAssignmentRouteMetadata,
   normalizeContextBudget,
   normalizeSurfaceType,

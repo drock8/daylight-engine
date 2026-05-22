@@ -10,6 +10,9 @@ const {
   parseWaveId,
 } = require("./validation.js");
 const {
+  MOBILE_COVERAGE_MODE_VALUES,
+} = require("./constants.js");
+const {
   ERROR_CODES,
   ToolError,
 } = require("./envelope.js");
@@ -224,6 +227,14 @@ const BLOCKED_PREREQ_KIND_VALUES = Object.freeze([
   "funded_wallet_missing",
   "key_material_missing",
   "external_credential_missing",
+  "device_missing",
+  "emulator_unavailable",
+  "simulator_unavailable",
+  "app_artifact_missing",
+  "pairing_or_signing_failed",
+  "proxy_cert_missing",
+  "pinning_bypass_not_authorized",
+  "instrumentation_not_authorized",
 ]);
 
 const BLOCKED_PREREQ_IDENTIFIER_HINT_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
@@ -429,6 +440,49 @@ function assertSmartContractCompletionEvidence({
   );
 }
 
+function normalizeCoverageMode(value, { surfaceType = null } = {}) {
+  if (value == null) {
+    if (surfaceType === "mobile_app") {
+      throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "coverage_mode is required for mobile_app handoffs");
+    }
+    return null;
+  }
+  const mode = assertNonEmptyString(value, "coverage_mode");
+  if (!MOBILE_COVERAGE_MODE_VALUES.includes(mode)) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, `coverage_mode must be one of ${MOBILE_COVERAGE_MODE_VALUES.join(", ")}`);
+  }
+  return mode;
+}
+
+function assertMobileCompletionEvidence({
+  surfaceType,
+  surfaceStatus,
+  coverageMode,
+  findingCount,
+  leadSurfaceCount = 0,
+}) {
+  if (surfaceType !== "mobile_app") return;
+  if (surfaceStatus !== "complete") return;
+  if (coverageMode === "dynamic_confirmed" && findingCount === 0) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "mobile_app handoff cannot use coverage_mode dynamic_confirmed without at least one mobile_evidence-backed finding",
+    );
+  }
+  if (coverageMode === "lead_only" && findingCount > 0) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "mobile_app handoff cannot use coverage_mode lead_only when app-local findings were recorded; use static_only or a dynamic mode",
+    );
+  }
+  if (coverageMode === "lead_only" && leadSurfaceCount === 0) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "mobile_app handoff with coverage_mode lead_only must include at least one lead_surface_ids or surface_lead_ids entry",
+    );
+  }
+}
+
 function validateWaveHandoffPayload(payload, {
   targetDomain,
   wave,
@@ -471,15 +525,25 @@ function validateWaveHandoffPayload(payload, {
   const surfaceType = effectiveSurfaceType !== undefined
     ? effectiveSurfaceType
     : surfaceTypeFallback;
+  const coverageMode = normalizeCoverageMode(payload.coverage_mode, { surfaceType });
   assertSmartContractCompletionEvidence({
     surfaceType,
     surfaceStatus,
     bypassAttempts,
     findingCount: findingsForRun.length,
   });
+  assertMobileCompletionEvidence({
+    surfaceType,
+    surfaceStatus,
+    coverageMode,
+    findingCount: findingsForRun.length,
+    leadSurfaceCount: normalizeStringArray(payload.lead_surface_ids, "lead_surface_ids").length +
+      normalizeStringArray(payload.surface_lead_ids, "surface_lead_ids").length,
+  });
 
   return {
     surface_type: surfaceType,
+    coverage_mode: coverageMode,
     summary: normalizeHandoffSummary(payload),
     chain_notes: normalizeChainNotes(payload.chain_notes),
     blocked_harness_runs: blockedHarnessRuns,
@@ -578,6 +642,7 @@ module.exports = {
   assertBlockedHarnessConsistency,
   assertBlockedPrereqConsistency,
   assertSmartContractCompletionEvidence,
+  assertMobileCompletionEvidence,
   assignmentRequiresToken,
   attachHandoffOrigin,
   computeHandoffAssignmentHash,
@@ -592,6 +657,7 @@ module.exports = {
   normalizeBlockedPrereqs,
   normalizeBypassAttempts,
   normalizeChainNotes,
+  normalizeCoverageMode,
   normalizeHandoffSummary,
   normalizeHandoffProvenanceSignature,
   sha256Hex,

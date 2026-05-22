@@ -45,12 +45,21 @@ MCP_OWNED_EXACT = {
     "surface-routes.json",
     "static-artifacts.jsonl",
     "static-scan-results.jsonl",
+    "mobile-artifacts.jsonl",
+    "mobile-static-scan-results.jsonl",
+    "mobile-device-profiles.jsonl",
+    "mobile-device-leases.jsonl",
     "pipeline-events.jsonl",
     ".handoff-signing-key.json",
 }
 
 MCP_OWNED_DIRS = {
     "static-imports",
+    "mobile-apps",
+    "mobile-traces",
+    "screenshots",
+    "device-logs",
+    "app-containers",
 }
 
 MCP_OWNED_PATTERNS = [

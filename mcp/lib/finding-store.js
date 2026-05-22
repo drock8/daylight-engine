@@ -181,6 +181,7 @@ function buildFindingRecord(args, context, id) {
     hunter_agent: context.hunterAgent,
     brief_profile: context.briefProfile,
     sc_evidence: args.sc_evidence,
+    mobile_evidence: args.mobile_evidence,
     dedupe_key: args.dedupe_key,
     auth_profile: args.auth_profile,
     force_record: args.force_record === true,
@@ -208,7 +209,7 @@ function recordFinding(args) {
     surfaceId = assertNonEmptyString(args.surface_id, "surface_id");
     const assignment = validateAssignedWaveAgentSurface(domain, wave, agent, surfaceId);
     const rawSurfaceType = assignment && assignment.surface_type ? assignment.surface_type : null;
-    surfaceType = rawSurfaceType === "smart_contract" ? "smart_contract" : "web";
+    surfaceType = rawSurfaceType === "smart_contract" || rawSurfaceType === "mobile_app" ? rawSurfaceType : "web";
     capabilityPack = assignment.capability_pack || null;
     hunterAgent = assignment.hunter_agent || null;
     briefProfile = assignment.brief_profile || null;
@@ -216,6 +217,9 @@ function recordFinding(args) {
     surfaceId = args.surface_id == null ? null : assertNonEmptyString(args.surface_id, "surface_id");
     if (args.sc_evidence != null) {
       throw new Error("sc_evidence findings must be recorded with wave and agent so the routed capability pack is captured from the assignment");
+    }
+    if (args.mobile_evidence != null) {
+      throw new Error("mobile_evidence findings must be recorded with wave and agent so the routed capability pack is captured from the assignment");
     }
     surfaceType = "web";
     capabilityPack = "web";
@@ -349,6 +353,7 @@ function listFindings(args) {
 }
 
 module.exports = {
+  FINDING_TEXT_LIMITS,
   listFindings,
   readFindings,
   readFindingIdSet,
