@@ -64,6 +64,7 @@ test("CLI installs into a workspace", () => {
     assert.ok(mcp.mcpServers.brutalist, "Claude install must register the optional brutalist MCP server");
     assert.equal(mcp.mcpServers.brutalist.command, "npx");
     assert.deepEqual(mcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.13.0"]);
+    assert.deepEqual(mcp.mcpServers.brutalist.env, { NPM_CONFIG_IGNORE_SCRIPTS: "true" });
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });
@@ -92,6 +93,7 @@ test("CLI installs and doctors the Codex adapter without Claude files", () => {
     assert.ok(codexMcp.mcpServers.bountyagent, "Codex plugin .mcp.json must keep bountyagent");
     assert.ok(codexMcp.mcpServers.brutalist, "Codex plugin .mcp.json must register the optional brutalist MCP server post-install");
     assert.deepEqual(codexMcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.13.0"]);
+    assert.deepEqual(codexMcp.mcpServers.brutalist.env, { NPM_CONFIG_IGNORE_SCRIPTS: "true" });
     assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-hunt", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-status", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-debug", "SKILL.md")));
@@ -221,6 +223,7 @@ test("CLI generic MCP adapter install and uninstall preserve unrelated MCP confi
     assert.ok(installedMcp.mcpServers.bountyagent);
     assert.ok(installedMcp.mcpServers.brutalist, "generic-mcp install must register the optional brutalist MCP server");
     assert.deepEqual(installedMcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.13.0"]);
+    assert.deepEqual(installedMcp.mcpServers.brutalist.env, { NPM_CONFIG_IGNORE_SCRIPTS: "true" });
 
     const output = execFileSync(process.execPath, [CLI, "uninstall", workspace, "--adapter", "generic-mcp", "--yes", "--json"], {
       cwd: ROOT,

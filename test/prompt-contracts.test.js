@@ -2816,4 +2816,5 @@ test("Codex bundled .mcp.json registers both bountyagent and the optional brutal
   assert.ok(mcp.mcpServers.brutalist, "Codex .mcp.json must register the brutalist server");
   assert.equal(mcp.mcpServers.brutalist.command, "npx");
   assert.deepEqual(mcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.13.0"]);
+  assert.deepEqual(mcp.mcpServers.brutalist.env, { NPM_CONFIG_IGNORE_SCRIPTS: "true" });
 });

@@ -199,6 +199,7 @@ function managedDirs() {
 const BRUTALIST_MCP_SERVER = Object.freeze({
   command: "npx",
   args: ["-y", "@brutalist/mcp@1.13.0"],
+  env: Object.freeze({ NPM_CONFIG_IGNORE_SCRIPTS: "true" }),
 });
 
 function mergeConfig({ serverPath }) {

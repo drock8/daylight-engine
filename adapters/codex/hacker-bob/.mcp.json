@@ -11,7 +11,10 @@
       "args": [
         "-y",
         "@brutalist/mcp@1.13.0"
-      ]
+      ],
+      "env": {
+        "NPM_CONFIG_IGNORE_SCRIPTS": "true"
+      }
     }
   }
 }

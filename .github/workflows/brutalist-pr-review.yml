@@ -26,7 +26,9 @@ concurrency:
 jobs:
   brutalist:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     # Skip drafts and PRs from forks. Forks don't have access to the
     # OAuth secrets, so the preflight would fail and spam the PR with
     # red X's — better to skip than noise.
@@ -43,7 +45,17 @@ jobs:
       # actions/setup-node v6.4.0
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
-          node-version: '20'
+          node-version: '24'
+
+      - name: Verify Brutalist release pins
+        run: |
+          set -euo pipefail
+          expected_git_head="76730fc5079f197920d9d73406d5da4e528cea4d"
+          actual_git_head="$(npm view @brutalist/mcp@1.13.0 gitHead)"
+          if [ "$actual_git_head" != "$expected_git_head" ]; then
+            echo "::error::@brutalist/mcp@1.13.0 gitHead $actual_git_head does not match pinned action ref $expected_git_head"
+            exit 1
+          fi
 
       - name: Install CLI critics
         # claude + @brutalist/mcp are hard preflight requirements; codex
@@ -53,14 +65,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          npm install -g --ignore-scripts --no-audit --no-fund @brutalist/mcp@1.13.0
+          npm install -g --ignore-scripts --no-fund @brutalist/mcp@1.13.0
           # claude-code's pinned package currently uses postinstall to place the CLI binary.
-          npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.150
+          npm install -g --no-fund @anthropic-ai/claude-code@2.1.150
 
-          npm install -g --ignore-scripts --no-audit --no-fund @openai/codex@0.133.0 || echo "::warning::Codex CLI unavailable; continuing without Codex critic"
-          npm install -g --ignore-scripts --no-audit --no-fund @google/gemini-cli@0.43.0 || echo "::warning::Gemini CLI unavailable; continuing without Gemini critic"
+          npm install -g --ignore-scripts --no-fund @openai/codex@0.133.0 || echo "::warning::Codex CLI unavailable; continuing without Codex critic"
+          npm install -g --ignore-scripts --no-fund @google/gemini-cli@0.43.0 || echo "::warning::Gemini CLI unavailable; continuing without Gemini critic"
 
       - name: Brutalist review
+        # Advisory reviewer only; CI remains the hard merge gate.
+        continue-on-error: true
         # ejmockler/brutalist-mcp/packages/github-action v1.13.0
         uses: ejmockler/brutalist-mcp/packages/github-action@76730fc5079f197920d9d73406d5da4e528cea4d
         with:
@@ -71,4 +85,5 @@ jobs:
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           google-api-key: ${{ secrets.GOOGLE_API_KEY }}
-          minimum-severity: low
+          # Inline medium+ findings; lower-severity findings remain in the review summary.
+          minimum-severity: medium
