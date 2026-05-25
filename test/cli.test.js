@@ -63,7 +63,7 @@ test("CLI installs into a workspace", () => {
     assert.ok(mcp.mcpServers.bountyagent);
     assert.ok(mcp.mcpServers.brutalist, "Claude install must register the optional brutalist MCP server");
     assert.equal(mcp.mcpServers.brutalist.command, "npx");
-    assert.deepEqual(mcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@latest"]);
+    assert.deepEqual(mcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.13.0"]);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
     fs.rmSync(tempHome, { recursive: true, force: true });
@@ -91,7 +91,7 @@ test("CLI installs and doctors the Codex adapter without Claude files", () => {
     const codexMcp = JSON.parse(fs.readFileSync(path.join(workspace, ".codex", "plugins", "hacker-bob", ".mcp.json"), "utf8"));
     assert.ok(codexMcp.mcpServers.bountyagent, "Codex plugin .mcp.json must keep bountyagent");
     assert.ok(codexMcp.mcpServers.brutalist, "Codex plugin .mcp.json must register the optional brutalist MCP server post-install");
-    assert.deepEqual(codexMcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@latest"]);
+    assert.deepEqual(codexMcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.13.0"]);
     assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-hunt", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-status", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "bob-debug", "SKILL.md")));
@@ -220,7 +220,7 @@ test("CLI generic MCP adapter install and uninstall preserve unrelated MCP confi
     assert.ok(installedMcp.mcpServers.existing, "generic-mcp install must preserve unrelated MCP servers");
     assert.ok(installedMcp.mcpServers.bountyagent);
     assert.ok(installedMcp.mcpServers.brutalist, "generic-mcp install must register the optional brutalist MCP server");
-    assert.deepEqual(installedMcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@latest"]);
+    assert.deepEqual(installedMcp.mcpServers.brutalist.args, ["-y", "@brutalist/mcp@1.13.0"]);
 
     const output = execFileSync(process.execPath, [CLI, "uninstall", workspace, "--adapter", "generic-mcp", "--yes", "--json"], {
       cwd: ROOT,

@@ -19,9 +19,14 @@ permissions:
   contents: read          # actions/checkout
   pull-requests: write    # post the review
 
+concurrency:
+  group: brutalist-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   brutalist:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     # Skip drafts and PRs from forks. Forks don't have access to the
     # OAuth secrets, so the preflight would fail and spam the PR with
     # red X's — better to skip than noise.
@@ -29,11 +34,14 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - uses: actions/checkout@v6
+      # actions/checkout v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+          persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      # actions/setup-node v6.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: '20'
 
@@ -43,17 +51,24 @@ jobs:
         # continues if absent). The brutalist MCP pin is reproducible —
         # bump alongside the action pin below when shipping a release.
         run: |
-          npm install -g @brutalist/mcp@1.13.0 \
-                         @anthropic-ai/claude-code \
-                         @google/gemini-cli \
-                         @openai/codex
+          set -euo pipefail
+
+          npm install -g --ignore-scripts --no-audit --no-fund @brutalist/mcp@1.13.0
+          # claude-code's pinned package currently uses postinstall to place the CLI binary.
+          npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.150
+
+          npm install -g --ignore-scripts --no-audit --no-fund @openai/codex@0.133.0 || echo "::warning::Codex CLI unavailable; continuing without Codex critic"
+          npm install -g --ignore-scripts --no-audit --no-fund @google/gemini-cli@0.43.0 || echo "::warning::Gemini CLI unavailable; continuing without Gemini critic"
 
       - name: Brutalist review
-        uses: ejmockler/brutalist-mcp/packages/github-action@v1.13.0
+        # ejmockler/brutalist-mcp/packages/github-action v1.13.0
+        uses: ejmockler/brutalist-mcp/packages/github-action@76730fc5079f197920d9d73406d5da4e528cea4d
         with:
           github-token: ${{ github.token }}
+          # The pinned action currently requires Anthropic OAuth. Prefer scoped
+          # API-key fallbacks for optional critics so fewer OAuth blobs enter
+          # the action environment.
           anthropic-oauth-token: ${{ secrets.ANTHROPIC_OAUTH_TOKEN }}
-          codex-auth: ${{ secrets.CODEX_AUTH }}
-          gemini-oauth-creds: ${{ secrets.GEMINI_OAUTH_CREDS }}
-          gemini-google-accounts: ${{ secrets.GEMINI_GOOGLE_ACCOUNTS }}
-          minimum-severity: medium
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+          minimum-severity: low
