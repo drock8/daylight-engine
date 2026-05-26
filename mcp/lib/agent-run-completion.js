@@ -39,7 +39,7 @@ function isEvidenceMarker(marker) {
 // Validate the post-report evidence marker shape — distinct from wave-mode
 // markers because evidence runs have no wave/agent context. The orchestrator
 // permits these only after REPORT (or during EXPLORE) when an operator asks
-// the hunter to amplify a single finding's evidence.
+// the evaluator to amplify a single finding's evidence.
 function evidenceMarkerValidationError(marker) {
   if (!cleanString(marker && marker.target_domain)) {
     return {
@@ -50,7 +50,7 @@ function evidenceMarkerValidationError(marker) {
   if (cleanString(marker.wave) || cleanString(marker.agent)) {
     return {
       block_code: "malformed_marker",
-      reason: "Post-report evidence marker must not include wave or agent; use the normal wave marker for EXPLORE hunters.",
+      reason: "Post-report evidence marker must not include wave or agent; use the normal wave marker for EXPLORE evaluators.",
     };
   }
   return null;
@@ -59,7 +59,7 @@ function evidenceMarkerValidationError(marker) {
 // Read state.phase from disk (not via MCP) because the hook process may not
 // have the MCP server in scope at SubagentStop time. Phase must be REPORT or
 // EXPLORE for evidence runs to be allowed; outside that window we block to
-// prevent accidental evidence collection during HUNT/CHAIN/VERIFY/GRADE.
+// prevent accidental evidence collection during EVALUATE/CHAIN/VERIFY/GRADE.
 function evaluateEvidenceCompletion(marker) {
   const targetDomain = cleanString(marker && marker.target_domain);
   if (!targetDomain) {
@@ -127,7 +127,7 @@ function evidenceTelemetryInput({
     surface_id: cleanString(marker && marker.surface_id) || null,
     transcript_path,
     handoff,
-    telemetry_source: "hunter-evidence-stop",
+    telemetry_source: "evaluator-evidence-stop",
     now,
   };
 }
@@ -148,7 +148,7 @@ const {
   safeRecordAgentRunTelemetry,
 } = require("./tool-telemetry.js");
 const {
-  safeRecordHunterStoppedPipelineEvent,
+  safeRecordEvaluatorStoppedPipelineEvent,
 } = require("./pipeline-events.js");
 
 const TECHNIQUE_ATTEMPT_COMPLETION_STATUSES = new Set([
@@ -224,7 +224,7 @@ function evaluateTechniqueAttemptRequirement(marker, assignment) {
       ok: false,
       status: "blocked",
       block_code: "invalid_technique_attempt_log",
-      reason: `Hunter ${marker.wave}/${marker.agent} has unreadable technique attempt history: ${error.message || String(error)}`,
+      reason: `Evaluator ${marker.wave}/${marker.agent} has unreadable technique attempt history: ${error.message || String(error)}`,
       marker,
       handoff: null,
     };
@@ -243,7 +243,7 @@ function evaluateTechniqueAttemptRequirement(marker, assignment) {
     ok: false,
     status: "blocked",
     block_code: "missing_technique_attempt_log",
-    reason: `Hunter ${marker.wave}/${marker.agent} must call bounty_log_technique_attempt with a real attempt outcome before finalizing this surface.`,
+    reason: `Evaluator ${marker.wave}/${marker.agent} must call bounty_log_technique_attempt with a real attempt outcome before finalizing this surface.`,
     marker,
     handoff: null,
   };
@@ -262,7 +262,7 @@ function normalizeFinalizeArgs(args) {
   };
 }
 
-function evaluateHunterCompletion(args) {
+function evaluateAgentCompletion(args) {
   const marker = normalizeFinalizeArgs(args);
   const waveNumber = Number(marker.wave.slice(1));
   let waveAssignments;
@@ -273,7 +273,7 @@ function evaluateHunterCompletion(args) {
       ok: false,
       status: "blocked",
       block_code: "unreadable_wave_assignments",
-      reason: `Hunter ${marker.wave}/${marker.agent} could not read wave assignments: ${error.message || String(error)}`,
+      reason: `Evaluator ${marker.wave}/${marker.agent} could not read wave assignments: ${error.message || String(error)}`,
       marker,
       handoff: handoffTelemetry(null, { present: false, valid: false }),
     };
@@ -287,7 +287,7 @@ function evaluateHunterCompletion(args) {
       ok: false,
       status: "blocked",
       block_code: "unreadable_wave_assignments",
-      reason: `Hunter ${marker.wave}/${marker.agent} could not evaluate wave assignments: ${error.message || String(error)}`,
+      reason: `Evaluator ${marker.wave}/${marker.agent} could not evaluate wave assignments: ${error.message || String(error)}`,
       marker,
       handoff: handoffTelemetry(null, { present: false, valid: false }),
     };
@@ -299,7 +299,7 @@ function evaluateHunterCompletion(args) {
       ok: false,
       status: "blocked",
       block_code: "missing_handoff",
-      reason: `Hunter ${marker.wave}/${marker.agent} must call bounty_write_wave_handoff before finalizing.`,
+      reason: `Evaluator ${marker.wave}/${marker.agent} must call bounty_write_wave_handoff before finalizing.`,
       marker,
       handoff: handoffTelemetry(null, { present: false, valid: false }),
     };
@@ -311,7 +311,7 @@ function evaluateHunterCompletion(args) {
       ok: false,
       status: "blocked",
       block_code: "invalid_handoff",
-      reason: `Hunter ${marker.wave}/${marker.agent} wrote an invalid handoff: ${invalid.error || "validation failed"}`,
+      reason: `Evaluator ${marker.wave}/${marker.agent} wrote an invalid handoff: ${invalid.error || "validation failed"}`,
       marker,
       handoff: handoffTelemetry(null, { present: true, valid: false }),
     };
@@ -323,7 +323,7 @@ function evaluateHunterCompletion(args) {
       ok: false,
       status: "blocked",
       block_code: "missing_handoff",
-      reason: `Hunter ${marker.wave}/${marker.agent} handoff was not found in structured wave handoffs.`,
+      reason: `Evaluator ${marker.wave}/${marker.agent} handoff was not found in structured wave handoffs.`,
       marker,
       handoff: handoffTelemetry(null, { present: false, valid: false }),
     };
@@ -334,7 +334,7 @@ function evaluateHunterCompletion(args) {
       ok: false,
       status: "blocked",
       block_code: "handoff_mismatch",
-      reason: `Hunter finalization does not match structured handoff for ${marker.wave}/${marker.agent}.`,
+      reason: `Evaluator finalization does not match structured handoff for ${marker.wave}/${marker.agent}.`,
       marker,
       handoff: handoffTelemetry(handoff),
     };
@@ -361,12 +361,12 @@ function evaluateHunterCompletion(args) {
 
 function telemetryInput(evaluation, {
   transcript_path: transcriptPath = null,
-  telemetry_source: telemetrySource = "bounty_finalize_hunter_run",
+  telemetry_source: telemetrySource = "bounty_finalize_agent_run",
   now = new Date(),
 } = {}) {
   const marker = evaluation && evaluation.marker ? evaluation.marker : null;
   return {
-    runType: "hunter",
+    runType: "evaluator",
     status: evaluation.status,
     blockCode: evaluation.block_code,
     target_domain: marker && marker.target_domain,
@@ -382,31 +382,31 @@ function telemetryInput(evaluation, {
   };
 }
 
-function recordHunterCompletionTelemetry(evaluation, options = {}) {
+function recordAgentCompletionTelemetry(evaluation, options = {}) {
   // Evidence-mode input is already a fully-formed telemetry record (the hook
   // builds it directly because evidence runs have no wave/agent and skip the
   // structured-handoff evaluation path). Detect that shape by the runType
   // field and pass it through to the recorders unchanged.
   if (evaluation && evaluation.runType === "evidence") {
     safeRecordAgentRunTelemetry(evaluation);
-    safeRecordHunterStoppedPipelineEvent(evaluation);
+    safeRecordEvaluatorStoppedPipelineEvent(evaluation);
     return evaluation;
   }
   const input = telemetryInput(evaluation, options);
   safeRecordAgentRunTelemetry(input);
-  safeRecordHunterStoppedPipelineEvent(input);
+  safeRecordEvaluatorStoppedPipelineEvent(input);
   return input;
 }
 
-function finalizeHunterCompletion(args, options = {}) {
-  const evaluation = evaluateHunterCompletion(args);
-  recordHunterCompletionTelemetry(evaluation, options);
+function finalizeAgentCompletion(args, options = {}) {
+  const evaluation = evaluateAgentCompletion(args);
+  recordAgentCompletionTelemetry(evaluation, options);
   return evaluation;
 }
 
-function finalizeHunterRun(args) {
-  const evaluation = finalizeHunterCompletion(args, {
-    telemetry_source: "bounty_finalize_hunter_run",
+function finalizeAgentRun(args) {
+  const evaluation = finalizeAgentCompletion(args, {
+    telemetry_source: "bounty_finalize_agent_run",
   });
   if (!evaluation.ok) {
     throw new ToolError(ERROR_CODES.STATE_CONFLICT, evaluation.reason, {
@@ -434,16 +434,16 @@ function finalizeHunterRun(args) {
 module.exports = {
   EVIDENCE_MODE,
   evaluateEvidenceCompletion,
-  evaluateHunterCompletion,
+  evaluateAgentCompletion,
   evaluateTechniqueAttemptRequirement,
   evidenceMarkerValidationError,
   evidenceTelemetryInput,
-  finalizeHunterCompletion,
-  finalizeHunterRun,
+  finalizeAgentCompletion,
+  finalizeAgentRun,
   handoffTelemetry,
   isEvidenceMarker,
   markerMode,
-  recordHunterCompletionTelemetry,
+  recordAgentCompletionTelemetry,
   summarizeCoverageForRun,
   summarizeFindingsForRun,
   telemetryInput,

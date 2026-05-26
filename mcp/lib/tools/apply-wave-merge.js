@@ -20,7 +20,7 @@ module.exports = Object.freeze({
       },
       "force_merge_reason": {
         "type": "string",
-        "description": "Required when force_merge is true. Explain missing/invalid handoffs and why reconciliation is safe."
+        "description": "Required when force_merge is true. Explain missing/invalid handoffs and why settlement is safe."
       }
     },
     "required": [

@@ -25,12 +25,12 @@ module.exports = Object.freeze({
   name: "bounty_query_findings_index",
   capability_id: "I6_findings_index",
   description:
-    "Query the hashed-feature-vector findings index for top-K similar past findings. Defaults to per-target scope; pass scope: 'cross_target' to scan a bounded recent window of per-target indexes. Use this to inject prior-art into a new hunt's brief or to look up similar findings while triaging a candidate.",
+    "Query the hashed-feature-vector findings index for top-K similar past findings. Defaults to per-target scope; pass scope: 'cross_target' to scan a bounded recent window of per-target indexes. Use this to inject prior-art into a new evaluate's brief or to look up similar findings while triaging a candidate.",
   inputSchema: {
     type: "object",
     properties: {
       target_domain: { type: "string", description: "Required for per-target scope; ignored when scope is cross_target." },
-      query_text: { type: "string", description: "Free-text query (recon summary, finding draft, surface description). The vector is built from this text the same way finding vectors are." },
+      query_text: { type: "string", description: "Free-text query (surface-discovery summary, finding draft, surface description). The vector is built from this text the same way finding vectors are." },
       top_k: { type: "integer", minimum: 1, maximum: 50, description: "Maximum matches to return. Default 5; hard cap 50." },
       severity_filter: { type: "string", description: "Optional. Restrict matches to findings with this severity." },
       attack_class_filter: { type: "string", description: "Optional. Restrict matches to findings with this attack_class." },

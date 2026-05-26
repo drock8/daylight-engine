@@ -29,7 +29,7 @@ module.exports = Object.freeze({
     "required": ["target_domain", "harness_path"]
   },
   handler,
-  role_bundles: ["hunter-evm", "verifier", "evidence"],
+  role_bundles: ["evaluator-evm", "verifier", "evidence"],
   mutating: false,
   global_preapproval: false,
   network_access: false,

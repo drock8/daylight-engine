@@ -585,7 +585,7 @@ async function main() {
     target_domain,
     email,
     password,
-    name = "Hunter Test",
+    name = "Evaluator Test",
     capsolver_api_key,
     proxy,
     timeout_ms = 45000,
@@ -702,7 +702,7 @@ async function main() {
     const filledFullName = await findAndFill(page, "name", name);
     if (!filledFullName) {
       const parts = name.split(" ");
-      filled.first_name = await findAndFill(page, "first_name", parts[0] || "Hunter");
+      filled.first_name = await findAndFill(page, "first_name", parts[0] || "Evaluator");
       filled.last_name = await findAndFill(page, "last_name", parts.slice(1).join(" ") || "Test");
     } else {
       filled.name = true;

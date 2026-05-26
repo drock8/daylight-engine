@@ -295,7 +295,7 @@ async function autoSignup(args) {
   const email = assertNonEmptyString(args.email, "email");
   const password = assertNonEmptyString(args.password, "password");
   const profileName = args.profile_name || "attacker";
-  const name = args.name || "Hunter Test";
+  const name = args.name || "Evaluator Test";
   const requestedEgressProfile = args.egress_profile == null
     ? "default"
     : assertNonEmptyString(args.egress_profile, "egress_profile");

@@ -1116,7 +1116,7 @@ function writeState(domain, overrides = {}) {
   const document = {
     target: domain,
     target_url: `https://${domain}`,
-    phase: "HUNT",
+    phase: "EVALUATE",
     explored: [],
     terminally_blocked: [],
     ...overrides,

@@ -70,7 +70,7 @@ test("session state contract normalizes and reads the shared state shape", () =>
     const raw = {
       target: domain,
       target_url: `https://${domain}`,
-      phase: "HUNT",
+      phase: "EVALUATE",
       explored: ["surface-a"],
       terminally_blocked: [],
     };
@@ -181,7 +181,7 @@ function writeVerifyState(domain, stateFields, overrides = {}) {
     target_url: `https://${domain}`,
     deep_mode: false,
     phase: "VERIFY",
-    hunt_wave: 0,
+    evaluation_wave: 0,
     pending_wave: null,
     total_findings: 1,
     explored: [],

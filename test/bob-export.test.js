@@ -55,7 +55,7 @@ function writeSession(domain, events, stateOverrides = {}) {
     target: domain,
     target_url: `https://${domain}`,
     phase: "REPORT",
-    hunt_wave: 1,
+    evaluation_wave: 1,
     pending_wave: null,
     total_findings: 0,
     hold_count: 0,
@@ -92,7 +92,7 @@ function pipelineEvent(domain, bobVersion, ts, type = "session_started") {
     ts,
     target_domain: domain,
     type,
-    phase: type === "session_started" ? "RECON" : undefined,
+    phase: type === "session_started" ? "SURFACE_DISCOVERY" : undefined,
     source: "test",
   };
 }
@@ -171,7 +171,7 @@ test("Bob export creates a version-scoped deterministic improvement bundle", () 
         bob_version: "9.9.9",
         ts: "2026-05-08T10:06:00.000Z",
         run_id: "run-current",
-        run_type: "hunter",
+        run_type: "evaluator",
         status: "blocked",
         block_code: "MISSING_HANDOFF",
         target_domain: "current.example",
@@ -184,7 +184,7 @@ test("Bob export creates a version-scoped deterministic improvement bundle", () 
         bob_version: "9.9.8",
         ts: "2026-05-08T10:07:00.000Z",
         run_id: "run-old",
-        run_type: "hunter",
+        run_type: "evaluator",
         status: "blocked",
         block_code: "OLD_BLOCK",
         target_domain: "old.example",
@@ -254,12 +254,12 @@ test("Bob export creates a version-scoped deterministic improvement bundle", () 
     assert.ok(clusters.clusters.mcp_tool_errors.some((cluster) => (
       cluster.tool === "bounty_http_scan" && cluster.error_code === "NETWORK_ERROR"
     )));
-    assert.ok(clusters.clusters.hunter_blocks.some((cluster) => cluster.block_code === "MISSING_HANDOFF"));
+    assert.ok(clusters.clusters.evaluator_blocks.some((cluster) => cluster.block_code === "MISSING_HANDOFF"));
     assert.ok(clusters.clusters.version_exclusions.length >= 3);
 
     const prompt = fs.readFileSync(path.join(first.bundle_dir, "AGENT_PROMPT.md"), "utf8");
     assert.match(prompt, /improving Hacker Bob itself/);
-    assert.match(prompt, /not for hunting/);
+    assert.match(prompt, /not for evaluating/);
     assert.match(prompt, /summary\.md/);
     assert.match(prompt, /problem-clusters\.json/);
     assert.match(prompt, /manifest\.json/);

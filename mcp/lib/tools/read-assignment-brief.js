@@ -1,11 +1,11 @@
 "use strict";
 
-const { readHunterBrief } = require("../hunter-brief.js");
+const { readAssignmentBrief } = require("../assignment-brief.js");
 
 module.exports = Object.freeze({
-  name: "bounty_read_hunter_brief",
+  name: "bounty_read_assignment_brief",
   description:
-    "Return everything a hunter needs to start testing: assigned surface, exclusions, valid surface IDs, coverage summary, ranking summary, run context budget, plus profile-specific context. Web hunters get bypass tables, bounded technique_packs.selected with registry warnings, small legacy technique/payload hint summaries, traffic/audit/circuit-breaker summaries, public intel, and static scan hints. Smart-contract hunters get bob_spec_status (filtered to their surface) and the chain rpc_pool. Hunters call this once on startup instead of receiving everything via spawn prompt.",
+    "Return everything a evaluator needs to start testing: assigned surface, exclusions, valid surface IDs, coverage summary, ranking summary, run context budget, plus profile-specific context. Web evaluators get bypass tables, bounded technique_packs.selected with registry warnings, small legacy technique/payload hint summaries, traffic/audit/circuit-breaker summaries, public intel, and static scan hints. Smart-contract evaluators get bob_spec_status (filtered to their surface) and the chain rpc_pool. Evaluators call this once on startup instead of receiving everything via spawn prompt.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -34,8 +34,8 @@ module.exports = Object.freeze({
       "agent"
     ]
   },
-  handler: readHunterBrief,
-  role_bundles: ["hunter-shared"],
+  handler: readAssignmentBrief,
+  role_bundles: ["evaluator-shared"],
   mutating: false,
   global_preapproval: true,
   network_access: false,

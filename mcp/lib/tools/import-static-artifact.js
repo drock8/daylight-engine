@@ -33,7 +33,7 @@ module.exports = Object.freeze({
       },
       "surface_id": {
         "type": "string",
-        "description": "Optional attack_surface.json surface ID to scope hunter brief hints."
+        "description": "Optional attack_surface.json surface ID to scope evaluator brief hints."
       }
     },
     "required": [
@@ -43,7 +43,7 @@ module.exports = Object.freeze({
     ]
   },
   handler: importStaticArtifact,
-  role_bundles: ["hunter-web"],
+  role_bundles: ["evaluator-web"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

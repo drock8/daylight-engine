@@ -75,7 +75,7 @@ module.exports = Object.freeze({
     ]
   },
   handler: logCoverage,
-  role_bundles: ["hunter-shared"],
+  role_bundles: ["evaluator-shared"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

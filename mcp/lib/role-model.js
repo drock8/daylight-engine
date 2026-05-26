@@ -5,7 +5,7 @@ const {
   TOOL_MANIFEST,
   toolNamesForRoleBundle,
 } = require("./tool-registry.js");
-const { hunterRoleSpecs } = require("./capability-packs.js");
+const { evaluatorRoleSpecs } = require("./capability-packs.js");
 
 const ROLE_PROMPT_DIR = path.join("prompts", "roles");
 
@@ -43,14 +43,14 @@ const ROLE_DEFINITIONS = Object.freeze({
     prompt_body: path.join(ROLE_PROMPT_DIR, "orchestrator.md"),
     mcp_role_bundles: Object.freeze(["orchestrator", "auth"]),
   }),
-  recon: Object.freeze({
-    id: "recon",
-    prompt_body: path.join(ROLE_PROMPT_DIR, "recon.md"),
+  "surface-discovery": Object.freeze({
+    id: "surface-discovery",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "surface-discovery.md"),
     mcp_role_bundles: Object.freeze([]),
   }),
-  "deep-recon": Object.freeze({
-    id: "deep-recon",
-    prompt_body: path.join(ROLE_PROMPT_DIR, "deep-recon.md"),
+  "deep-surface-discovery": Object.freeze({
+    id: "deep-surface-discovery",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "deep-surface-discovery.md"),
     mcp_role_bundles: Object.freeze([]),
   }),
   "surface-router": Object.freeze({
@@ -58,20 +58,20 @@ const ROLE_DEFINITIONS = Object.freeze({
     prompt_body: path.join(ROLE_PROMPT_DIR, "surface-router.md"),
     mcp_role_bundles: Object.freeze(["router"]),
   }),
-  hunter: Object.freeze({
-    id: "hunter",
-    prompt_body: path.join(ROLE_PROMPT_DIR, "hunter.md"),
-    mcp_role_bundles: Object.freeze(["hunter-shared", "hunter-web"]),
+  evaluator: Object.freeze({
+    id: "evaluator",
+    prompt_body: path.join(ROLE_PROMPT_DIR, "evaluator.md"),
+    mcp_role_bundles: Object.freeze(["evaluator-shared", "evaluator-web"]),
   }),
-  // Per-chain hunter role definitions are generated below from HUNTER_ROLES
-  // in capability-packs.js. The static `hunter` (web) role above stays
+  // Per-chain evaluator role definitions are generated below from EVALUATOR_ROLES
+  // in capability-packs.js. The static `evaluator` (web) role above stays
   // hand-coded because it is not chain-specific.
   ...Object.fromEntries(
-    hunterRoleSpecs().map((role) => [
+    evaluatorRoleSpecs().map((role) => [
       role.role_id,
       Object.freeze({
         id: role.role_id,
-        family: "hunter",
+        family: "evaluator",
         prompt_body: path.join(ROLE_PROMPT_DIR, role.prompt_body_filename),
         mcp_role_bundles: role.role_bundles,
       }),

@@ -89,7 +89,7 @@ function pushUnique(target, seen, value) {
 // Surface-level "open" status is governed by `state.explored` and
 // `state.terminally_blocked` (both populated from handoffs by
 // applyWaveMerge), not by per-endpoint coverage rows. A complete handoff
-// says the hunter declared the surface done; a terminally-blocked surface
+// says the evaluator declared the surface done; a terminally-blocked surface
 // has been classified as blocked-by-prereq across waves and should not
 // requeue until an operator clears it. An old coverage row with
 // status=requeue from an earlier wave is endpoint-level history, not the
@@ -148,7 +148,7 @@ function computeAttackSurfaceCoverage(surfaces, state, openRequeueSurfaceIds) {
     // coverage_pct keeps the explored-only meaning for back-compat with
     // existing analytics/report consumers. closed_pct includes
     // terminally-blocked surfaces (which are closed for the purposes of
-    // HUNT -> CHAIN gating), so it represents "how much work is actually
+    // EVALUATE -> CHAIN gating), so it represents "how much work is actually
     // off the queue" — neglected gap is non_low_total - non_low_closed.
     coverage_pct: nonLowSurfaces.length > 0
       ? Math.round((nonLowExplored / nonLowSurfaces.length) * 100)
@@ -164,7 +164,7 @@ function computeAttackSurfaceCoverage(surfaces, state, openRequeueSurfaceIds) {
   };
 }
 
-function computeHuntToChainGate(domain, state) {
+function computeEvaluationToChainGate(domain, state) {
   const blockers = [];
   if (state.pending_wave !== null) {
     blockers.push(blocker(
@@ -184,7 +184,7 @@ function computeHuntToChainGate(domain, state) {
   } catch (error) {
     blockers.push(blocker(
       "attack_surface_unavailable",
-      "attack surface could not be read for HUNT -> CHAIN gating",
+      "attack surface could not be read for EVALUATE -> CHAIN gating",
       { error: compactErrorMessage(error) },
     ));
   }
@@ -201,7 +201,7 @@ function computeHuntToChainGate(domain, state) {
   } catch (error) {
     blockers.push(blocker(
       "coverage_unavailable",
-      "coverage could not be read for HUNT -> CHAIN gating",
+      "coverage could not be read for EVALUATE -> CHAIN gating",
       { error: compactErrorMessage(error) },
     ));
   }
@@ -250,7 +250,7 @@ function computeHuntToChainGate(domain, state) {
     } catch (error) {
       blockers.push(blocker(
         "surface_leads_unavailable",
-        "surface leads could not be read for deep-mode HUNT -> CHAIN gating",
+        "surface leads could not be read for deep-mode EVALUATE -> CHAIN gating",
         { error: compactErrorMessage(error) },
       ));
     }
@@ -463,7 +463,7 @@ function formatTransitionBlockers(blockers) {
 module.exports = {
   computeChainRequirement,
   computeChainToVerifyGate,
-  computeHuntToChainGate,
+  computeEvaluationToChainGate,
   computeOpenRequeueSurfaceIds,
   computeVerifyToGradeGate,
   formatTransitionBlockers,

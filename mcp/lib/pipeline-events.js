@@ -30,7 +30,7 @@ const PIPELINE_EVENT_TYPES = Object.freeze([
   "egress_identity_bound",
   "phase_transitioned",
   "wave_started",
-  "hunter_stopped",
+  "evaluator_stopped",
   "wave_merge_pending",
   "wave_merged",
   "coverage_logged",
@@ -265,15 +265,15 @@ function safeAppendPipelineEventWithSessionLock(targetDomain, type, fields = {},
   }
 }
 
-function safeRecordHunterStoppedPipelineEvent(input, options = {}) {
+function safeRecordEvaluatorStoppedPipelineEvent(input, options = {}) {
   if (!input || !input.target_domain) return null;
-  return safeAppendPipelineEventWithSessionLock(input.target_domain, "hunter_stopped", {
+  return safeAppendPipelineEventWithSessionLock(input.target_domain, "evaluator_stopped", {
     wave: input.wave,
     agent: input.agent,
     surface_id: input.surface_id,
     status: input.status,
     block_code: input.block_code == null ? input.blockCode : input.block_code,
-    source: input.source || input.telemetry_source || "hunter-subagent-stop",
+    source: input.source || input.telemetry_source || "agent-run-stop",
     now: input.now,
     counts: {
       coverage: input.coverage && Number.isFinite(input.coverage.total) ? input.coverage.total : 0,
@@ -342,6 +342,6 @@ module.exports = {
   pipelineAnalyticsEnabled,
   safeAppendPipelineEventDirect,
   safeAppendPipelineEventWithSessionLock,
-  safeRecordHunterStoppedPipelineEvent,
+  safeRecordEvaluatorStoppedPipelineEvent,
   timestampMs,
 };

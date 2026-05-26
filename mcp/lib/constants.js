@@ -44,7 +44,7 @@ const COSMWASM_NETWORK_VALUES = [
   "kava",
   "localnet",
 ];
-const PHASE_VALUES = ["RECON", "AUTH", "HUNT", "CHAIN", "VERIFY", "GRADE", "REPORT", "EXPLORE"];
+const PHASE_VALUES = ["SURFACE_DISCOVERY", "AUTH", "EVALUATE", "CHAIN", "VERIFY", "GRADE", "REPORT", "EXPLORE"];
 const AUTH_STATUS_VALUES = ["pending", "authenticated", "unauthenticated"];
 const CHECKPOINT_MODE_VALUES = ["normal", "paranoid", "yolo"];
 const VERIFICATION_ROUND_VALUES = ["brutalist", "balanced", "final"];
@@ -102,7 +102,7 @@ const SESSION_PUBLIC_STATE_FIELDS = [
   "block_internal_hosts",
   "block_internal_hosts_source",
   "phase",
-  "hunt_wave",
+  "evaluation_wave",
   "pending_wave",
   "total_findings",
   "explored",

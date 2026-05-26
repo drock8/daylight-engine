@@ -59,7 +59,7 @@ const {
   pipelineAnalyticsEnabled,
   safeAppendPipelineEventDirect,
   safeAppendPipelineEventWithSessionLock,
-  safeRecordHunterStoppedPipelineEvent,
+  safeRecordEvaluatorStoppedPipelineEvent,
   timestampMs,
 } = require("./pipeline-events.js");
 
@@ -114,11 +114,11 @@ function buildBackfillEvents(targetDomain, artifacts) {
   const events = [];
   events.push(normalizePipelineEvent(targetDomain, "session_started", {
     ts: artifacts.state.mtime || ts,
-    phase: "RECON",
+    phase: "SURFACE_DISCOVERY",
     source,
     ...egressFields,
   }));
-  if (artifacts.state.phase && artifacts.state.phase !== "RECON") {
+  if (artifacts.state.phase && artifacts.state.phase !== "SURFACE_DISCOVERY") {
     events.push(normalizePipelineEvent(targetDomain, "phase_transitioned", {
       ts: artifacts.state.mtime || ts,
       to_phase: artifacts.state.phase,
@@ -150,7 +150,7 @@ function buildBackfillEvents(targetDomain, artifacts) {
         source,
         ...egressFields,
       }));
-    } else if (artifacts.state.hunt_wave >= wave.wave_number) {
+    } else if (artifacts.state.evaluation_wave >= wave.wave_number) {
       events.push(normalizePipelineEvent(targetDomain, "wave_merged", {
         ts,
         wave_number: wave.wave_number,
@@ -429,17 +429,17 @@ function buildToolHealth({ targetDomain = null, cutoffMs = null, limit = DEFAULT
   return slimToolHealth(filtered, filtered.events, limit);
 }
 
-function buildHunterHealth({ targetDomain = null, cutoffMs = null, limit = DEFAULT_LIMIT, env = process.env, readResult = null } = {}) {
+function buildEvaluatorHealth({ targetDomain = null, cutoffMs = null, limit = DEFAULT_LIMIT, env = process.env, readResult = null } = {}) {
   const baseRead = readResult || readAgentRunTelemetryEvents({
     target_domain: targetDomain,
-    agent_run_type: "hunter",
+    agent_run_type: "evaluator",
     env,
   });
   const filtered = readResult
     ? filterTelemetryReadResult(baseRead, {
       targetDomain,
       cutoffMs,
-      predicate: (event) => event.run_type === "hunter",
+      predicate: (event) => event.run_type === "evaluator",
     })
     : { ...baseRead, events: filterByWindow(baseRead.events, cutoffMs) };
   const events = filtered.events;
@@ -529,12 +529,12 @@ function analyzeSession(targetDomain, {
     env,
     readResult: telemetryCache ? telemetryCache.toolRead : null,
   });
-  const hunterHealth = buildHunterHealth({
+  const evaluatorHealth = buildEvaluatorHealth({
     targetDomain,
     cutoffMs,
     limit,
     env,
-    readResult: telemetryCache ? telemetryCache.hunterRead : null,
+    readResult: telemetryCache ? telemetryCache.evaluatorRead : null,
   });
   const issues = [];
 
@@ -549,18 +549,18 @@ function analyzeSession(targetDomain, {
     ? null
     : artifacts.waves.find((wave) => wave.wave_number === pendingWave) || null;
   if (pendingReadiness && (pendingReadiness.missing_agents.length > 0 || pendingReadiness.invalid_agents.length > 0)) {
-    issues.push(issue("hunter_handoff_failures", "blocked", "Pending wave has missing or invalid hunter handoffs.", {
+    issues.push(issue("evaluator_handoff_failures", "blocked", "Pending wave has missing or invalid evaluator handoffs.", {
       wave_number: pendingWave,
       missing_handoffs: pendingReadiness.missing_agents.length,
       invalid_handoffs: pendingReadiness.invalid_agents.length,
     }));
   }
 
-  const blockedHunterRuns = hunterHealth.totals.by_status.blocked || 0;
-  if (blockedHunterRuns >= 2) {
-    issues.push(issue("repeated_hunter_stops", "blocked", "Hunter SubagentStop blocks repeated for this session.", {
-      blocked_runs: blockedHunterRuns,
-      by_block_code: hunterHealth.totals.by_block_code,
+  const blockedEvaluatorRuns = evaluatorHealth.totals.by_status.blocked || 0;
+  if (blockedEvaluatorRuns >= 2) {
+    issues.push(issue("repeated_evaluator_stops", "blocked", "Evaluator SubagentStop blocks repeated for this session.", {
+      blocked_runs: blockedEvaluatorRuns,
+      by_block_code: evaluatorHealth.totals.by_block_code,
     }));
   }
 
@@ -686,7 +686,7 @@ function analyzeSession(targetDomain, {
   }
 
   // HOLD is the only verdict that is operator-actionable on its own — the
-  // grader is asking for another HUNT round. SKIP is internally consistent
+  // grader is asking for another EVALUATE round. SKIP is internally consistent
   // by construction: writeGradeVerdict rejects any SKIP that does not
   // satisfy `!hasReportableMedium || total_score < GRADE_HOLD_MIN_SCORE`,
   // so a SKIP at read time is either "no reportables" or "low-score
@@ -732,7 +732,7 @@ function analyzeSession(targetDomain, {
       egress_profile_identity_version: artifacts.state.egress_profile_identity_version,
     },
     waves: {
-      hunt_wave: artifacts.state.hunt_wave,
+      evaluation_wave: artifacts.state.evaluation_wave,
       pending_wave: artifacts.state.pending_wave,
       assignment_files: artifacts.waves.length,
       assignment_files_total: artifacts.wave_bounds.assignment_files_total,
@@ -796,7 +796,7 @@ function analyzeSession(targetDomain, {
     events,
     issues,
     tool_health: toolHealth,
-    hunter_health: hunterHealth,
+    evaluator_health: evaluatorHealth,
   };
 }
 
@@ -811,7 +811,7 @@ function buildFunnel(analyses) {
     sessions_total: analyses.length,
     reached: {
       AUTH: 0,
-      HUNT: 0,
+      EVALUATE: 0,
       CHAIN: 0,
       VERIFY: 0,
       GRADE: 0,
@@ -884,21 +884,21 @@ function buildBottlenecks(analyses, limit) {
 function actionForBottleneck(bottleneck) {
   const actionByCode = {
     unreadable_artifacts: "Repair or remove malformed session artifacts before resuming orchestration.",
-    hunter_handoff_failures: "Resume the pending wave after missing hunters write valid structured handoffs, or force-merge intentionally.",
-    repeated_hunter_stops: "Fix the hunter final-marker or handoff path that is repeatedly blocking SubagentStop.",
+    evaluator_handoff_failures: "Resume the pending wave after missing evaluators write valid structured handoffs, or force-merge intentionally.",
+    repeated_evaluator_stops: "Fix the evaluator final-marker or handoff path that is repeatedly blocking SubagentStop.",
     mcp_tool_failures: "Inspect failing MCP tools and address the dominant error code before launching more agents.",
     network_unreachable_target: "Log blocked coverage/dead-end context, then choose an explicit egress profile if the operator approves a regional retry.",
     auth_failures: "Refresh or recapture auth profiles before additional authenticated testing.",
     low_coverage: "Launch another wave for unexplored non-low surfaces before verification.",
     chain_phase_no_attempts: "Run the chain-builder again so it records terminal chain attempts, or transition with an explicit override reason.",
     verification_dropoff: "Review final verification inputs because recorded findings are not surviving as reportable.",
-    grade_hold: "Use grader feedback to launch a targeted HUNT wave, then re-run CHAIN -> VERIFY before grading again.",
+    grade_hold: "Use grader feedback to launch a targeted EVALUATE wave, then re-run CHAIN -> VERIFY before grading again.",
     missing_verification: "Write a valid final verification round before grading or reporting.",
     missing_evidence: "Run the evidence agent and validate evidence packs before grading or reporting.",
     missing_grade: "Write a valid grade verdict before report completion.",
     missing_report: "Write report.md or move the session out of REPORT if report writing is still pending.",
     report_pending_canonical_path: "Write or move the consolidated report to the canonical session report.md path, then call bounty_report_written.",
-    stale_pending_wave: "Re-enter resume flow for the stale pending wave and reconcile handoffs.",
+    stale_pending_wave: "Re-enter resume flow for the stale pending wave and settle handoffs.",
   };
   return {
     action: actionByCode[bottleneck.code] || "Inspect this bottleneck before continuing.",
@@ -998,7 +998,7 @@ function readPipelineAnalytics(args = {}, { env = process.env, validateAuthority
       bottlenecks,
       next_actions: buildNextActions(bottlenecks, options.limit),
       tool_health: analysis.tool_health,
-      hunter_health: analysis.hunter_health,
+      evaluator_health: analysis.evaluator_health,
       event_log: {
         enabled: analysis.event_read.enabled,
         path: analysis.event_read.events_path,
@@ -1013,7 +1013,7 @@ function readPipelineAnalytics(args = {}, { env = process.env, validateAuthority
         sessions_truncated: false,
         telemetry_reads_reused: false,
         tool_events_loaded: analysis.tool_health.total_events,
-        hunter_events_loaded: analysis.hunter_health.total_runs,
+        evaluator_events_loaded: analysis.evaluator_health.total_runs,
       },
     };
     if (options.include_events) {
@@ -1028,8 +1028,8 @@ function readPipelineAnalytics(args = {}, { env = process.env, validateAuthority
   });
   const telemetryCache = {
     toolRead: readToolTelemetryEvents({ env }),
-    hunterRead: readAgentRunTelemetryEvents({
-      agent_run_type: "hunter",
+    evaluatorRead: readAgentRunTelemetryEvents({
+      agent_run_type: "evaluator",
       env,
     }),
   };
@@ -1062,7 +1062,7 @@ function readPipelineAnalytics(args = {}, { env = process.env, validateAuthority
     bottlenecks,
     next_actions: buildNextActions(bottlenecks, options.limit),
     tool_health: buildToolHealth({ cutoffMs, limit: options.limit, env, readResult: telemetryCache.toolRead }),
-    hunter_health: buildHunterHealth({ cutoffMs, limit: options.limit, env, readResult: telemetryCache.hunterRead }),
+    evaluator_health: buildEvaluatorHealth({ cutoffMs, limit: options.limit, env, readResult: telemetryCache.evaluatorRead }),
     analytics_bounds: {
       session_scan_limit: candidates.limit,
       sessions_available: candidates.total_available,
@@ -1070,7 +1070,7 @@ function readPipelineAnalytics(args = {}, { env = process.env, validateAuthority
       sessions_truncated: candidates.truncated,
       telemetry_reads_reused: true,
       tool_events_loaded: telemetryCache.toolRead.events.length,
-      hunter_events_loaded: telemetryCache.hunterRead.events.length,
+      evaluator_events_loaded: telemetryCache.evaluatorRead.events.length,
     },
   };
   if (options.include_events) {
@@ -1102,5 +1102,5 @@ module.exports = {
   appendPipelineEventDirect,
   safeAppendPipelineEventDirect,
   safeAppendPipelineEventWithSessionLock,
-  safeRecordHunterStoppedPipelineEvent,
+  safeRecordEvaluatorStoppedPipelineEvent,
 };

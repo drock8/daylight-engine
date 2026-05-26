@@ -52,10 +52,10 @@ const {
   ToolError,
 } = require("./envelope.js");
 
-const HUNTER_KNOWLEDGE_FILE = Object.freeze(["knowledge", "hunter-techniques.json"]);
-const HUNTER_KNOWLEDGE_DEFAULT_ID = "generic-rest-api";
-const HUNTER_KNOWLEDGE_MAX_ENTRIES = 4;
-const HUNTER_KNOWLEDGE_MAX_CHARS = 4500;
+const EVALUATOR_KNOWLEDGE_FILE = Object.freeze(["knowledge", "evaluator-techniques.json"]);
+const EVALUATOR_KNOWLEDGE_DEFAULT_ID = "generic-rest-api";
+const EVALUATOR_KNOWLEDGE_MAX_ENTRIES = 4;
+const EVALUATOR_KNOWLEDGE_MAX_CHARS = 4500;
 const TECHNIQUE_PACK_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 const DEFAULT_SUMMARY_ESTIMATED_TOKENS = 500;
 const DEFAULT_FULL_ESTIMATED_TOKENS = 1500;
@@ -67,7 +67,7 @@ const TECHNIQUE_SELECTION_MAX_CHARS = 6000;
 
 function registryWarning(source, { entryIndex = null, entryId = null, reason }) {
   const warning = {
-    source: source ? path.basename(source) : HUNTER_KNOWLEDGE_FILE[HUNTER_KNOWLEDGE_FILE.length - 1],
+    source: source ? path.basename(source) : EVALUATOR_KNOWLEDGE_FILE[EVALUATOR_KNOWLEDGE_FILE.length - 1],
     reason: String(reason || "invalid technique registry entry"),
   };
   if (entryIndex != null) warning.entry_index = entryIndex;
@@ -84,12 +84,12 @@ function readableEntryId(entry) {
   return null;
 }
 
-function hunterKnowledgeCandidatePaths() {
-  return resourceCandidatePaths(...HUNTER_KNOWLEDGE_FILE);
+function evaluatorKnowledgeCandidatePaths() {
+  return resourceCandidatePaths(...EVALUATOR_KNOWLEDGE_FILE);
 }
 
-function loadHunterKnowledge() {
-  for (const candidate of hunterKnowledgeCandidatePaths()) {
+function loadEvaluatorKnowledge() {
+  for (const candidate of evaluatorKnowledgeCandidatePaths()) {
     if (!candidate || !fs.existsSync(candidate)) continue;
     let parsed;
     try {
@@ -100,7 +100,7 @@ function loadHunterKnowledge() {
         version: 1,
         entries: [],
         warnings: [registryWarning(candidate, {
-          reason: `Malformed hunter-techniques.json: ${error.message || String(error)}`,
+          reason: `Malformed evaluator-techniques.json: ${error.message || String(error)}`,
         })],
       };
     }
@@ -111,7 +111,7 @@ function loadHunterKnowledge() {
         version,
         entries: [],
         warnings: [registryWarning(candidate, {
-          reason: "hunter-techniques.json must be an object with entries[]",
+          reason: "evaluator-techniques.json must be an object with entries[]",
         })],
       };
     }
@@ -288,7 +288,7 @@ function normalizeRegistryEntry(entry, registryVersion) {
     throw new Error("technique pack entry must be an object");
   }
   const id = normalizeTechniquePackId(entry.id || "knowledge-entry", "technique_pack.id");
-  const title = assertNonEmptyString(entry.title || entry.id || "Hunter guidance", "technique_pack.title");
+  const title = assertNonEmptyString(entry.title || entry.id || "Evaluator guidance", "technique_pack.title");
   const capabilityPacks = normalizeCapabilityPacks(entry);
   for (const capabilityPack of capabilityPacks) {
     if (!getCapabilityPack(capabilityPack)) {
@@ -323,7 +323,7 @@ function normalizeRegistryEntry(entry, registryVersion) {
 }
 
 function loadTechniqueRegistry() {
-  const knowledge = loadHunterKnowledge();
+  const knowledge = loadEvaluatorKnowledge();
   const warnings = Array.isArray(knowledge.warnings) ? knowledge.warnings.slice() : [];
   const packs = [];
   const seenIds = new Set();
@@ -433,11 +433,11 @@ function fitTechniquePackSummaries(summaries, maxChars = TECHNIQUE_SELECTION_MAX
 
 function selectTechniquePacksForSurface(surface, {
   capabilityPack = "web",
-  maxPacks = HUNTER_KNOWLEDGE_MAX_ENTRIES,
+  maxPacks = EVALUATOR_KNOWLEDGE_MAX_ENTRIES,
   includeAttempted = true,
   attempts = [],
 } = {}) {
-  const limit = normalizeOptionalInteger(maxPacks, "max_packs", { min: 1, max: 50 }) || HUNTER_KNOWLEDGE_MAX_ENTRIES;
+  const limit = normalizeOptionalInteger(maxPacks, "max_packs", { min: 1, max: 50 }) || EVALUATOR_KNOWLEDGE_MAX_ENTRIES;
   const registry = loadTechniqueRegistry();
   if (registry.packs.length === 0) {
     return {
@@ -464,7 +464,7 @@ function selectTechniquePacksForSurface(surface, {
 
   if (scoredPacks.length === 0) {
     const fallback = registry.packs.find(
-      (pack) => pack.id === HUNTER_KNOWLEDGE_DEFAULT_ID && pack.capability_packs.includes(capabilityPack),
+      (pack) => pack.id === EVALUATOR_KNOWLEDGE_DEFAULT_ID && pack.capability_packs.includes(capabilityPack),
     );
     if (fallback) {
       scoredPacks.push({ pack: fallback, score: 0, matches: ["fallback:generic-rest-api"] });
@@ -796,7 +796,7 @@ function resolveSurfaceTechniqueRoute(domain, surface, requestedCapabilityPack =
     capability_pack: capabilityPack,
     capability_pack_version: route.capability_pack_version || pack.capability_pack_version,
     brief_profile: route.brief_profile || pack.brief_profile,
-    hunter_agent: route.hunter_agent || pack.hunter_agent,
+    evaluator_agent: route.evaluator_agent || pack.evaluator_agent,
     context_budget: normalizeContextBudget(route.context_budget, pack),
   };
 }
@@ -861,9 +861,9 @@ function fitKnowledgeEntries(entries, maxChars) {
   return selected;
 }
 
-function resolveHunterKnowledge(surface, {
+function resolveEvaluatorKnowledge(surface, {
   capabilityPack = "web",
-  maxEntries = HUNTER_KNOWLEDGE_MAX_ENTRIES,
+  maxEntries = EVALUATOR_KNOWLEDGE_MAX_ENTRIES,
 } = {}) {
   const selectedResult = selectTechniquePacksForSurface(surface, {
     capabilityPack,
@@ -880,7 +880,7 @@ function resolveHunterKnowledge(surface, {
       techniques: pack.summary.guidance.slice(0, 4),
       payload_hints: pack.summary.payload_hints.slice(0, 4),
     }));
-  const fittedEntries = fitKnowledgeEntries(slimEntries, HUNTER_KNOWLEDGE_MAX_CHARS);
+  const fittedEntries = fitKnowledgeEntries(slimEntries, EVALUATOR_KNOWLEDGE_MAX_CHARS);
   let techniques = [];
   let payloadHints = [];
   let charCount = 0;
@@ -899,7 +899,7 @@ function resolveHunterKnowledge(surface, {
         hints: entry.payload_hints,
       }));
     charCount = JSON.stringify({ techniques, payload_hints: payloadHints }).length;
-    if (charCount <= HUNTER_KNOWLEDGE_MAX_CHARS) break;
+    if (charCount <= EVALUATOR_KNOWLEDGE_MAX_CHARS) break;
     fittedEntries.pop();
   }
   if (fittedEntries.length === 0) {
@@ -916,7 +916,7 @@ function resolveHunterKnowledge(surface, {
       entries_returned: fittedEntries.length,
       capped: slimEntries.length > fittedEntries.length,
       char_count: charCount,
-      max_chars: HUNTER_KNOWLEDGE_MAX_CHARS,
+      max_chars: EVALUATOR_KNOWLEDGE_MAX_CHARS,
       registry_warnings: selectedResult.registry_warnings,
     },
   };
@@ -1085,16 +1085,16 @@ function logTechniqueAttempt(args) {
 }
 
 module.exports = {
-  HUNTER_KNOWLEDGE_FILE,
-  HUNTER_KNOWLEDGE_MAX_CHARS,
-  HUNTER_KNOWLEDGE_MAX_ENTRIES,
+  EVALUATOR_KNOWLEDGE_FILE,
+  EVALUATOR_KNOWLEDGE_MAX_CHARS,
+  EVALUATOR_KNOWLEDGE_MAX_ENTRIES,
   TECHNIQUE_FULL_ITEM_MAX_CHARS,
   TECHNIQUE_FULL_ITEMS_PER_KIND,
   TECHNIQUE_SELECTION_MAX_CHARS,
   TECHNIQUE_SUMMARY_ITEM_MAX_CHARS,
   TECHNIQUE_SUMMARY_ITEMS_PER_KIND,
-  hunterKnowledgeCandidatePaths,
-  loadHunterKnowledge,
+  evaluatorKnowledgeCandidatePaths,
+  loadEvaluatorKnowledge,
   loadTechniqueRegistry,
   logTechniqueAttempt,
   normalizeTechniqueAttemptRecord,
@@ -1102,7 +1102,7 @@ module.exports = {
   readTechniquePack,
   readTechniquePackForTool,
   readTechniquePackReadRecordsFromJsonl,
-  resolveHunterKnowledge,
+  resolveEvaluatorKnowledge,
   scoreTechniqueEntry,
   selectTechniquePacks,
   selectTechniquePacksForSurface,

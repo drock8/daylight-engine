@@ -7,7 +7,7 @@ const {
 module.exports = Object.freeze({
   name: "bounty_read_pipeline_analytics",
   description:
-    "Read local metadata-only pipeline analytics for one session or recent sessions. Summarizes phase progress, wave health, findings, verification, grade/report status, bottlenecks, and safe telemetry-derived tool and hunter health.",
+    "Read local metadata-only pipeline analytics for one session or recent sessions. Summarizes phase progress, wave health, findings, verification, grade/report status, bottlenecks, and safe telemetry-derived tool and evaluator health.",
   inputSchema: {
     type: "object",
     properties: {

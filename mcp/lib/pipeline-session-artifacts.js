@@ -955,7 +955,7 @@ function readSessionArtifactSummary(targetDomain, { validateAuthority = false } 
       egress_profile_identity_version: Number.isInteger(state?.egress_profile_identity_version)
         ? state.egress_profile_identity_version
         : null,
-      hunt_wave: Number.isInteger(state?.hunt_wave) ? state.hunt_wave : 0,
+      evaluation_wave: Number.isInteger(state?.evaluation_wave) ? state.evaluation_wave : 0,
       pending_wave: Number.isInteger(state?.pending_wave) ? state.pending_wave : null,
       total_findings: Number.isInteger(state?.total_findings) ? state.total_findings : findings.total,
       hold_count: Number.isInteger(state?.hold_count) ? state.hold_count : 0,

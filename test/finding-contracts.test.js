@@ -45,7 +45,7 @@ test("normalizeScEvidence rejects missing harness paths under symlink parents th
           chain_id: 1,
           contract_address: "0x1111111111111111111111111111111111111111",
           harness_path: path.join(link, "missing", "PoC.t.sol"),
-          match_test: "testExploit",
+          match_test: "testImpactProof",
         }),
         /harness_path must live under the user home directory/,
       );
@@ -134,7 +134,7 @@ test("recordFinding allocates and dedupes from an over-cap canonical findings le
           validated: true,
           surface_type: "web",
           capability_pack: "web",
-          hunter_agent: "hunter-agent",
+          evaluator_agent: "evaluator-agent",
           brief_profile: "web",
           dedupe_key: `legacy-${count}`,
         };
@@ -188,7 +188,7 @@ test("recordFinding allocates from the max observed finding id when legacy rows 
       validated: true,
       surface_type: "web",
       capability_pack: "web",
-      hunter_agent: "hunter-agent",
+      evaluator_agent: "evaluator-agent",
       brief_profile: "web",
       dedupe_key: `legacy-gap-${id}`,
     }));

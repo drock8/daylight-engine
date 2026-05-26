@@ -40,7 +40,7 @@ function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null } = {}) {
       surface_type: classification.surface_type,
       capability_pack: classification.capability_pack,
       capability_pack_version: classification.capability_pack_version,
-      hunter_agent: classification.hunter_agent,
+      evaluator_agent: classification.evaluator_agent,
       brief_profile: classification.brief_profile,
       context_budget: classification.context_budget,
       confidence: classification.confidence,
@@ -69,14 +69,14 @@ function validateSurfaceRoute(route, index, filePath) {
   }
   const surfaceId = assertNonEmptyString(route.surface_id, `routes[${index}].surface_id`);
   const capabilityPack = assertNonEmptyString(route.capability_pack, `routes[${index}].capability_pack`);
-  const hunterAgent = assertNonEmptyString(route.hunter_agent, `routes[${index}].hunter_agent`);
+  const evaluatorAgent = assertNonEmptyString(route.evaluator_agent, `routes[${index}].evaluator_agent`);
   const briefProfile = assertNonEmptyString(route.brief_profile, `routes[${index}].brief_profile`);
   const pack = getCapabilityPack(capabilityPack);
   if (!pack) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}] references unknown capability_pack: ${capabilityPack})`);
   }
-  if (hunterAgent !== pack.hunter_agent) {
-    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].hunter_agent ${hunterAgent} does not match pack ${capabilityPack})`);
+  if (evaluatorAgent !== pack.evaluator_agent) {
+    throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].evaluator_agent ${evaluatorAgent} does not match pack ${capabilityPack})`);
   }
   if (briefProfile !== pack.brief_profile) {
     throw new Error(`Malformed surface routes JSON: ${filePath} (routes[${index}].brief_profile ${briefProfile} does not match pack ${capabilityPack})`);
@@ -92,7 +92,7 @@ function validateSurfaceRoute(route, index, filePath) {
     surface_id: surfaceId,
     capability_pack: capabilityPack,
     capability_pack_version: capabilityPackVersion,
-    hunter_agent: hunterAgent,
+    evaluator_agent: evaluatorAgent,
     brief_profile: briefProfile,
     context_budget: normalizeContextBudget(route.context_budget, pack),
   };

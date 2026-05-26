@@ -1,11 +1,11 @@
 "use strict";
 
-const { finalizeHunterRun } = require("../hunter-completion.js");
+const { finalizeAgentRun } = require("../agent-run-completion.js");
 
 module.exports = Object.freeze({
-  name: "bounty_finalize_hunter_run",
+  name: "bounty_finalize_agent_run",
   description:
-    "Hunter-final completion check that validates the structured wave handoff and records metadata-only completion telemetry.",
+    "Evaluator-final completion check that validates the structured wave handoff and records metadata-only completion telemetry.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -31,8 +31,8 @@ module.exports = Object.freeze({
       "surface_id"
     ]
   },
-  handler: finalizeHunterRun,
-  role_bundles: ["hunter-shared"],
+  handler: finalizeAgentRun,
+  role_bundles: ["evaluator-shared"],
   mutating: true,
   global_preapproval: true,
   network_access: false,

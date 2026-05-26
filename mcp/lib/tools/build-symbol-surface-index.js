@@ -13,7 +13,7 @@ function buildSymbolSurfaceIndexHandler(args) {
 module.exports = Object.freeze({
   name: "bounty_build_symbol_surface_index",
   description:
-    "Persist a per-target symbol-surface index from bounty_extract_routes output and (optionally) attack_surface.json surfaces. Produces three lookup maps (by_file_line, by_file, by_surface) plus a content-addressed index_hash. The index drives bounty_summarize_diff_impact for diff-aware regression hunting.",
+    "Persist a per-target symbol-surface index from bounty_extract_routes output and (optionally) attack_surface.json surfaces. Produces three lookup maps (by_file_line, by_file, by_surface) plus a content-addressed index_hash. The index drives bounty_summarize_diff_impact for diff-aware regression evaluating.",
   inputSchema: {
     type: "object",
     properties: {

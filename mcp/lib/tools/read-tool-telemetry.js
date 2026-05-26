@@ -21,7 +21,7 @@ module.exports = Object.freeze({
       },
       include_agent_runs: {
         type: "boolean",
-        description: "When true, include hunter SubagentStop run telemetry summaries.",
+        description: "When true, include evaluator SubagentStop run telemetry summaries.",
       },
       agent_run_type: { type: "string" },
       wave: { type: "string" },

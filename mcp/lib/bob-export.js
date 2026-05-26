@@ -417,7 +417,7 @@ function buildMcpToolErrorClusters(toolEvents) {
   }));
 }
 
-function buildHunterBlockClusters(agentRuns) {
+function buildEvaluatorBlockClusters(agentRuns) {
   const groups = new Map();
   for (const event of agentRuns) {
     if (event.status !== "blocked") continue;
@@ -651,7 +651,7 @@ function buildProblemClusters({ bob_version: currentVersion, generated_at: gener
     clusters: {
       pipeline_bottlenecks: buildPipelineBottleneckClusters(sessions),
       mcp_tool_errors: buildMcpToolErrorClusters(telemetry.toolEvents),
-      hunter_blocks: buildHunterBlockClusters(telemetry.agentRuns),
+      evaluator_blocks: buildEvaluatorBlockClusters(telemetry.agentRuns),
       malformed_artifacts: buildMalformedArtifactClusters(sessions, telemetry),
       evidence_report_coverage_blockers: buildEvidenceReportCoverageBlockers(sessions),
       version_exclusions: buildVersionExclusionClusters(manifestExclusions),
@@ -735,8 +735,8 @@ function renderSummary({ manifest, problemClusters, replaySnapshot }) {
     ),
     "",
     ...renderClusterLines(
-      "Hunter Blocks",
-      clusters.hunter_blocks,
+      "Evaluator Blocks",
+      clusters.evaluator_blocks,
       (cluster) => `${cluster.block_code}: ${cluster.count} blocked run${cluster.count === 1 ? "" : "s"}`,
     ),
     "",
@@ -747,7 +747,7 @@ function renderSummary({ manifest, problemClusters, replaySnapshot }) {
     ),
     "",
     ...renderReplayBudgetSection(replaySnapshot),
-    "This summary is deterministic telemetry clustering. It is not an assessment of target validity or exploitability.",
+    "This summary is deterministic telemetry clustering. It is not an assessment of target validity or impact viability.",
     "",
   ];
   return lines.join("\n");
@@ -757,7 +757,7 @@ function renderAgentPrompt({ manifest }) {
   return [
     "# Fresh Agent Prompt: Improve Hacker Bob From This Release Bundle",
     "",
-    `This bundle was generated for Hacker Bob version ${manifest.bob_version}. It is for improving Hacker Bob itself, not for hunting, resuming sessions, interacting with targets, or contacting third-party systems.`,
+    `This bundle was generated for Hacker Bob version ${manifest.bob_version}. It is for improving Hacker Bob itself, not for evaluating, resuming sessions, interacting with targets, or contacting third-party systems.`,
     "",
     "Start here, in order:",
     "1. Read `summary.md`.",

@@ -178,7 +178,7 @@ function buildFindingRecord(args, context, id) {
     surface_id: context.surfaceId,
     surface_type: context.surfaceType,
     capability_pack: context.capabilityPack,
-    hunter_agent: context.hunterAgent,
+    evaluator_agent: context.evaluatorAgent,
     brief_profile: context.briefProfile,
     sc_evidence: args.sc_evidence,
     dedupe_key: args.dedupe_key,
@@ -200,7 +200,7 @@ function recordFinding(args) {
   let surfaceId = null;
   let surfaceType = null;
   let capabilityPack = null;
-  let hunterAgent = null;
+  let evaluatorAgent = null;
   let briefProfile = null;
   if (hasWave) {
     wave = parseWaveId(args.wave);
@@ -210,7 +210,7 @@ function recordFinding(args) {
     const rawSurfaceType = assignment && assignment.surface_type ? assignment.surface_type : null;
     surfaceType = rawSurfaceType === "smart_contract" ? "smart_contract" : "web";
     capabilityPack = assignment.capability_pack || null;
-    hunterAgent = assignment.hunter_agent || null;
+    evaluatorAgent = assignment.evaluator_agent || null;
     briefProfile = assignment.brief_profile || null;
   } else {
     surfaceId = args.surface_id == null ? null : assertNonEmptyString(args.surface_id, "surface_id");
@@ -219,7 +219,7 @@ function recordFinding(args) {
     }
     surfaceType = "web";
     capabilityPack = "web";
-    hunterAgent = "hunter-agent";
+    evaluatorAgent = "evaluator-agent";
     briefProfile = "web";
   }
 
@@ -232,7 +232,7 @@ function recordFinding(args) {
       surfaceId,
       surfaceType,
       capabilityPack,
-      hunterAgent,
+      evaluatorAgent,
       briefProfile,
     };
     const preliminary = buildFindingRecord(args, context, "F-1");

@@ -73,17 +73,17 @@ function deriveBlockers(state, artifacts) {
 
 function nextAction(state, artifacts, blockers) {
   if (state.pending_wave != null) {
-    return `Resume and reconcile pending wave ${state.pending_wave} with bounty_apply_wave_merge.`;
+    return `Resume and settle pending wave ${state.pending_wave} with bounty_apply_wave_merge.`;
   }
   if (blockers.includes("report_missing")) {
     return "Run the report writer, then call bounty_read_session_summary again.";
   }
   if (artifacts.grade.verdict === "HOLD") {
-    return "Return to HUNT with grader feedback, then re-run CHAIN through REPORT.";
+    return "Return to EVALUATE with grader feedback, then re-run CHAIN through REPORT.";
   }
-  if (state.phase === "RECON") return "Run recon, write attack_surface.json, then transition to AUTH.";
-  if (state.phase === "AUTH") return "Complete auth or use --no-auth, then transition to HUNT.";
-  if (state.phase === "HUNT" || state.phase === "EXPLORE") return "Start or resume the next hunter wave.";
+  if (state.phase === "SURFACE_DISCOVERY") return "Run surface-discovery, write attack_surface.json, then transition to AUTH.";
+  if (state.phase === "AUTH") return "Complete auth or use --no-auth, then transition to EVALUATE.";
+  if (state.phase === "EVALUATE" || state.phase === "EXPLORE") return "Start or resume the next evaluator wave.";
   if (state.phase === "CHAIN") return "Run chain-builder and write terminal chain attempts.";
   if (state.phase === "VERIFY") return "Run verification rounds and evidence collection for final reportables.";
   if (state.phase === "GRADE") return "Run grader and read back the grade verdict.";
@@ -178,7 +178,7 @@ function readSessionSummary(args) {
       egress_profile_identity_hash: state.egress_profile_identity_hash,
       egress_profile_identity_version: state.egress_profile_identity_version,
       operator_note: state.operator_note,
-      waves_run: state.hunt_wave,
+      waves_run: state.evaluation_wave,
       pending_wave: state.pending_wave,
       finding_total: artifacts.findings.total,
       final_reportable_count: artifacts.verification.final_reportable_count,

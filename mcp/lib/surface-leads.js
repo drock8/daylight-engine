@@ -117,7 +117,7 @@ function normalizeSurfaceLead(input, context = {}) {
   const initial = {
     id: input.id == null ? null : assertNonEmptyString(input.id, "id"),
     title: normalizeOptionalString(input.title, "title"),
-    source: normalizeOptionalString(input.source || context.source || "hunter", "source", { maxChars: 120 }),
+    source: normalizeOptionalString(input.source || context.source || "evaluator", "source", { maxChars: 120 }),
     source_wave: normalizeOptionalString(input.source_wave || context.source_wave, "source_wave", { maxChars: 20 }),
     source_agent: normalizeOptionalString(input.source_agent || context.source_agent, "source_agent", { maxChars: 20 }),
     source_surface_id: normalizeOptionalString(input.source_surface_id || context.source_surface_id, "source_surface_id", { maxChars: 160 }),
@@ -401,7 +401,7 @@ function promoteSurfaceLeadsInternal(domain, options = {}) {
       pushUnique(leadSurfaceIds, new Set(leadSurfaceIds), promotedSurfaceIds);
       writeSessionStateDocument(domain, raw, { ...state, lead_surface_ids: leadSurfaceIds });
     } catch {
-      // Promotion can run immediately after recon before later state reads; a
+      // Promotion can run immediately after surface-discovery before later state reads; a
       // missing or legacy state should not corrupt the promoted attack surface.
     }
   }

@@ -67,13 +67,13 @@ const {
   normalizeAssignmentRouteMetadata,
 } = require("./capability-packs.js");
 const {
-  HUNTER_KNOWLEDGE_MAX_CHARS,
-  hunterKnowledgeCandidatePaths,
-  resolveHunterKnowledge,
+  EVALUATOR_KNOWLEDGE_MAX_CHARS,
+  evaluatorKnowledgeCandidatePaths,
+  resolveEvaluatorKnowledge,
   selectTechniquePacksForSurface,
 } = require("./technique-packs.js");
 
-// Bypass table tech-to-file map used by hunter brief generation.
+// Bypass table tech-to-file map used by evaluator brief generation.
 const BYPASS_TABLE_MAP = {
   wordpress: "wordpress.txt",
   graphql: "graphql.txt",
@@ -86,7 +86,7 @@ const BYPASS_TABLE_MAP = {
   oidc: "oauth-oidc.txt",
 };
 const BYPASS_TABLE_DEFAULT = "rest-api.txt";
-const HUNTER_BRIEF_SURFACE_ARRAY_LIMITS = Object.freeze({
+const ASSIGNMENT_BRIEF_SURFACE_ARRAY_LIMITS = Object.freeze({
   hosts: 20,
   tech_stack: 20,
   endpoints: 80,
@@ -97,14 +97,14 @@ const HUNTER_BRIEF_SURFACE_ARRAY_LIMITS = Object.freeze({
   evidence: 25,
   fork_rpc_pool: 6,
 });
-const HUNTER_BRIEF_SURFACE_SCALAR_LIMITS = Object.freeze({
+const ASSIGNMENT_BRIEF_SURFACE_SCALAR_LIMITS = Object.freeze({
   id: 120,
   priority: 40,
   original_priority: 40,
   surface_type: 80,
   chain_family: 40,
   chain_id: 20,
-  // Per-chain harness paths. Each smart-contract hunter prompt expects a
+  // Per-chain harness paths. Each smart-contract evaluator prompt expects a
   // chain-specific scalar — whitelisting them all keeps slim surfaces lossy
   // only on cap, not on field name. Adding a new chain pack is one entry.
   foundry_harness_path: 240,    // EVM
@@ -117,9 +117,9 @@ const HUNTER_BRIEF_SURFACE_SCALAR_LIMITS = Object.freeze({
   title: 160,
   description: 500,
 });
-const HUNTER_BRIEF_ARRAY_ITEM_MAX_CHARS = 500;
-const HUNTER_BRIEF_RANKING_REASON_LIMIT = 10;
-const HUNTER_BRIEF_RANKING_REASON_MAX_CHARS = 160;
+const ASSIGNMENT_BRIEF_ARRAY_ITEM_MAX_CHARS = 500;
+const ASSIGNMENT_BRIEF_RANKING_REASON_LIMIT = 10;
+const ASSIGNMENT_BRIEF_RANKING_REASON_MAX_CHARS = 160;
 
 // Default brief message returned when bob-spec.json is absent. The loader is
 // real (mcp/lib/bob-spec.js); this message is the empty-state fallback.
@@ -166,7 +166,7 @@ const SMART_CONTRACT_BRIEF_SLICE_REGISTRY = Object.freeze([
   briefSliceEntry("surface_graph_slice", 8192, (context) => context.surfaceGraphSlice),
 ]);
 
-const HUNTER_BRIEF_SLICE_REGISTRY = Object.freeze({
+const ASSIGNMENT_BRIEF_SLICE_REGISTRY = Object.freeze({
   web: WEB_BRIEF_SLICE_REGISTRY,
   smart_contract: SMART_CONTRACT_BRIEF_SLICE_REGISTRY,
 });
@@ -223,7 +223,7 @@ function cappedSurfaceArray(value, limit) {
       : [value];
   let truncatedValues = 0;
   const shownValues = values.filter((item) => item != null).slice(0, limit).map((item) => {
-    const capped = capStringValue(String(item), HUNTER_BRIEF_ARRAY_ITEM_MAX_CHARS);
+    const capped = capStringValue(String(item), ASSIGNMENT_BRIEF_ARRAY_ITEM_MAX_CHARS);
     if (capped.truncated) truncatedValues += 1;
     return capped.value;
   });
@@ -234,7 +234,7 @@ function cappedSurfaceArray(value, limit) {
   };
   if (truncatedValues > 0) {
     limits.truncated_values = truncatedValues;
-    limits.max_value_chars = HUNTER_BRIEF_ARRAY_ITEM_MAX_CHARS;
+    limits.max_value_chars = ASSIGNMENT_BRIEF_ARRAY_ITEM_MAX_CHARS;
   }
   return {
     values: shownValues,
@@ -248,11 +248,11 @@ function slimRankingForBrief(value) {
   if (Number.isFinite(value.version)) ranking.version = value.version;
   if (Number.isFinite(value.score)) ranking.score = value.score;
   if (isBriefScalar(value.priority)) {
-    ranking.priority = capStringValue(String(value.priority), HUNTER_BRIEF_SURFACE_SCALAR_LIMITS.priority).value;
+    ranking.priority = capStringValue(String(value.priority), ASSIGNMENT_BRIEF_SURFACE_SCALAR_LIMITS.priority).value;
   }
-  const cappedReasons = cappedSurfaceArray(value.reasons, HUNTER_BRIEF_RANKING_REASON_LIMIT);
+  const cappedReasons = cappedSurfaceArray(value.reasons, ASSIGNMENT_BRIEF_RANKING_REASON_LIMIT);
   ranking.reasons = cappedReasons.values.map((reason) => {
-    const capped = capStringValue(reason, HUNTER_BRIEF_RANKING_REASON_MAX_CHARS);
+    const capped = capStringValue(reason, ASSIGNMENT_BRIEF_RANKING_REASON_MAX_CHARS);
     return capped.value;
   });
   return ranking;
@@ -263,7 +263,7 @@ function slimSurfaceForBrief(surface) {
   const slimSurface = {};
   const surfaceLimits = {};
 
-  for (const [field, maxChars] of Object.entries(HUNTER_BRIEF_SURFACE_SCALAR_LIMITS)) {
+  for (const [field, maxChars] of Object.entries(ASSIGNMENT_BRIEF_SURFACE_SCALAR_LIMITS)) {
     const value = source[field];
     if (!isBriefScalar(value) || value == null) continue;
     const normalizedValue = typeof value === "string" ? value : String(value);
@@ -283,7 +283,7 @@ function slimSurfaceForBrief(surface) {
     slimSurface.ranking = ranking;
   }
 
-  for (const [field, limit] of Object.entries(HUNTER_BRIEF_SURFACE_ARRAY_LIMITS)) {
+  for (const [field, limit] of Object.entries(ASSIGNMENT_BRIEF_SURFACE_ARRAY_LIMITS)) {
     const capped = cappedSurfaceArray(source[field], limit);
     slimSurface[field] = capped.values;
     surfaceLimits[field] = capped.limits;
@@ -295,7 +295,7 @@ function slimSurfaceForBrief(surface) {
   };
 }
 
-function readHunterBrief(args) {
+function readAssignmentBrief(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const wave = parseWaveId(args.wave);
   const agent = parseAgentId(args.agent);
@@ -303,7 +303,7 @@ function readHunterBrief(args) {
   const internalHostPolicy = blockInternalHostsRequestPolicy(domain, args);
   const internalHostContext = blockInternalHostsPolicyFields(internalHostPolicy);
   const { identity: egressIdentity } = resolveAndAssertSessionEgressIdentity(domain, egressProfile, {
-    source: "bounty_read_hunter_brief",
+    source: "bounty_read_assignment_brief",
   });
   const waveNumber = Number(wave.slice(1));
 
@@ -315,14 +315,14 @@ function readHunterBrief(args) {
   }
   // normalizeAssignmentRouteMetadata already validates brief_profile against
   // the capability-packs registry; any registered profile (web today, plus
-  // smart_contract_* once SC packs are added) is accepted by hunter-brief.
+  // smart_contract_* once SC packs are added) is accepted by assignment-brief.
   const routeMetadata = normalizeAssignmentRouteMetadata(assignment);
 
   // 2. Load attack surface and find assigned surface
   const attackSurface = readAttackSurfaceStrict(domain);
   let surfacesForBrief = attackSurface.document.surfaces;
   // Ranking summarizes traffic + public intel per surface, neither of which
-  // a smart-contract hunter consumes. Skip it for non-web profiles to avoid
+  // a smart-contract evaluator consumes. Skip it for non-web profiles to avoid
   // paying that I/O cost for a result we'd just drop.
   const isSmartContractBrief = routeMetadata.brief_profile !== "web";
   if (!isSmartContractBrief) {
@@ -346,7 +346,7 @@ function readHunterBrief(args) {
   const deadEndResult = filterExclusionsByHosts(state.dead_ends, surfaceObj.hosts);
   const wafResult = filterExclusionsByHosts(state.waf_blocked_endpoints, surfaceObj.hosts);
   const slimSurface = slimSurfaceForBrief(surfaceObj);
-  // coverage_summary stays in both profiles: SC hunters call bounty_log_coverage
+  // coverage_summary stays in both profiles: SC evaluators call bounty_log_coverage
   // for chain-flavored bug-class taxonomies, and resumed waves want to know
   // what was already tested regardless of profile.
   const coverageSummary = buildCoverageSummaryForSurface(
@@ -377,7 +377,7 @@ function readHunterBrief(args) {
       ...internalHostContext,
       capability_pack: routeMetadata.capability_pack,
       capability_pack_version: routeMetadata.capability_pack_version,
-      hunter_agent: routeMetadata.hunter_agent,
+      evaluator_agent: routeMetadata.evaluator_agent,
       brief_profile: routeMetadata.brief_profile,
       context_budget: routeMetadata.context_budget,
     },
@@ -420,7 +420,7 @@ function buildBriefExtrasForProfile(profile, { domain, surface, assignment, rout
 // Web profile carries HTTP-flavored intel: bypass tables for the surface's
 // tech stack, web technique/payload knowledge, traffic + audit + circuit
 // breaker summaries from real HTTP probes, public bounty intel, static scan
-// hints, and an auth-profile hint pointing the hunter at bounty_list_auth_profiles.
+// hints, and an auth-profile hint pointing the evaluator at bounty_list_auth_profiles.
 const LEGACY_TECHNIQUE_SUMMARY_LIMIT = 2;
 
 function basenameForSummary(filePath) {
@@ -454,7 +454,7 @@ function legacyKnowledgeFromTechniquePacks(selectedResult, selectedTechniquePack
       entries_returned: legacyEntries.length,
       capped: selectedTechniquePacks.length > legacyEntries.length,
       char_count: charCount,
-      max_chars: HUNTER_KNOWLEDGE_MAX_CHARS,
+      max_chars: EVALUATOR_KNOWLEDGE_MAX_CHARS,
       max_entries: LEGACY_TECHNIQUE_SUMMARY_LIMIT,
       legacy_compatibility: true,
       registry_warnings: selectedResult.registry_warnings || [],
@@ -527,7 +527,7 @@ function buildWebBriefExtras(domain, surfaceObj, routeMetadata) {
 // trust assumptions and bypass conditions filtered to this surface, and the
 // public RPC pool for the surface's chain_family/chain_id. Web-flavored
 // fields (bypass_table, traffic, audit, intel, payload hints, auth profiles)
-// are intentionally omitted; SC hunters do not have the tools that consume them.
+// are intentionally omitted; SC evaluators do not have the tools that consume them.
 function buildSmartContractBriefExtras(domain, surfaceObj, assignment) {
   const smartContractBriefContext = {
     bobSpecStatus: summarizeBobSpecForBrief(loadBobSpec(domain), assignment.surface_id),
@@ -540,10 +540,10 @@ function buildSmartContractBriefExtras(domain, surfaceObj, assignment) {
 
 module.exports = {
   BOB_SPEC_ABSENT_MESSAGE,
-  HUNTER_BRIEF_SLICE_REGISTRY,
-  readHunterBrief,
-  hunterKnowledgeCandidatePaths,
+  ASSIGNMENT_BRIEF_SLICE_REGISTRY,
+  readAssignmentBrief,
+  evaluatorKnowledgeCandidatePaths,
   resolveBypassTable,
-  resolveHunterKnowledge,
+  resolveEvaluatorKnowledge,
   slimSurfaceForBrief,
 };

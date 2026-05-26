@@ -13,9 +13,9 @@ const {
   statePath,
 } = require("../mcp/lib/paths.js");
 const {
-  readHunterBrief,
-  HUNTER_BRIEF_SLICE_REGISTRY,
-} = require("../mcp/lib/hunter-brief.js");
+  readAssignmentBrief,
+  ASSIGNMENT_BRIEF_SLICE_REGISTRY,
+} = require("../mcp/lib/assignment-brief.js");
 const {
   startWave,
 } = require("../mcp/lib/waves.js");
@@ -61,8 +61,8 @@ function seedSessionState(domain) {
     target: domain,
     target_url: `https://${domain}`,
     deep_mode: false,
-    phase: "HUNT",
-    hunt_wave: 0,
+    phase: "EVALUATE",
+    evaluation_wave: 0,
     pending_wave: null,
     total_findings: 0,
     explored: [],
@@ -98,17 +98,17 @@ function startSingleSurfaceWave(domain, surfaceId) {
 }
 
 function assertBriefWithinBudget(label, args) {
-  const brief = JSON.parse(readHunterBrief(args));
+  const brief = JSON.parse(readAssignmentBrief(args));
   const size = JSON.stringify(brief).length;
   assert.ok(
     size <= BRIEF_SIZE_BUDGET_CHARS,
-    `${label} hunter brief is ${size} chars, exceeds ${BRIEF_SIZE_BUDGET_CHARS}`,
+    `${label} evaluator brief is ${size} chars, exceeds ${BRIEF_SIZE_BUDGET_CHARS}`,
   );
   return brief;
 }
 
-test("hunter brief slice registry is explicit and budgeted per profile", () => {
-  assert.deepEqual(HUNTER_BRIEF_SLICE_REGISTRY.web.map((slice) => slice.key), [
+test("evaluator brief slice registry is explicit and budgeted per profile", () => {
+  assert.deepEqual(ASSIGNMENT_BRIEF_SLICE_REGISTRY.web.map((slice) => slice.key), [
     "bypass_table",
     "techniques",
     "payload_hints",
@@ -124,13 +124,13 @@ test("hunter brief slice registry is explicit and budgeted per profile", () => {
     "surface_graph_slice",
     "auth_profiles_hint",
   ]);
-  assert.deepEqual(HUNTER_BRIEF_SLICE_REGISTRY.smart_contract.map((slice) => slice.key), [
+  assert.deepEqual(ASSIGNMENT_BRIEF_SLICE_REGISTRY.smart_contract.map((slice) => slice.key), [
     "bob_spec_status",
     "rpc_pool",
     "priors_slice",
     "surface_graph_slice",
   ]);
-  for (const [profile, slices] of Object.entries(HUNTER_BRIEF_SLICE_REGISTRY)) {
+  for (const [profile, slices] of Object.entries(ASSIGNMENT_BRIEF_SLICE_REGISTRY)) {
     assert.ok(Array.isArray(slices), `${profile} slice registry must be an array`);
     for (const slice of slices) {
       assert.equal(typeof slice.key, "string");
@@ -265,7 +265,7 @@ function seedSmartContractSlices(domain, surfaceId) {
   });
 }
 
-test("web hunter brief stays within 30k with representative slice fixtures", () => {
+test("web evaluator brief stays within 30k with representative slice fixtures", () => {
   withTempHome(() => {
     const domain = uniqueDomain("brief-web");
     const surfaceId = "web-api";
@@ -301,7 +301,7 @@ test("web hunter brief stays within 30k with representative slice fixtures", () 
   });
 });
 
-test("smart-contract hunter brief stays within 30k with representative slice fixtures", () => {
+test("smart-contract evaluator brief stays within 30k with representative slice fixtures", () => {
   withTempHome(() => {
     const domain = uniqueDomain("brief-sc");
     const surfaceId = "evm-vault";

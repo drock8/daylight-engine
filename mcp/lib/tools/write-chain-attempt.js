@@ -5,7 +5,7 @@ const { writeChainAttempt } = require("../chain-attempts.js");
 module.exports = Object.freeze({
   name: "bounty_write_chain_attempt",
   description:
-    "Append one structured CHAIN-phase exploit-chain attempt to MCP-owned chain-attempts.jsonl.",
+    "Append one structured CHAIN-phase impact proof-chain attempt to MCP-owned chain-attempts.jsonl.",
   inputSchema: {
     type: "object",
     properties: {

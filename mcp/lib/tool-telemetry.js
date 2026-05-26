@@ -496,18 +496,18 @@ function buildAgentRunTelemetryEvent({
   handoff,
   coverage,
   findings,
-  telemetry_source: telemetrySource = "hunter-subagent-stop",
+  telemetry_source: telemetrySource = "agent-run-stop",
   bob_version: bobVersionInput = null,
   now = new Date(),
 }) {
-  const normalizedRunType = runType || runTypeSnake || "hunter";
+  const normalizedRunType = runType || runTypeSnake || "evaluator";
   const normalizedBlockCode = blockCode == null ? blockCodeSnake : blockCode;
   const event = {
     version: AGENT_RUN_TELEMETRY_VERSION,
     bob_version: currentBobVersion(bobVersionInput),
     ts: now.toISOString(),
     run_id: null,
-    run_type: safeTelemetryLabel(normalizedRunType, 80) || "hunter",
+    run_type: safeTelemetryLabel(normalizedRunType, 80) || "evaluator",
     status: status === "allowed" ? "allowed" : "blocked",
     block_code: status === "allowed" ? null : safeTelemetryLabel(normalizedBlockCode, 120),
     target_domain: capDomain(targetDomain),
@@ -518,7 +518,7 @@ function buildAgentRunTelemetryEvent({
     handoff: normalizeAgentRunHandoff(handoff),
     coverage: normalizeAgentRunCoverage(coverage),
     findings: normalizeAgentRunFindings(findings),
-    telemetry_source: safeTelemetryLabel(telemetrySource, 120) || "hunter-subagent-stop",
+    telemetry_source: safeTelemetryLabel(telemetrySource, 120) || "agent-run-stop",
   };
   event.run_id = buildRunId(event);
   return event;
@@ -644,7 +644,7 @@ function normalizeAgentRunEventForSummary(event) {
     ts: safeTimestamp(event.ts),
     bob_version: safeVersionLabel(event.bob_version),
     run_id: safeTelemetryLabel(event.run_id, 80),
-    run_type: safeTelemetryLabel(event.run_type, 80) || "hunter",
+    run_type: safeTelemetryLabel(event.run_type, 80) || "evaluator",
     status: event.status === "allowed" ? "allowed" : "blocked",
     block_code: safeTelemetryLabel(event.block_code, 120),
     target_domain: capDomain(event.target_domain),

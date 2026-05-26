@@ -332,8 +332,8 @@ function buildInitialSessionState(domain, targetUrl, {
     target_url: targetUrl,
     deep_mode: deepMode,
     ...internalHostPolicy,
-    phase: "RECON",
-    hunt_wave: 0,
+    phase: "SURFACE_DISCOVERY",
+    evaluation_wave: 0,
     pending_wave: null,
     total_findings: 0,
     explored: [],
@@ -372,8 +372,8 @@ function buildInitialSessionState(domain, targetUrl, {
 // since the surface got stuck — not just whether ANY profile was added.
 // Counts collapsed unrelated additions into "growth" and gave irrelevant
 // blockers permanent amnesty. Snapshot captured at wave start (before
-// hunters dispatch), not merge time, so the comparison reflects "what
-// the hunter could have used".
+// evaluators dispatch), not merge time, so the comparison reflects "what
+// the evaluator could have used".
 function normalizePrereqRegistrySnapshots(value, fieldName = "prereq_registry_snapshots") {
   if (value == null) return [];
   if (!Array.isArray(value)) {
@@ -491,7 +491,7 @@ function compactSessionState(state) {
     block_internal_hosts: state.block_internal_hosts === true,
     block_internal_hosts_source: state.block_internal_hosts_source,
     phase: state.phase,
-    hunt_wave: state.hunt_wave,
+    evaluation_wave: state.evaluation_wave,
     pending_wave: state.pending_wave,
     total_findings: state.total_findings,
     explored_count: (state.explored || []).length,
@@ -536,9 +536,9 @@ function normalizeSessionStateDocument(document, requestedDomain) {
       : assertBoolean(document.deep_mode, "deep_mode"),
     ...normalizeBlockInternalHostsStateFields(document),
     phase: assertEnumValue(document.phase, PHASE_VALUES, "phase"),
-    hunt_wave: document.hunt_wave == null
+    evaluation_wave: document.evaluation_wave == null
       ? 0
-      : assertInteger(document.hunt_wave, "hunt_wave", { min: 0 }),
+      : assertInteger(document.evaluation_wave, "evaluation_wave", { min: 0 }),
     pending_wave: document.pending_wave == null
       ? null
       : assertInteger(document.pending_wave, "pending_wave", { min: 1 }),
@@ -605,7 +605,7 @@ function normalizeSessionStateDocument(document, requestedDomain) {
       : assertBoolean(document.handoff_provenance_required, "handoff_provenance_required"),
   };
 
-  // Disjointness invariant: a surface is either explored (hunter declared
+  // Disjointness invariant: a surface is either explored (evaluator declared
   // complete) OR terminally_blocked (system promoted on stuck loop with no
   // registry delta). Both at once would let consumers double-count or pick
   // the wrong closure reason. Fail loud rather than silently dedupe.
