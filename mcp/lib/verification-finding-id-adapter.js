@@ -74,6 +74,19 @@ function findingIdSetForVerificationContext({ domain, snapshot = null, finding_i
   return new Set();
 }
 
+// LEGACY: removed in Plane D — projects the finding_id set from the live
+// findings.jsonl ledger for older sessions whose claim freeze has no
+// CandidateClaim rows yet (e.g., tests/sessions that wrote findings directly
+// via finding-store rather than the dual-write tool). The snapshot builder
+// calls this when both `claims[]` and the projected `finding_ids[]` are
+// empty so verification can still address claim membership.
+function legacyFindingIdSetFromLiveLedger(domain) {
+  if (typeof domain !== "string" || !domain) return [];
+  return readFindingsFromJsonl(domain)
+    .map((finding) => finding.id)
+    .sort((a, b) => a.localeCompare(b));
+}
+
 // LEGACY: removed in Plane D — maps a `finding_ids[]` array supplied by an
 // older caller into the matching `claim_ids[]` set via the claim-projections
 // reverse lookup. Returns the *union* of claims referenced by the listed
@@ -95,4 +108,5 @@ module.exports = {
   claimIdSetFromFindingIds,
   findingIdSetForVerificationContext,
   findingIdsFromFreeze,
+  legacyFindingIdSetFromLiveLedger,
 };

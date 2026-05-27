@@ -35,12 +35,12 @@ const {
 } = require("./session-state-store.js");
 // LEGACY: removed in Plane D — legacy callers may seed VERIFY without any
 // CandidateClaim rows in the freeze (e.g., tests/sessions that wrote findings
-// directly via finding-store rather than the dual-write tool). Project the
-// finding_ids set from findings.jsonl in that case so verification can still
-// address claim membership.
+// directly via finding-store rather than the dual-write tool). The adapter
+// owns the live-ledger fallback so the snapshot builder never reads
+// findings.jsonl directly.
 const {
-  readFindingsFromJsonl,
-} = require("./finding-store.js");
+  legacyFindingIdSetFromLiveLedger,
+} = require("./verification-finding-id-adapter.js");
 
 const VERIFICATION_SCHEMA_V2 = 2;
 const VERIFICATION_INPUT_CHANGED_MESSAGE = "VERIFY input changed after snapshot; restart VERIFY/adjudication.";
@@ -136,11 +136,11 @@ function buildSnapshotPayload(domain, { attemptId, createdAt, now = null, autoFr
   // LEGACY: removed in Plane D — when no CandidateClaim rows exist in the
   // freeze yet (older sessions, tests that bypass record-finding's dual-write
   // shim) project finding_ids[] from findings.jsonl so downstream callers that
-  // still address claims by finding_id keep working.
+  // still address claims by finding_id keep working. The live-ledger fallback
+  // lives in verification-finding-id-adapter.js so the snapshot builder does
+  // not touch findings.jsonl directly.
   if (findingIds.length === 0 && claims.length === 0) {
-    findingIds = readFindingsFromJsonl(domain)
-      .map((finding) => finding.id)
-      .sort((a, b) => a.localeCompare(b));
+    findingIds = legacyFindingIdSetFromLiveLedger(domain);
   }
   const governance = readGovernanceHashesSafe(domain);
   return {
