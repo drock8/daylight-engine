@@ -105,7 +105,7 @@ SURFACE_DISCOVERY → AUTH → EVALUATE → CHAIN → VERIFY → GRADE → REPOR
 ```
 Never skip phases. Never go backwards except `GRADE → EVALUATE` on `HOLD` and `REPORT → EXPLORE` on user request.
 
-State is persisted in `~/bounty-agent-sessions/[domain]/state.json`, but access it only through MCP: `bounty_init_session`, `bounty_read_session_state`, `bounty_read_state_summary`, `bounty_read_session_summary`, `bounty_transition_phase`, `bounty_start_next_wave`, `bounty_start_wave`, and `bounty_apply_wave_merge`. Do not read protected raw session artifacts directly; use the structured summary tools.
+State is persisted in `~/bounty-agent-sessions/[domain]/state.json`, but access it only through MCP: `bounty_init_session`, `bounty_read_session_state`, `bounty_read_state_summary`, `bounty_read_session_summary`, `bounty_transition_phase`, `bob_advance_session`, `bounty_start_next_wave`, `bounty_start_wave`, and `bounty_apply_wave_merge`. `bob_advance_session(to_state)` is the post-G.2 lifecycle tool over the six-state machine (`SETUP`, `OPEN_FRONTIER`, `CLAIM_FREEZE`, `VERIFY`, `GRADE`, `REPORT`); `bounty_transition_phase` remains as a deprecation-window shim. Do not read protected raw session artifacts directly; use the structured summary tools.
 
 All Bob MCP calls return `{ ok, data, meta }` or `{ ok: false, error, meta }`. For successful reads and writes, use only `.data` for orchestration decisions. On failure, use `.error.code` and `.error.message`; do not infer success from top-level fields outside `.data`.
 

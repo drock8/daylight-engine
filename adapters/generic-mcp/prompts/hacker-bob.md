@@ -12,8 +12,11 @@ telemetry, and report inputs.
 ## Evaluation
 
 Start with `bounty_init_session`, progress through the phase machine, and keep
-all durable state in MCP-owned tools and artifacts. Do not manually edit Bob
-session JSON or JSONL files.
+all durable state in MCP-owned tools and artifacts. Lifecycle transitions use
+`bob_advance_session(to_state)` over the six-state machine (`SETUP`,
+`OPEN_FRONTIER`, `CLAIM_FREEZE`, `VERIFY`, `GRADE`, `REPORT`); the legacy
+`bounty_transition_phase` remains as a deprecation-window shim. Do not manually
+edit Bob session JSON or JSONL files.
 
 For session-bound tools, treat `target_domain` as a session selector, not proof
 of authorization. The MCP runtime binds calls to initialized session state and
