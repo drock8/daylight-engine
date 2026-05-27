@@ -6,8 +6,8 @@ const {
   VERIFICATION_ROUND_VALUES,
 } = require("./constants.js");
 const {
-  agentRunTelemetryPath,
-  readAgentRunTelemetryEvents,
+  toolInvocationTelemetryPath,
+  readToolInvocationTelemetryEvents,
   readToolTelemetryEvents,
   telemetryDir,
   toolTelemetryPath,
@@ -54,7 +54,7 @@ const BUNDLE_FILES = Object.freeze([
   "problem-clusters.json",
   "sessions.json",
   "tool-events.filtered.jsonl",
-  "agent-runs.filtered.jsonl",
+  "tool-invocations.filtered.jsonl",
   "source-paths.txt",
 ]);
 
@@ -145,17 +145,17 @@ function writeJsonl(filePath, events) {
 
 function readTelemetry(currentVersion, env) {
   const toolRead = readToolTelemetryEvents({ env });
-  const agentRunRead = readAgentRunTelemetryEvents({ env });
+  const toolInvocationRead = readToolInvocationTelemetryEvents({ env });
   const toolEvents = sortEvents(toolRead.events.filter((event) => versionMatches(event, currentVersion)));
-  const agentRuns = sortEvents(agentRunRead.events.filter((event) => versionMatches(event, currentVersion)));
+  const agentRuns = sortEvents(toolInvocationRead.events.filter((event) => versionMatches(event, currentVersion)));
   return {
     toolRead,
-    agentRunRead,
+    toolInvocationRead,
     toolEvents,
     agentRuns,
     exclusions: {
       tool_events: countByVersion(toolRead.events, currentVersion),
-      agent_runs: countByVersion(agentRunRead.events, currentVersion),
+      agent_runs: countByVersion(toolInvocationRead.events, currentVersion),
     },
   };
 }
@@ -471,12 +471,12 @@ function buildMalformedArtifactClusters(sessions, telemetry) {
       errors: [`Malformed tool-events.jsonl lines: ${telemetry.toolRead.malformed_lines}`],
     });
   }
-  if (telemetry.agentRunRead.malformed_lines > 0) {
+  if (telemetry.toolInvocationRead.malformed_lines > 0) {
     clusters.push({
-      source: "agent-runs",
-      path: telemetry.agentRunRead.telemetry_path,
-      count: telemetry.agentRunRead.malformed_lines,
-      errors: [`Malformed agent-runs.jsonl lines: ${telemetry.agentRunRead.malformed_lines}`],
+      source: "tool-invocations",
+      path: telemetry.toolInvocationRead.telemetry_path,
+      count: telemetry.toolInvocationRead.malformed_lines,
+      errors: [`Malformed tool-invocations.jsonl lines: ${telemetry.toolInvocationRead.malformed_lines}`],
     });
   }
   for (const session of sessions) {
@@ -816,7 +816,7 @@ function buildManifest({
     output_files: BUNDLE_FILES.slice(),
     inputs: {
       tool_telemetry_path: toolTelemetryPath(env),
-      agent_run_telemetry_path: agentRunTelemetryPath(env),
+      tool_invocation_telemetry_path: toolInvocationTelemetryPath(env),
     },
     counts: {
       included_sessions: sessions.length,
@@ -824,7 +824,7 @@ function buildManifest({
       tool_events: telemetry.toolEvents.length,
       agent_runs: telemetry.agentRuns.length,
       malformed_tool_event_lines: telemetry.toolRead.malformed_lines,
-      malformed_agent_run_lines: telemetry.agentRunRead.malformed_lines,
+      malformed_tool_invocation_lines: telemetry.toolInvocationRead.malformed_lines,
       source_paths: sources.length,
       version_excluded_tool_events: telemetry.exclusions.tool_events.reduce((sum, row) => sum + row.count, 0),
       version_excluded_agent_runs: telemetry.exclusions.agent_runs.reduce((sum, row) => sum + row.count, 0),
@@ -850,7 +850,7 @@ function exportBobReleaseBundle(options = {}) {
   const sessionRead = readSessions(currentVersion, env);
   const sources = uniqueSourcePaths([
     { kind: "telemetry_tool_events", path: toolTelemetryPath(env) },
-    { kind: "telemetry_agent_runs", path: agentRunTelemetryPath(env) },
+    { kind: "telemetry_tool_invocations", path: toolInvocationTelemetryPath(env) },
     ...sessionRead.sourcePaths,
   ]);
   const manifest = buildManifest({
@@ -885,7 +885,7 @@ function exportBobReleaseBundle(options = {}) {
     problem_clusters: path.join(bundleDir, "problem-clusters.json"),
     sessions: path.join(bundleDir, "sessions.json"),
     tool_events: path.join(bundleDir, "tool-events.filtered.jsonl"),
-    agent_runs: path.join(bundleDir, "agent-runs.filtered.jsonl"),
+    agent_runs: path.join(bundleDir, "tool-invocations.filtered.jsonl"),
     source_paths: path.join(bundleDir, "source-paths.txt"),
   };
 

@@ -82,11 +82,11 @@ const {
   normalizeAutoSignupResult,
 } = require("../mcp/lib/signup.js");
 const {
-  agentRunSidecarPath,
-  agentRunTelemetryPath,
-  appendAgentRunTelemetryEvent,
+  toolInvocationSidecarPath,
+  toolInvocationTelemetryPath,
+  appendToolInvocationTelemetryEvent,
   appendToolTelemetryEvent,
-  buildAgentRunTelemetryEvent,
+  buildToolInvocationTelemetryEvent,
   readToolTelemetry,
   toolTelemetryPath,
 } = require("../mcp/lib/tool-telemetry.js");
@@ -2573,7 +2573,7 @@ test("tool telemetry reader can include filtered evaluator run telemetry summari
   const telemetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bountyagent-telemetry-"));
   const env = { ...process.env, BOUNTY_TELEMETRY: "1", BOUNTY_TELEMETRY_DIR: telemetryRoot };
   try {
-    const allowed = buildAgentRunTelemetryEvent({
+    const allowed = buildToolInvocationTelemetryEvent({
       run_type: "evaluator",
       status: "allowed",
       target_domain: "example.com",
@@ -2593,7 +2593,7 @@ test("tool telemetry reader can include filtered evaluator run telemetry summari
       findings: { count: 1 },
       now: new Date("2026-04-24T00:00:00.000Z"),
     });
-    const missing = buildAgentRunTelemetryEvent({
+    const missing = buildToolInvocationTelemetryEvent({
       run_type: "evaluator",
       status: "blocked",
       block_code: "missing_handoff",
@@ -2605,7 +2605,7 @@ test("tool telemetry reader can include filtered evaluator run telemetry summari
       handoff: { present: false, valid: false },
       now: new Date("2026-04-24T00:01:00.000Z"),
     });
-    const other = buildAgentRunTelemetryEvent({
+    const other = buildToolInvocationTelemetryEvent({
       run_type: "evaluator",
       status: "blocked",
       block_code: "malformed_marker",
@@ -2615,10 +2615,10 @@ test("tool telemetry reader can include filtered evaluator run telemetry summari
       surface_id: "surface-x",
       now: new Date("2026-04-24T00:02:00.000Z"),
     });
-    appendAgentRunTelemetryEvent(allowed, { env });
-    appendAgentRunTelemetryEvent(missing, { env });
-    appendAgentRunTelemetryEvent(other, { env });
-    fs.appendFileSync(agentRunTelemetryPath(env), `${JSON.stringify({
+    appendToolInvocationTelemetryEvent(allowed, { env });
+    appendToolInvocationTelemetryEvent(missing, { env });
+    appendToolInvocationTelemetryEvent(other, { env });
+    fs.appendFileSync(toolInvocationTelemetryPath(env), `${JSON.stringify({
       version: 1,
       bob_version: "https://version.example/?token=raw-agent-bob-version-secret",
       ts: "https://ts.example/?token=raw-agent-ts-secret",
@@ -2646,14 +2646,14 @@ test("tool telemetry reader can include filtered evaluator run telemetry summari
       findings: { count: 1 },
       telemetry_source: "source?token=raw-agent-telemetry-source-secret",
     })}\n`, "utf8");
-    fs.appendFileSync(agentRunTelemetryPath(env), "{not-json\n", "utf8");
+    fs.appendFileSync(toolInvocationTelemetryPath(env), "{not-json\n", "utf8");
 
     const withoutRuns = readToolTelemetry({ target_domain: "example.com" }, { env });
     assert.equal(Object.prototype.hasOwnProperty.call(withoutRuns, "agent_runs"), false);
 
     const summary = readToolTelemetry({ include_agent_runs: true, target_domain: "example.com", limit: 2 }, { env });
     assert.equal(summary.total_events, 0);
-    assert.equal(summary.agent_runs.telemetry_path, "[telemetry-dir]/agent-runs.jsonl");
+    assert.equal(summary.agent_runs.telemetry_path, "[telemetry-dir]/tool-invocations.jsonl");
     assert.deepEqual(summary.agent_runs.observed_bob_versions, [PACKAGE_VERSION]);
     assert.equal(summary.agent_runs.total_runs, 2);
     assert.equal(summary.agent_runs.malformed_lines, 1);
@@ -7751,7 +7751,7 @@ test("bounty_finalize_agent_run blocks missing invalid and mismatched handoffs",
     assert.equal(mismatch.error.details.handoff.surface_status, "complete");
     assert.equal(mismatch.error.details.handoff.chain_notes_count, 1);
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.deepEqual(rows.map((row) => row.status), ["blocked", "blocked", "blocked"]);
     assert.deepEqual(rows.map((row) => row.block_code), [
       "missing_handoff",
@@ -7795,7 +7795,7 @@ test("bounty_finalize_agent_run blocks unreadable wave assignments and records t
     assert.equal(malformed.error.code, "STATE_CONFLICT");
     assert.equal(malformed.error.details.block_code, "unreadable_wave_assignments");
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.deepEqual(rows.map((row) => row.status), ["blocked", "blocked"]);
     assert.deepEqual(rows.map((row) => row.block_code), [
       "unreadable_wave_assignments",
@@ -7869,7 +7869,7 @@ test("bounty_finalize_agent_run allows valid handoff and records metadata-only t
       chain_notes_count: 1,
     });
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 1);
     assert.equal(rows[0].status, "allowed");
     assert.equal(rows[0].block_code, null);
@@ -7932,7 +7932,7 @@ test("bounty_finalize_agent_run enforces web technique attempt requirement", asy
     assert.equal(allowed.ok, true);
     assert.equal(allowed.data.status, "allowed");
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.deepEqual(rows.map((row) => row.status), ["blocked", "blocked", "allowed"]);
     assert.deepEqual(rows.map((row) => row.block_code), ["missing_technique_attempt_log", "missing_technique_attempt_log", null]);
   });
@@ -8060,7 +8060,7 @@ test("evaluator SubagentStop hook blocks missing final marker", () => {
     assert.match(result.stderr, /BOB_AGENT_RUN_DONE/);
     assert.match(result.stderr, /bounty_write_wave_handoff/);
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 1);
     assert.equal(rows[0].run_type, "evaluator");
     assert.equal(rows[0].status, "blocked");
@@ -8090,7 +8090,7 @@ test("evaluator SubagentStop hook rejects malformed, zero wave, and zero agent m
     assert.equal(zeroAgent.status, 2);
     assert.match(zeroAgent.stderr, /positive aN/);
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 3);
     assert.deepEqual(rows.map((row) => row.block_code), [
       "malformed_marker",
@@ -8114,7 +8114,7 @@ test("evaluator SubagentStop hook allows post-report evidence markers without wa
     assert.equal(result.status, 0);
     assert.match(result.stdout, /post-report evidence run accepted/);
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 1);
     assert.equal(rows[0].run_type, "evidence");
     assert.equal(rows[0].status, "allowed");
@@ -8150,7 +8150,7 @@ test("evaluator SubagentStop hook blocks evidence markers before REPORT or EXPLO
     assert.equal(result.status, 2);
     assert.match(result.stderr, /REPORT or EXPLORE/);
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 1);
     assert.equal(rows[0].run_type, "evidence");
     assert.equal(rows[0].status, "blocked");
@@ -8177,7 +8177,7 @@ test("evaluator SubagentStop hook blocks missing structured handoff", async () =
     assert.equal(result.status, 2);
     assert.match(result.stderr, /must call bounty_write_wave_handoff/);
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 1);
     assert.equal(rows[0].status, "blocked");
     assert.equal(rows[0].block_code, "missing_handoff");
@@ -8218,7 +8218,7 @@ test("evaluator SubagentStop hook blocks invalid structured handoff", () => {
     assert.equal(result.status, 2);
     assert.match(result.stderr, /wrote an invalid handoff/);
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 1);
     assert.equal(rows[0].status, "blocked");
     assert.equal(rows[0].block_code, "invalid_handoff");
@@ -8249,7 +8249,7 @@ test("evaluator SubagentStop hook blocks marker and handoff mismatch", () => {
     assert.equal(result.status, 2);
     assert.match(result.stderr, /does not match structured handoff/);
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 1);
     assert.equal(rows[0].status, "blocked");
     assert.equal(rows[0].block_code, "handoff_mismatch");
@@ -8398,7 +8398,7 @@ test("evaluator SubagentStop hook writes metadata-only allowed run telemetry", (
     assert.equal(result.status, 0);
     assert.match(result.stdout, /handoff valid/);
 
-    const rows = readJsonl(agentRunTelemetryPath());
+    const rows = readJsonl(toolInvocationTelemetryPath());
     assert.equal(rows.length, 1);
     const event = rows[0];
     assert.equal(event.version, 1);
@@ -8427,7 +8427,7 @@ test("evaluator SubagentStop hook writes metadata-only allowed run telemetry", (
     assert.deepEqual(event.findings, { count: 1 });
     assert.equal(event.telemetry_source, "agent-run-stop");
 
-    const sidecar = JSON.parse(fs.readFileSync(agentRunSidecarPath(event.run_id), "utf8"));
+    const sidecar = JSON.parse(fs.readFileSync(toolInvocationSidecarPath(event.run_id), "utf8"));
     assert.deepEqual(sidecar, event);
 
     const telemetryText = JSON.stringify(event);
@@ -8456,7 +8456,7 @@ test("evaluator SubagentStop telemetry can be disabled and write failures do not
       last_assistant_message: 'BOB_AGENT_RUN_DONE {"target_domain":"example.com","wave":"w1","agent":"a1","surface_id":"surface-a"}',
     }, { home: tempHome, env: { BOUNTY_TELEMETRY: "0" } });
     assert.equal(disabled.status, 0);
-    assert.equal(fs.existsSync(agentRunTelemetryPath()), false);
+    assert.equal(fs.existsSync(toolInvocationTelemetryPath()), false);
 
     const blockingPath = path.join(tempHome, "telemetry-root-file");
     fs.writeFileSync(blockingPath, "not a directory\n");

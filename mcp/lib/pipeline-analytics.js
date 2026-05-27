@@ -19,7 +19,7 @@ const {
   statePath,
 } = require("./paths.js");
 const {
-  readAgentRunTelemetryEvents,
+  readToolInvocationTelemetryEvents,
   readToolTelemetryEvents,
   summarizeToolTelemetryEvents,
 } = require("./tool-telemetry.js");
@@ -430,7 +430,7 @@ function buildToolHealth({ targetDomain = null, cutoffMs = null, limit = DEFAULT
 }
 
 function buildEvaluatorHealth({ targetDomain = null, cutoffMs = null, limit = DEFAULT_LIMIT, env = process.env, readResult = null } = {}) {
-  const baseRead = readResult || readAgentRunTelemetryEvents({
+  const baseRead = readResult || readToolInvocationTelemetryEvents({
     target_domain: targetDomain,
     agent_run_type: "evaluator",
     env,
@@ -1028,7 +1028,7 @@ function readPipelineAnalytics(args = {}, { env = process.env, validateAuthority
   });
   const telemetryCache = {
     toolRead: readToolTelemetryEvents({ env }),
-    evaluatorRead: readAgentRunTelemetryEvents({
+    evaluatorRead: readToolInvocationTelemetryEvents({
       agent_run_type: "evaluator",
       env,
     }),

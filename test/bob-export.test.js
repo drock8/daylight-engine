@@ -165,7 +165,7 @@ test("Bob export creates a version-scoped deterministic improvement bundle", () 
       },
       "{bad-json",
     ]);
-    appendJsonl(path.join(telemetryRoot, "agent-runs.jsonl"), [
+    appendJsonl(path.join(telemetryRoot, "tool-invocations.jsonl"), [
       {
         version: 1,
         bob_version: "9.9.9",
@@ -247,7 +247,7 @@ test("Bob export creates a version-scoped deterministic improvement bundle", () 
     assert.ok(toolEvents.every((event) => event.bob_version === "9.9.9"));
     assert.ok(toolEvents.some((event) => event.error_code === "NETWORK_ERROR"));
 
-    const agentRuns = readJsonl(path.join(first.bundle_dir, "agent-runs.filtered.jsonl"));
+    const agentRuns = readJsonl(path.join(first.bundle_dir, "tool-invocations.filtered.jsonl"));
     assert.deepEqual(agentRuns.map((run) => run.block_code), ["MISSING_HANDOFF"]);
 
     const clusters = readJson(path.join(first.bundle_dir, "problem-clusters.json"));

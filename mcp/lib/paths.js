@@ -30,6 +30,21 @@ function sessionsRoot() {
   return path.join(os.homedir(), "bounty-agent-sessions");
 }
 
+const TELEMETRY_DIR_NAME = "bounty-agent-telemetry";
+const TELEMETRY_TOOL_INVOCATIONS_FILE_NAME = "tool-invocations.jsonl";
+
+function telemetryDir(env = process.env) {
+  const override = typeof env.BOUNTY_TELEMETRY_DIR === "string"
+    ? env.BOUNTY_TELEMETRY_DIR.trim()
+    : "";
+  return override ? path.resolve(override) : path.join(os.homedir(), TELEMETRY_DIR_NAME);
+}
+
+function telemetryToolInvocationsJsonlPath(env = process.env) {
+  return path.join(telemetryDir(env), TELEMETRY_TOOL_INVOCATIONS_FILE_NAME);
+}
+
+
 function statePath(domain) {
   return path.join(sessionDir(domain), "state.json");
 }
@@ -266,6 +281,8 @@ function reportMarkdownPath(domain) {
 }
 
 module.exports = {
+  TELEMETRY_DIR_NAME,
+  TELEMETRY_TOOL_INVOCATIONS_FILE_NAME,
   assertSafeDomain,
   assertStaticArtifactId,
   attackSurfacePath,
@@ -315,6 +332,8 @@ module.exports = {
   staticArtifactsJsonlPath,
   staticScanResultsJsonlPath,
   taskQueuePath,
+  telemetryDir,
+  telemetryToolInvocationsJsonlPath,
   trafficJsonlPath,
   verificationAdjudicationPath,
   verificationAttemptsDir,

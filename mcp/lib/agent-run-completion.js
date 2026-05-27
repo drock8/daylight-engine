@@ -145,7 +145,7 @@ const {
   ToolError,
 } = require("./envelope.js");
 const {
-  safeRecordAgentRunTelemetry,
+  safeRecordToolInvocationTelemetry,
 } = require("./tool-telemetry.js");
 const {
   safeRecordEvaluatorStoppedPipelineEvent,
@@ -391,7 +391,7 @@ function recordAgentCompletionTelemetry(evaluation, options = {}) {
   // structured-handoff evaluation path). Detect that shape by the runType
   // field and pass it through to the recorders unchanged.
   if (evaluation && evaluation.runType === "evidence") {
-    safeRecordAgentRunTelemetry(evaluation);
+    safeRecordToolInvocationTelemetry(evaluation);
     safeRecordEvaluatorStoppedPipelineEvent(
       evaluation,
       safeGovernanceContextForDomain(evaluation.target_domain),
@@ -399,7 +399,7 @@ function recordAgentCompletionTelemetry(evaluation, options = {}) {
     return evaluation;
   }
   const input = telemetryInput(evaluation, options);
-  safeRecordAgentRunTelemetry(input);
+  safeRecordToolInvocationTelemetry(input);
   safeRecordEvaluatorStoppedPipelineEvent(
     input,
     safeGovernanceContextForDomain(input.target_domain),
