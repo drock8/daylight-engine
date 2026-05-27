@@ -2,9 +2,6 @@
 
 const fs = require("fs");
 const {
-  readAttackSurfaceStrict,
-} = require("./attack-surface.js");
-const {
   surfaceRoutesPath,
 } = require("./paths.js");
 const {
@@ -20,12 +17,24 @@ const {
   getCapabilityPack,
   normalizeContextBudget,
 } = require("./capability-packs.js");
+const {
+  currentSurfaces,
+} = require("./frontier-projections.js");
 
 const SURFACE_ROUTES_VERSION = 1;
 const SURFACE_ROUTE_VERSION = 1;
 
 function buildSurfaceRoutesDocument(domain, { attackSurfaceInfo = null } = {}) {
-  const attackSurface = attackSurfaceInfo || readAttackSurfaceStrict(domain);
+  // Surface input read from currentSurfaces (Cycle F.5): surface-index.json
+  // is authoritative when present; legacy attack_surface.json is only used
+  // when the materialized view is absent (transitional fallback removed in D.3).
+  const attackSurface = attackSurfaceInfo || currentSurfaces(domain);
+  if (attackSurface.source === "missing") {
+    // Preserve the legacy contract: routing requires surface input. A session
+    // with neither a materialized surface-index.json nor an agent-written
+    // attack_surface.json cannot be routed.
+    throw new Error(`Missing attack surface JSON: ${attackSurface.path}`);
+  }
   const routes = [];
   const seenSurfaceIds = new Set();
 

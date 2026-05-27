@@ -64,12 +64,69 @@ function ensureSurface(surfacesById, domain, surfaceId, ts) {
   return surface;
 }
 
+// Scalar text fields that a surface.observed payload may carry. Captured into
+// the materialized surface so downstream readers (phase-gates, ranking,
+// surface-router) can consume surface-index.json as the authoritative source
+// instead of reading attack_surface.json directly (Cycle F.5).
+const SURFACE_SCALAR_TEXT_FIELDS = [
+  "title",
+  "uri",
+  "method",
+  "kind",
+  "owner",
+  "priority",
+  "surface_type",
+  "chain_family",
+];
+
+// Array text fields carried by surface.observed payloads. Mirrors the legacy
+// attack_surface.json schema fields used by ranking.scoreSurfaceRanking and
+// related readers.
+const SURFACE_TEXT_ARRAY_FIELDS = [
+  "hosts",
+  "tech_stack",
+  "endpoints",
+  "interesting_params",
+  "nuclei_hits",
+  "js_hints",
+  "leaked_secrets",
+  "bug_class_hints",
+  "high_value_flows",
+  "evidence",
+];
+
+function safeStringArray(value) {
+  if (value == null) return [];
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
 function applySurfaceFields(surface, event) {
   const payload = event.payload || {};
-  for (const field of ["title", "uri", "method", "kind", "owner"]) {
+  for (const field of SURFACE_SCALAR_TEXT_FIELDS) {
     if (typeof payload[field] === "string" && payload[field].trim()) {
       surface[field] = payload[field].trim();
     }
+  }
+  for (const field of SURFACE_TEXT_ARRAY_FIELDS) {
+    const values = safeStringArray(payload[field]);
+    if (values.length === 0) continue;
+    if (!Array.isArray(surface[field])) surface[field] = [];
+    for (const value of values) addUnique(surface[field], value);
+    surface[field].sort();
   }
   for (const label of normalizeOptionalTextArray(payload.labels || event.tags, "labels")) {
     addUnique(surface.labels, label);

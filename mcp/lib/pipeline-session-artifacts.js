@@ -16,7 +16,6 @@ const {
   parseWaveId,
 } = require("./validation.js");
 const {
-  attackSurfacePath,
   chainAttemptsJsonlPath,
   coverageJsonlPath,
   evidencePackPaths,
@@ -75,6 +74,9 @@ const {
   isPlainObject,
   timestampMs,
 } = require("./pipeline-events.js");
+const {
+  currentSurfaces,
+} = require("./frontier-projections.js");
 
 const HANDOFF_ANALYTICS_MAX_FILES = 1000;
 const WAVE_READINESS_MAX_ASSIGNMENT_FILES = 200;
@@ -808,11 +810,27 @@ function summarizeEvidenceArtifacts(targetDomain, finalReportableIds) {
 }
 
 function summarizeAttackSurfaceCoverage(targetDomain, state) {
-  const read = readJsonSafe(attackSurfacePath(targetDomain), "attack_surface.json");
-  if (!isPlainObject(read.document) || !Array.isArray(read.document.surfaces)) {
+  // Surface coverage reads from currentSurfaces (Cycle F.5): the materialized
+  // surface-index.json is the authoritative read source. The mtime reported
+  // back to dashboards reflects the underlying source (surface-index.json
+  // when present, attack_surface.json only in the legacy fallback).
+  let surfaceList = [];
+  let sourcePath = null;
+  let exists = false;
+  let error = null;
+  try {
+    const projection = currentSurfaces(targetDomain);
+    surfaceList = projection.surfaces || [];
+    sourcePath = projection.path;
+    exists = projection.source !== "missing";
+  } catch (err) {
+    error = compactErrorMessage(err);
+  }
+  const mtime = sourcePath ? fileMtimeIso(sourcePath) : null;
+  if (!exists || error) {
     return {
-      exists: read.exists,
-      error: read.error,
+      exists,
+      error,
       total_surfaces: 0,
       non_low_total: 0,
       non_low_explored: 0,
@@ -821,7 +839,7 @@ function summarizeAttackSurfaceCoverage(targetDomain, state) {
       closed_pct: null,
       unexplored_high: 0,
       blocked_high: 0,
-      mtime: read.mtime,
+      mtime,
     };
   }
   const exploredSet = new Set(Array.isArray(state?.explored) ? state.explored : []);
@@ -830,7 +848,7 @@ function summarizeAttackSurfaceCoverage(targetDomain, state) {
       ? state.terminally_blocked.map((entry) => entry && typeof entry.surface_id === "string" ? entry.surface_id : null).filter(Boolean)
       : [],
   );
-  const surfaces = read.document.surfaces.filter((surface) => isPlainObject(surface) && typeof surface.id === "string");
+  const surfaces = surfaceList.filter((surface) => isPlainObject(surface) && typeof surface.id === "string");
   const nonLowSurfaces = surfaces.filter((surface) => (surface.priority || "HIGH").toUpperCase() !== "LOW");
   const highSurfaces = surfaces.filter((surface) => ["CRITICAL", "HIGH"].includes((surface.priority || "HIGH").toUpperCase()));
   const exploredNonLow = nonLowSurfaces.filter((surface) => exploredSet.has(surface.id)).length;
@@ -852,7 +870,7 @@ function summarizeAttackSurfaceCoverage(targetDomain, state) {
     closed_pct: nonLowSurfaces.length ? Math.round((closedNonLow / nonLowSurfaces.length) * 100) : 100,
     unexplored_high: highSurfaces.filter((surface) => !exploredSet.has(surface.id) && !terminallyBlockedSet.has(surface.id)).length,
     blocked_high: highSurfaces.filter((surface) => terminallyBlockedSet.has(surface.id)).length,
-    mtime: read.mtime,
+    mtime,
   };
 }
 

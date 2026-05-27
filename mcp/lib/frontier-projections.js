@@ -4,8 +4,10 @@ const fs = require("fs");
 
 const {
   assertSafeDomain,
+  attackSurfacePath,
   frontierEventsJsonlPath,
   statePath,
+  surfaceIndexPath,
 } = require("./paths.js");
 const {
   readFrontierEvents,
@@ -267,10 +269,146 @@ function observationsForSurface(targetDomain, surfaceId) {
     .map(normalizeObservationEvent);
 }
 
+// surface-index.json is the authoritative surface source (Cycle F.5).
+// currentSurfaces reads it strictly and projects each materialized surface
+// into the legacy attack_surface.json shape (id-keyed, with the rich text
+// fields that ranking, phase-gates, surface-router, and pipeline-session-
+// artifacts consume). When surface-index.json does not exist for a session
+// (legacy or pre-F.1), the projection falls back to attack_surface.json.
+// The fallback is transitional and removed in D.3.
+
+const SURFACE_INDEX_SCALAR_FIELDS = [
+  "title",
+  "uri",
+  "method",
+  "kind",
+  "owner",
+  "surface_type",
+  "chain_family",
+];
+
+const SURFACE_INDEX_ARRAY_FIELDS = [
+  "hosts",
+  "tech_stack",
+  "endpoints",
+  "interesting_params",
+  "nuclei_hits",
+  "js_hints",
+  "leaked_secrets",
+  "bug_class_hints",
+  "high_value_flows",
+  "evidence",
+];
+
+function readSurfaceIndexDocument(domain) {
+  const filePath = surfaceIndexPath(domain);
+  if (!fs.existsSync(filePath)) return null;
+  // Surface-index.json being on disk but malformed is a hard failure: the
+  // ledger is authoritative, so silent fallback to attack_surface.json on
+  // corruption would hide ledger-truth divergence. The reader throws and the
+  // caller decides whether to swallow.
+  return readJsonFile(filePath, { label: "surface-index.json" });
+}
+
+function readAttackSurfaceDocumentLegacy(domain) {
+  const filePath = attackSurfacePath(domain);
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    return readJsonFile(filePath, { label: "attack_surface.json" });
+  } catch (error) {
+    // Mirror the legacy readAttackSurfaceStrict error shape so consumers that
+    // pattern-match on "Malformed attack surface JSON:" keep working through
+    // the deprecation window.
+    throw new Error(`Malformed attack surface JSON: ${filePath} (${error.message || String(error)})`);
+  }
+}
+
+function projectMaterializedSurface(materialized) {
+  if (materialized == null || typeof materialized !== "object" || Array.isArray(materialized)) {
+    return null;
+  }
+  const surfaceId = typeof materialized.surface_id === "string" ? materialized.surface_id.trim() : "";
+  if (!surfaceId) return null;
+  const projected = { id: surfaceId };
+  for (const field of SURFACE_INDEX_SCALAR_FIELDS) {
+    if (typeof materialized[field] === "string" && materialized[field].trim()) {
+      projected[field] = materialized[field].trim();
+    }
+  }
+  for (const field of SURFACE_INDEX_ARRAY_FIELDS) {
+    if (Array.isArray(materialized[field]) && materialized[field].length > 0) {
+      projected[field] = materialized[field].slice();
+    }
+  }
+  if (typeof materialized.priority === "string" && materialized.priority.trim()) {
+    projected.priority = materialized.priority.trim().toUpperCase();
+  }
+  if (Array.isArray(materialized.labels) && materialized.labels.length > 0) {
+    projected.labels = materialized.labels.slice();
+  }
+  if (typeof materialized.state === "string" && materialized.state) {
+    projected.surface_state = materialized.state;
+  }
+  return projected;
+}
+
+function currentSurfaces(targetDomain) {
+  const domain = assertSafeDomain(targetDomain);
+  // Parse surface-index.json strictly: a malformed file fails loud. The
+  // projection does not silently fall back to attack_surface.json on
+  // corruption in the runtime hot path (F.5 review gate). The legacy
+  // fallback only triggers when surface-index.json is *absent* on disk or
+  // is present-and-parseable but yet carries no surfaces — the latter
+  // happens during the deprecation window when frontier event producers
+  // for the initial agent-written attack_surface.json have not yet been
+  // wired (F.6 closes the remaining producer gap). D.3 removes the
+  // fallback entirely.
+  const surfaceIndex = readSurfaceIndexDocument(domain);
+  if (surfaceIndex && Array.isArray(surfaceIndex.surfaces) && surfaceIndex.surfaces.length > 0) {
+    const surfaces = [];
+    const seen = new Set();
+    for (const entry of surfaceIndex.surfaces) {
+      const projected = projectMaterializedSurface(entry);
+      if (!projected) continue;
+      if (seen.has(projected.id)) continue;
+      seen.add(projected.id);
+      surfaces.push(projected);
+    }
+    return {
+      source: "surface_index",
+      path: surfaceIndexPath(domain),
+      document: { surfaces },
+      surfaces,
+      surface_index_hash: typeof surfaceIndex.surface_index_hash === "string"
+        ? surfaceIndex.surface_index_hash
+        : null,
+    };
+  }
+  const legacy = readAttackSurfaceDocumentLegacy(domain);
+  if (legacy == null) {
+    return {
+      source: "missing",
+      path: surfaceIndexPath(domain),
+      document: { surfaces: [] },
+      surfaces: [],
+      surface_index_hash: null,
+    };
+  }
+  const surfacesArray = Array.isArray(legacy.surfaces) ? legacy.surfaces.slice() : [];
+  return {
+    source: "attack_surface_legacy",
+    path: attackSurfacePath(domain),
+    document: legacy,
+    surfaces: surfacesArray,
+    surface_index_hash: null,
+  };
+}
+
 module.exports = {
   compareObservationEvents,
   currentBlockers,
   currentClosures,
+  currentSurfaces,
   normalizeObservationEvent,
   observationsForSurface,
 };

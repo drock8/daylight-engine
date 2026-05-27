@@ -7,9 +7,6 @@ const {
 const fs = require("fs");
 const path = require("path");
 const {
-  readAttackSurfaceStrict,
-} = require("./attack-surface.js");
-const {
   rankAttackSurfaces,
 } = require("./ranking.js");
 const {
@@ -46,6 +43,7 @@ const {
 const {
   currentBlockers,
   currentClosures,
+  currentSurfaces,
 } = require("./frontier-projections.js");
 
 // Read the session's handoff_provenance_required flag directly from state.json
@@ -191,8 +189,24 @@ function computeEvaluationToChainGate(domain, state) {
   try {
     rankedSurfaces = rankAttackSurfaces(domain)?.surfaces || null;
   } catch {}
+  // Surface coverage reads from currentSurfaces (Cycle F.5): surface-index.json
+  // is authoritative when present and falls back to attack_surface.json for
+  // legacy sessions only via the explicit projection. D.3 removes the fallback.
   try {
-    surfaces = rankedSurfaces || readAttackSurfaceStrict(domain).document.surfaces;
+    if (rankedSurfaces) {
+      surfaces = rankedSurfaces;
+    } else {
+      const projection = currentSurfaces(domain);
+      if (projection.source === "missing") {
+        blockers.push(blocker(
+          "attack_surface_unavailable",
+          "attack surface could not be read for EVALUATE -> CHAIN gating",
+          { error: `Missing attack surface JSON: ${projection.path}` },
+        ));
+      } else {
+        surfaces = projection.surfaces;
+      }
+    }
   } catch (error) {
     blockers.push(blocker(
       "attack_surface_unavailable",
