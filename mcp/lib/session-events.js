@@ -33,7 +33,9 @@ const SESSION_EVENT_KINDS = Object.freeze([
   "governance.session.initialized",
   "governance.auth_context.replaced",
   "governance.lifecycle.advanced",
+  "governance.lifecycle.override",
   "governance.operator_constraint.updated",
+  "governance.tool_deprecated",
 ]);
 
 function generatedSessionEventId(fields) {

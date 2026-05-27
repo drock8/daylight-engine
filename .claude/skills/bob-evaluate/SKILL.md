@@ -35,6 +35,7 @@ allowed-tools:
   - mcp__bountyagent__bounty_init_session
   - mcp__bountyagent__bounty_read_session_state
   - mcp__bountyagent__bob_read_session_nucleus
+  - mcp__bountyagent__bob_advance_session
   - mcp__bountyagent__bounty_transition_phase
   - mcp__bountyagent__bounty_apply_wave_merge
   - mcp__bountyagent__bounty_write_handoff

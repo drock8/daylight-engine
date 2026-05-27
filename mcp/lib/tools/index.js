@@ -40,6 +40,7 @@ const TOOL_MODULES = Object.freeze([
   require("./init-session.js"),
   require("./read-session-state.js"),
   require("./read-session-nucleus.js"),
+  require("./advance-session.js"),
   require("./transition-phase.js"),
   require("./apply-wave-merge.js"),
   require("./write-handoff.js"),

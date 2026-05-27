@@ -361,6 +361,7 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_init_session",
   "bounty_read_session_state",
   "bob_read_session_nucleus",
+  "bob_advance_session",
   "bounty_transition_phase",
   "bounty_apply_wave_merge",
   "bounty_write_handoff",

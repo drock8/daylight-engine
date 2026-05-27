@@ -29,10 +29,18 @@ const {
 } = require("./egress-profiles.js");
 const {
   buildSessionNucleus,
+  LIFECYCLE_STATE_VALUES,
+  normalizeLifecycleState,
 } = require("./governance-contracts.js");
 const {
   appendSessionEvent,
 } = require("./session-events.js");
+const {
+  evaluateLifecycleTransition,
+} = require("./lifecycle-gates.js");
+const {
+  readSessionNucleus,
+} = require("./governance-store.js");
 const {
   hashCanonicalJson,
 } = require("./verification-contracts.js");
@@ -334,6 +342,156 @@ function clearOperatorNote(args) {
   });
 }
 
+// Lifecycle map (precise): legacy phase strings collapse into the six target
+// lifecycle states because the old machine carved frontier work into eight
+// phases that the topology now treats as a single OPEN_FRONTIER state with
+// task lenses. The map below is consumed by bounty_transition_phase's shim
+// (advance-session.js maps each legacy phase one-shot, no chaining):
+//
+//   SURFACE_DISCOVERY -> OPEN_FRONTIER  (seed discovery is the first frontier
+//                                        work; SETUP is reserved for the
+//                                        bootstrap nucleus before any work)
+//   AUTH              -> OPEN_FRONTIER  (auth capture is still discovery work
+//                                        in the topology lens taxonomy)
+//   EVALUATE          -> OPEN_FRONTIER  (evaluation is per-claim frontier work)
+//   CHAIN             -> OPEN_FRONTIER  (chain assembly is per-claim frontier
+//                                        work; freezing a batch is now the
+//                                        CLAIM_FREEZE state, not a phase)
+//   EXPLORE           -> OPEN_FRONTIER  (re-exploration after report is
+//                                        re-entry of OPEN_FRONTIER, D3)
+//   VERIFY            -> VERIFY
+//   GRADE             -> GRADE
+//   REPORT            -> REPORT
+//
+// Note: SETUP is the bootstrap state assigned by init-session. The legacy
+// machine never returned to SURFACE_DISCOVERY after work began, so the shim
+// never collapses to SETUP.
+const LEGACY_PHASE_TO_LIFECYCLE = Object.freeze({
+  SURFACE_DISCOVERY: "OPEN_FRONTIER",
+  AUTH: "OPEN_FRONTIER",
+  EVALUATE: "OPEN_FRONTIER",
+  CHAIN: "OPEN_FRONTIER",
+  EXPLORE: "OPEN_FRONTIER",
+  VERIFY: "VERIFY",
+  GRADE: "GRADE",
+  REPORT: "REPORT",
+});
+
+function mapLegacyPhaseToLifecycle(legacyPhase) {
+  if (!Object.prototype.hasOwnProperty.call(LEGACY_PHASE_TO_LIFECYCLE, legacyPhase)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `Unknown legacy phase: ${legacyPhase}`,
+    );
+  }
+  return LEGACY_PHASE_TO_LIFECYCLE[legacyPhase];
+}
+
+function advanceSession(args) {
+  const domain = assertNonEmptyString(args.target_domain, "target_domain");
+  let toState;
+  try {
+    toState = normalizeLifecycleState(args.to_state, "to_state");
+  } catch (error) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, error.message || String(error));
+  }
+  const override = args.override == null ? null : args.override;
+  if (override !== null && override !== "operator_force") {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `override must be null or "operator_force"; got ${JSON.stringify(override)}`,
+    );
+  }
+  const overrideReason = args.override_reason == null
+    ? null
+    : assertNonEmptyString(args.override_reason, "override_reason");
+
+  return withSessionLock(domain, () => {
+    const priorNucleus = readSessionNucleus(domain);
+    if (!priorNucleus || typeof priorNucleus !== "object") {
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `session nucleus missing for ${domain}; call bounty_init_session first`,
+      );
+    }
+    const fromState = normalizeLifecycleState(priorNucleus.lifecycle_state, "lifecycle_state");
+    const evaluation = evaluateLifecycleTransition({
+      target_domain: domain,
+      from_state: fromState,
+      to_state: toState,
+      nucleus: priorNucleus,
+    });
+
+    if (evaluation.blockers.length > 0 && override !== "operator_force") {
+      const first = evaluation.blockers[0];
+      throw new ToolError(
+        ERROR_CODES.STATE_CONFLICT,
+        `lifecycle transition blocked: ${first.message || first.code || first.blocked_by}`,
+        {
+          blocked_by: first.blocked_by || first.code || "transition_blocked",
+          code: first.code || first.blocked_by || "transition_blocked",
+          from: fromState,
+          to: toState,
+          allowed: first.allowed || (first.blocked_by === "no_transition"
+            ? require("./lifecycle-gates.js").allowedTargetsFor(fromState)
+            : undefined),
+          blockers: evaluation.blockers,
+        },
+      );
+    }
+
+    if (override === "operator_force") {
+      appendSessionEvent({
+        target_domain: domain,
+        kind: "governance.lifecycle.override",
+        nucleus_hash: priorNucleus.nucleus_hash,
+        payload: {
+          from_state: fromState,
+          to_state: toState,
+          override: "operator_force",
+          override_reason: overrideReason,
+          blockers: evaluation.blockers,
+          prior_nucleus_hash: priorNucleus.nucleus_hash,
+        },
+      });
+    }
+
+    const nextNucleus = buildSessionNucleus({
+      target_domain: priorNucleus.target_domain,
+      target_url: priorNucleus.scope_policy && priorNucleus.scope_policy.target_url,
+      scope_policy: priorNucleus.scope_policy,
+      egress_identity: priorNucleus.egress_identity,
+      auth_context: priorNucleus.auth_context,
+      operator_constraint: priorNucleus.operator_constraint,
+      lifecycle_state: toState,
+    });
+    writeJsonDocument(sessionNucleusPath(domain), nextNucleus);
+
+    const advancedEvent = appendSessionEvent({
+      target_domain: domain,
+      kind: "governance.lifecycle.advanced",
+      nucleus_hash: nextNucleus.nucleus_hash,
+      payload: {
+        from_state: fromState,
+        to_state: toState,
+        nucleus_hash: nextNucleus.nucleus_hash,
+        prior_nucleus_hash: priorNucleus.nucleus_hash,
+      },
+    });
+
+    return JSON.stringify({
+      version: 1,
+      advanced: true,
+      from_state: fromState,
+      to_state: toState,
+      nucleus_hash: nextNucleus.nucleus_hash,
+      prior_nucleus_hash: priorNucleus.nucleus_hash,
+      override: override === "operator_force" ? "operator_force" : null,
+      event_id: advancedEvent.event_id,
+    });
+  });
+}
+
 function transitionPhase(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   const toPhase = assertEnumValue(args.to_phase, PHASE_VALUES, "to_phase");
@@ -611,10 +769,13 @@ function reportWritten(args) {
 }
 
 module.exports = {
+  advanceSession,
   assertBlockInternalHostsCompatibleWithEgress,
   clearOperatorNote,
   clearTerminalBlock,
   initSession,
+  LEGACY_PHASE_TO_LIFECYCLE,
+  mapLegacyPhaseToLifecycle,
   reportWritten,
   resolveAndAssertSessionEgressIdentity,
   setOperatorNote,
