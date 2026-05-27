@@ -71,12 +71,20 @@ function normalizeReportSnapshot(input, { targetDomain = null, now = new Date() 
   const verificationSnapshotHash = input.verification_snapshot_hash == null
     ? null
     : normalizeHash(input.verification_snapshot_hash, "verification_snapshot_hash");
+  // Cycle C.7: bind the snapshot to the on-disk report.md content. The
+  // ReportSnapshot now carries five hashes (claim_freeze + final_verification +
+  // evidence + grade_verdict + report content) so a later consumer can prove
+  // the snapshot was finalized over an exact report.md file.
+  const reportContentHash = input.report_content_hash == null
+    ? null
+    : normalizeHash(input.report_content_hash, "report_content_hash");
 
   if (claimIds.length > 0) base.claim_ids = claimIds;
   if (artifactRefs.length > 0) base.artifact_refs = artifactRefs;
   if (reportPath) base.report_path = reportPath;
   if (summary) base.summary = summary;
   if (verificationSnapshotHash) base.verification_snapshot_hash = verificationSnapshotHash;
+  if (reportContentHash) base.report_content_hash = reportContentHash;
 
   const snapshotId = normalizeOptionalId(input.snapshot_id, "snapshot_id") || generatedReportSnapshotId(base);
   return withDocumentHash({

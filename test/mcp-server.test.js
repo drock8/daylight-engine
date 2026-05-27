@@ -387,6 +387,7 @@ const EXPECTED_TOOL_NAMES = [
   "bounty_clear_operator_note",
   "bounty_clear_terminal_block",
   "bounty_report_written",
+  "bob_finalize_report",
   "bounty_read_assignment_brief",
   "bounty_read_capability_playbook",
   "bounty_get_context_budget",

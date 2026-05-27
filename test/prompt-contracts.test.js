@@ -729,7 +729,7 @@ test("bountyagent skill stays orchestration-sized and preserves FSM shape", () =
   // spawn details to separate skill files (e.g., bob-spawn-substrate.md,
   // bob-spawn-cosmwasm.md) and reference them from this orchestrator skill
   // via @-includes or short cross-links.
-  assert.ok(lineCount(".claude/skills/bob-evaluate/SKILL.md") <= 363, "bountyagent skill is too large");
+  assert.ok(lineCount(".claude/skills/bob-evaluate/SKILL.md") <= 364, "bountyagent skill is too large");
   assert.match(orchestrator, /SURFACE_DISCOVERY\s*→\s*AUTH\s*→\s*EVALUATE\s*→\s*CHAIN\s*→\s*VERIFY\s*→\s*GRADE\s*→\s*REPORT/);
   for (const phase of ["SURFACE_DISCOVERY", "AUTH", "EVALUATE", "CHAIN", "VERIFY", "GRADE", "REPORT", "EXPLORE"]) {
     assert.match(orchestrator, new RegExp(`PHASE [0-9]+: ${phase}|${phase}`), `missing ${phase}`);

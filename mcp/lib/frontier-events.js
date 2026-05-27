@@ -39,6 +39,7 @@ const FRONTIER_EVENT_KINDS = Object.freeze([
   "blocker.asserted",
   "closure.recorded",
   "claim.candidate.linked",
+  "claim.report_snapshot.appended",
 ]);
 
 function generatedFrontierEventId(fields) {
