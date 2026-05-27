@@ -15,19 +15,41 @@ const {
 } = require("./storage.js");
 
 // frontier-projections fold frontier-events.jsonl into per-surface views that
-// phase-gates.js and coverage.js consume in place of state.json arrays.
+// phase-gates.js (and downstream coverage gating) consume in place of
+// state.json arrays.
 //
 // Cycle F.3 establishes the ledger as the read source while keeping legacy
 // writes (state.terminally_blocked / state.explored) in place per Pact P2
 // (dual-write before deletion). Cycle D.3 deletes those state arrays once the
 // ledger has been authoritative for one operational release.
 //
-// Transitional fallback: legacy sessions that pre-date the F.1 producers may
-// have populated state.terminally_blocked / state.explored arrays without ever
-// emitting frontier events. If frontier-events.jsonl is empty or missing for a
-// given domain, we read those state arrays directly so phase-gates and coverage
-// continue to see the same surfaces during the deprecation window. The fallback
-// is removed in D.3 when the legacy arrays are themselves deleted.
+// Transitional fallback: F.1 wired coverage.js and waves.js to emit closure /
+// blocker events, but the existing F.1 producers are coarser-grained than the
+// legacy state.json arrays. The state.explored array is populated only by
+// applyWaveMerge when a `surface_status: complete` handoff lands; F.1's
+// closure.recorded events from `bounty_log_coverage` capture endpoint-batch
+// closures (not surface-fully-explored closures). state.terminally_blocked is
+// populated by the merge-promotion path; F.1's blocker.asserted events from
+// `bounty_log_dead_ends` capture per-batch dead-end signals (not the
+// merge-promotion's terminally-blocked promotion).
+//
+// To preserve functional equivalence with the legacy reads during the
+// deprecation window, this module:
+//
+// 1. Treats only events that carry an explicit surface-level marker
+//    (`payload.surface_fully_explored: true` for closures,
+//    `payload.terminally_blocked: true` for blockers) — or that originate
+//    from the wave-merge tool — as authoritative surface-state events.
+// 2. Falls back to the legacy state.json arrays per projection when no
+//    qualifying event exists. This keeps both legacy sessions (no events at
+//    all) and current F.1 sessions (events that are coverage / dead-end
+//    batches, not surface-level state) reading the same surfaces as before.
+//
+// The fallback is removed in D.3 once waves.js merge-promotion path also
+// emits authoritative frontier events and the legacy state arrays are
+// themselves deleted.
+
+const SURFACE_STATE_MERGE_SOURCE = "bounty_apply_wave_merge";
 
 function readStateRaw(domain) {
   const filePath = statePath(domain);
@@ -55,7 +77,7 @@ function fallbackClosuresFromState(state) {
       source_event_id: null,
     });
   }
-  return closures;
+  return closures.sort((a, b) => a.surface_id.localeCompare(b.surface_id));
 }
 
 function fallbackBlockersFromState(state) {
@@ -85,7 +107,7 @@ function fallbackBlockersFromState(state) {
       source_event_id: null,
     });
   }
-  return blockers;
+  return blockers.sort((a, b) => a.surface_id.localeCompare(b.surface_id));
 }
 
 function frontierEventsExist(domain) {
@@ -109,11 +131,38 @@ function pickReasonFromPayload(payload) {
   return null;
 }
 
-function foldLatestBySurface(events, kind) {
+function isMergeSourcedEvent(event) {
+  const source = event.source;
+  if (source == null || typeof source !== "object" || Array.isArray(source)) return false;
+  return source.tool === SURFACE_STATE_MERGE_SOURCE;
+}
+
+function isSurfaceClosureEvent(event) {
+  if (event.kind !== "closure.recorded") return false;
+  if (typeof event.surface_id !== "string" || !event.surface_id) return false;
+  const payload = event.payload;
+  if (payload && typeof payload === "object" && !Array.isArray(payload)
+    && payload.surface_fully_explored === true) {
+    return true;
+  }
+  return isMergeSourcedEvent(event);
+}
+
+function isSurfaceBlockerEvent(event) {
+  if (event.kind !== "blocker.asserted") return false;
+  if (typeof event.surface_id !== "string" || !event.surface_id) return false;
+  const payload = event.payload;
+  if (payload && typeof payload === "object" && !Array.isArray(payload)
+    && payload.terminally_blocked === true) {
+    return true;
+  }
+  return isMergeSourcedEvent(event);
+}
+
+function foldLatestBySurface(events, predicate) {
   const latest = new Map();
   for (const event of events) {
-    if (event.kind !== kind) continue;
-    if (typeof event.surface_id !== "string" || !event.surface_id) continue;
+    if (!predicate(event)) continue;
     const existing = latest.get(event.surface_id);
     if (existing == null) {
       latest.set(event.surface_id, event);
@@ -141,19 +190,24 @@ function foldLatestBySurface(events, kind) {
 function currentClosures(targetDomain) {
   const domain = assertSafeDomain(targetDomain);
   const events = loadFrontierEventsSafely(domain);
-  if (events.length === 0) {
-    return fallbackClosuresFromState(readStateRaw(domain));
-  }
-  return foldLatestBySurface(events, "closure.recorded");
+  const projected = foldLatestBySurface(events, isSurfaceClosureEvent);
+  if (projected.length > 0) return projected;
+  // Transitional fallback (D.3 removes): no authoritative surface-closure events
+  // in the ledger — fall back to the legacy state.explored array so phase-gates
+  // gating preserves the legacy semantics during the dual-write window.
+  return fallbackClosuresFromState(readStateRaw(domain));
 }
 
 function currentBlockers(targetDomain) {
   const domain = assertSafeDomain(targetDomain);
   const events = loadFrontierEventsSafely(domain);
-  if (events.length === 0) {
-    return fallbackBlockersFromState(readStateRaw(domain));
-  }
-  return foldLatestBySurface(events, "blocker.asserted");
+  const projected = foldLatestBySurface(events, isSurfaceBlockerEvent);
+  if (projected.length > 0) return projected;
+  // Transitional fallback (D.3 removes): no authoritative surface-blocker events
+  // in the ledger — fall back to the legacy state.terminally_blocked array so
+  // phase-gates gating preserves the legacy semantics during the dual-write
+  // window.
+  return fallbackBlockersFromState(readStateRaw(domain));
 }
 
 function observationsForSurface(targetDomain, surfaceId) {

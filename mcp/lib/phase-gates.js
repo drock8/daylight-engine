@@ -43,6 +43,10 @@ const {
   assignmentRequiresToken,
   validateHandoffProvenance,
 } = require("./wave-handoff-contracts.js");
+const {
+  currentBlockers,
+  currentClosures,
+} = require("./frontier-projections.js");
 
 // Read the session's handoff_provenance_required flag directly from state.json
 // (no normalization, no lock — call sites are read-only). See wave-handoff-store
@@ -56,12 +60,20 @@ function readHandoffProvenanceRequired(domain) {
   }
 }
 
-// Inline rather than importing terminallyBlockedSurfaceIds from
-// session-state.js to avoid a circular dep (session-state.js depends on
-// phase-gates.js for transition gating).
-function extractTerminallyBlockedSurfaceIds(state) {
-  const list = Array.isArray(state.terminally_blocked) ? state.terminally_blocked : [];
-  return list.map((entry) => entry.surface_id);
+// Closures and blockers are read from frontier-projections (Cycle F.3): the
+// frontier-events.jsonl ledger is the authoritative source for surface-level
+// closure / blocker truth. The state.json arrays (state.explored,
+// state.terminally_blocked) are still written by applyWaveMerge under Pact P2
+// (dual-write before deletion) and the projection falls back to them when no
+// authoritative surface-level event has been emitted. D.3 deletes both the
+// state arrays and the fallback once waves.js emits authoritative
+// surface_fully_explored / terminally_blocked frontier events.
+function exploredSurfaceIdsForDomain(domain) {
+  return currentClosures(domain).map((closure) => closure.surface_id);
+}
+
+function terminallyBlockedSurfaceIdsForDomain(domain) {
+  return currentBlockers(domain).map((entry) => entry.surface_id);
 }
 
 function compactErrorMessage(error) {
@@ -86,15 +98,15 @@ function pushUnique(target, seen, value) {
   target.push(value);
 }
 
-// Surface-level "open" status is governed by `state.explored` and
-// `state.terminally_blocked` (both populated from handoffs by
-// applyWaveMerge), not by per-endpoint coverage rows. A complete handoff
-// says the evaluator declared the surface done; a terminally-blocked surface
-// has been classified as blocked-by-prereq across waves and should not
-// requeue until an operator clears it. An old coverage row with
-// status=requeue from an earlier wave is endpoint-level history, not the
-// surface's current state. Options-bag signature so additional closure
-// reasons in future cycles do not shift positional arg meaning.
+// Surface-level "open" status is governed by frontier-projections derived
+// from `closure.recorded` and `blocker.asserted` events (Cycle F.3), not by
+// per-endpoint coverage rows. A complete handoff says the evaluator declared
+// the surface done; a terminally-blocked surface has been classified as
+// blocked-by-prereq across waves and should not requeue until an operator
+// clears it. An old coverage row with status=requeue from an earlier wave is
+// endpoint-level history, not the surface's current state. Options-bag
+// signature so additional closure reasons in future cycles do not shift
+// positional arg meaning.
 function computeOpenRequeueSurfaceIds(records, options = {}) {
   const exploredSet = new Set(options.exploredSurfaceIds || []);
   const terminallyBlockedSet = new Set(options.terminallyBlockedSurfaceIds || []);
@@ -112,9 +124,9 @@ function computeOpenRequeueSurfaceIds(records, options = {}) {
   return surfaceIds.sort((a, b) => a.localeCompare(b));
 }
 
-function computeAttackSurfaceCoverage(surfaces, state, openRequeueSurfaceIds) {
-  const exploredSet = new Set(Array.isArray(state.explored) ? state.explored : []);
-  const terminallyBlockedSet = new Set(extractTerminallyBlockedSurfaceIds(state));
+function computeAttackSurfaceCoverage(surfaces, exploredSurfaceIds, terminallyBlockedSurfaceIds, openRequeueSurfaceIds) {
+  const exploredSet = new Set(exploredSurfaceIds || []);
+  const terminallyBlockedSet = new Set(terminallyBlockedSurfaceIds || []);
   const isHighOrCritical = (surface) =>
     ["CRITICAL", "HIGH"].includes(String(surface.priority || "").toUpperCase());
   const nonLowSurfaces = surfaces.filter(
@@ -189,13 +201,16 @@ function computeEvaluationToChainGate(domain, state) {
     ));
   }
 
+  const exploredSurfaceIds = exploredSurfaceIdsForDomain(domain);
+  const terminallyBlockedSurfaceIds = terminallyBlockedSurfaceIdsForDomain(domain);
+
   let openRequeueSurfaceIds = [];
   try {
     openRequeueSurfaceIds = computeOpenRequeueSurfaceIds(
       readCoverageRecordsFromJsonl(domain),
       {
-        exploredSurfaceIds: Array.isArray(state.explored) ? state.explored : [],
-        terminallyBlockedSurfaceIds: extractTerminallyBlockedSurfaceIds(state),
+        exploredSurfaceIds,
+        terminallyBlockedSurfaceIds,
       },
     );
   } catch (error) {
@@ -208,7 +223,12 @@ function computeEvaluationToChainGate(domain, state) {
 
   let coverage = null;
   if (surfaces) {
-    coverage = computeAttackSurfaceCoverage(surfaces, state, openRequeueSurfaceIds);
+    coverage = computeAttackSurfaceCoverage(
+      surfaces,
+      exploredSurfaceIds,
+      terminallyBlockedSurfaceIds,
+      openRequeueSurfaceIds,
+    );
     if (coverage.unexplored_high_surface_ids.length > 0) {
       blockers.push(blocker(
         "unexplored_high_surfaces",
