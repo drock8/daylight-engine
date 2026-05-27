@@ -1220,6 +1220,10 @@ test("session-state contraction cycle-return roots stay cycle-free", () => {
     "mcp/lib/session-state-contracts.js",
     "mcp/lib/session-state-store.js",
     "mcp/lib/http-records.js",
+    "mcp/lib/lead-intake.js",
+    "mcp/lib/lead-scoring.js",
+    "mcp/lib/lead-promotion.js",
+    "mcp/lib/surface-mutator.js",
     "mcp/lib/surface-leads.js",
   ];
   for (const file of reachableRuntimeFiles(graph, closureRoots)) {
@@ -1231,17 +1235,24 @@ test("session-state contraction cycle-return roots stay cycle-free", () => {
 });
 
 test("state-writing surface lead helper is not exported unlocked", () => {
-  const surfaceLeadsSource = readSource("mcp/lib/surface-leads.js");
-  const surfaceExports = moduleExportsObjectBlock(surfaceLeadsSource, "surface-leads.js");
-  const waveWrapperBody = functionBody(surfaceLeadsSource, "promoteSurfaceLeadsForWave");
+  // F.6 carved the legacy surface-leads.js into lead-intake (doc I/O +
+  // normalization), lead-scoring (priority signals), lead-promotion (record +
+  // promote flow + session-lock wrappers), and surface-mutator (legacy
+  // attack_surface.json writer; deleted in Plane D). The structural invariants
+  // are anchored to the new files; surface-leads.js is now an aggregator shim.
+  const promotionSource = readSource("mcp/lib/lead-promotion.js");
+  const intakeSource = readSource("mcp/lib/lead-intake.js");
+  const mutatorSource = readSource("mcp/lib/surface-mutator.js");
+  const promotionExports = moduleExportsObjectBlock(promotionSource, "lead-promotion.js");
+  const waveWrapperBody = functionBody(promotionSource, "promoteSurfaceLeadsForWave");
   const semanticWaveWrapperBody = sourceWithoutCommentsAndStrings(waveWrapperBody);
-  assert.doesNotMatch(surfaceExports, /\bpromoteSurfaceLeadsInternal\b/);
-  assert.doesNotMatch(surfaceExports, /\brecordSurfaceLeadsInternal\b/);
-  assert.match(surfaceExports, /\bpromoteSurfaceLeadsForWave\b/);
-  assert.match(surfaceExports, /\brecordSurfaceLeadsForWaveHandoff\b/);
-  assertOnlyCheckedSurfaceLeadInternalReferences(surfaceLeadsSource);
-  assertOnlyCheckedInternalHelperReferences(surfaceLeadsSource, "recordSurfaceLeadsInternal");
-  assertCallsInsideSessionLock(surfaceLeadsSource, "promoteSurfaceLeadsForWave", "promoteSurfaceLeadsInternal");
+  assert.doesNotMatch(promotionExports, /\bpromoteSurfaceLeadsInternal\b/);
+  assert.doesNotMatch(promotionExports, /\brecordSurfaceLeadsInternal\b/);
+  assert.match(promotionExports, /\bpromoteSurfaceLeadsForWave\b/);
+  assert.match(promotionExports, /\brecordSurfaceLeadsForWaveHandoff\b/);
+  assertOnlyCheckedSurfaceLeadInternalReferences(promotionSource);
+  assertOnlyCheckedInternalHelperReferences(promotionSource, "recordSurfaceLeadsInternal");
+  assertCallsInsideSessionLock(promotionSource, "promoteSurfaceLeadsForWave", "promoteSurfaceLeadsInternal");
   const waveWrapperCalls = callExpressions(semanticWaveWrapperBody, "promoteSurfaceLeadsInternal");
   assert.equal(waveWrapperCalls.length, 1, "wave promotion wrapper must have exactly one internal promotion call");
   assert.equal(
@@ -1268,25 +1279,39 @@ test("state-writing surface lead helper is not exported unlocked", () => {
   assert.match(wavesSource, /\brecordSurfaceLeadsForWaveHandoff\b/);
   assertCallsInsideSessionLock(wavesSource, "writeWaveHandoff", "recordSurfaceLeadsForWaveHandoff");
   assert.deepEqual(runtimeCallSummaries("writeSurfaceLeadsDocument"), [
-    "mcp/lib/surface-leads.js:promoteSurfaceLeadsInternal",
-    "mcp/lib/surface-leads.js:recordSurfaceLeadsInternal",
+    "mcp/lib/lead-promotion.js:promoteSurfaceLeadsInternal",
+    "mcp/lib/lead-promotion.js:recordSurfaceLeadsInternal",
   ].sort());
-  assertOnlyCheckedInternalHelperReferences(surfaceLeadsSource, "writeSurfaceLeadsDocument");
-  const surfaceLeadFunctions = namedFunctionRanges(sourceWithoutCommentsAndStrings(surfaceLeadsSource));
-  const surfaceLeadArtifactWrites = callExpressions(sourceWithoutCommentsAndStrings(surfaceLeadsSource), "writeFileAtomic")
+  // writeSurfaceLeadsDocument lives in lead-intake (doc I/O) and is consumed
+  // cross-module by lead-promotion's record/promote internals. The legacy
+  // "no external references" invariant no longer applies; structural callers
+  // are pinned by the runtimeCallSummaries check above.
+  const mutatorFunctions = namedFunctionRanges(sourceWithoutCommentsAndStrings(mutatorSource));
+  const mutatorArtifactWrites = callExpressions(sourceWithoutCommentsAndStrings(mutatorSource), "writeFileAtomic")
     .flatMap((call) => {
       const firstArg = normalizeExpression(call.args[0] && call.args[0].text);
-      if (!["attackSurfacePath(domain)", "filePath"].includes(firstArg)) return [];
-      const owner = surfaceLeadFunctions.find((fn) => fn.bodyStart < call.callIndex && call.callIndex < fn.bodyEnd);
+      if (firstArg !== "attackSurfacePath(domain)") return [];
+      const owner = mutatorFunctions.find((fn) => fn.bodyStart < call.callIndex && call.callIndex < fn.bodyEnd);
       return [`${owner ? owner.name : "<top-level>"}:${firstArg}`];
     })
     .sort();
-  assert.deepEqual(surfaceLeadArtifactWrites, [
-    "promoteSurfaceLeadsInternal:attackSurfacePath(domain)",
+  assert.deepEqual(mutatorArtifactWrites, [
+    "applyPromotionToLegacySurface:attackSurfacePath(domain)",
+  ]);
+  const intakeFunctions = namedFunctionRanges(sourceWithoutCommentsAndStrings(intakeSource));
+  const intakeArtifactWrites = callExpressions(sourceWithoutCommentsAndStrings(intakeSource), "writeFileAtomic")
+    .flatMap((call) => {
+      const firstArg = normalizeExpression(call.args[0] && call.args[0].text);
+      if (firstArg !== "filePath") return [];
+      const owner = intakeFunctions.find((fn) => fn.bodyStart < call.callIndex && call.callIndex < fn.bodyEnd);
+      return [`${owner ? owner.name : "<top-level>"}:${firstArg}`];
+    })
+    .sort();
+  assert.deepEqual(intakeArtifactWrites, [
     "writeSurfaceLeadsDocument:filePath",
-  ].sort());
+  ]);
   assert.match(
-    functionBody(sourceWithoutCommentsAndStrings(surfaceLeadsSource), "writeSurfaceLeadsDocument"),
+    functionBody(sourceWithoutCommentsAndStrings(intakeSource), "writeSurfaceLeadsDocument"),
     /\bconst\s+filePath\s*=\s*surfaceLeadsPath\s*\(\s*domain\s*\)/,
     "writeSurfaceLeadsDocument must derive filePath from surfaceLeadsPath(domain)",
   );
@@ -1295,8 +1320,8 @@ test("state-writing surface lead helper is not exported unlocked", () => {
     runtimeSurfaceArtifactPathWrites.push(...surfaceArtifactWriteSummaries(relativePath, readSource(relativePath)));
   }
   assert.deepEqual(runtimeSurfaceArtifactPathWrites.sort(), [
-    "mcp/lib/surface-leads.js:promoteSurfaceLeadsInternal:writeFileAtomic:attackSurfacePath",
-    "mcp/lib/surface-leads.js:writeSurfaceLeadsDocument:writeFileAtomic:surfaceLeadsPath",
+    "mcp/lib/lead-intake.js:writeSurfaceLeadsDocument:writeFileAtomic:surfaceLeadsPath",
+    "mcp/lib/surface-mutator.js:applyPromotionToLegacySurface:writeFileAtomic:attackSurfacePath",
   ]);
   assertSurfaceArtifactRollbackRestoreIsLocked(wavesSource);
   assert.deepEqual(surfaceArtifactWriteSummaries("fixture.js", `
@@ -1477,7 +1502,7 @@ test("session-state store write callers keep explicit lock boundaries", () => {
   }
 
   const wavesSource = readSource("mcp/lib/waves.js");
-  const surfaceLeadsSource = readSource("mcp/lib/surface-leads.js");
+  const promotionSource = readSource("mcp/lib/lead-promotion.js");
   const stateDisabledPromotionProof = {
     functionName: "promoteSurfaceLeadsForWave",
     callCount: 1,
@@ -1502,9 +1527,9 @@ test("session-state store write callers keep explicit lock boundaries", () => {
       mustNotExport: true,
     },
     {
-      relativePath: "mcp/lib/surface-leads.js",
+      relativePath: "mcp/lib/lead-promotion.js",
       helperName: "promoteSurfaceLeadsInternal",
-      source: surfaceLeadsSource,
+      source: promotionSource,
       lockedCallers: ["promoteSurfaceLeads", "promoteSurfaceLeadsForWave"],
       stateDisabledCallers: [stateDisabledPromotionProof],
       referenceGate: "surfaceLeadInternal",
@@ -1521,18 +1546,18 @@ test("session-state store write callers keep explicit lock boundaries", () => {
   assert.deepEqual(storeWriterSummaries, expectedStoreWriterSummaries);
 
   assert.deepEqual(runtimeCallSummaries("promoteSurfaceLeadsInternal"), [
-    "mcp/lib/surface-leads.js:promoteSurfaceLeads",
-    "mcp/lib/surface-leads.js:promoteSurfaceLeadsForWave",
+    "mcp/lib/lead-promotion.js:promoteSurfaceLeads",
+    "mcp/lib/lead-promotion.js:promoteSurfaceLeadsForWave",
   ].sort());
   assert.deepEqual(runtimeCallSummaries("recordSurfaceLeadsInternal"), [
-    "mcp/lib/surface-leads.js:recordSurfaceLeads",
-    "mcp/lib/surface-leads.js:recordSurfaceLeadsForWaveHandoff",
+    "mcp/lib/lead-promotion.js:recordSurfaceLeads",
+    "mcp/lib/lead-promotion.js:recordSurfaceLeadsForWaveHandoff",
   ].sort());
   assert.deepEqual(runtimeCallSummaries("recordSurfaceLeadsForWaveHandoff"), [
     "mcp/lib/waves.js:writeWaveHandoff",
   ]);
-  assertCallsInsideSessionLock(surfaceLeadsSource, "recordSurfaceLeads", "recordSurfaceLeadsInternal");
-  assertCallsInsideSessionLock(surfaceLeadsSource, "recordSurfaceLeadsForWaveHandoff", "recordSurfaceLeadsInternal");
+  assertCallsInsideSessionLock(promotionSource, "recordSurfaceLeads", "recordSurfaceLeadsInternal");
+  assertCallsInsideSessionLock(promotionSource, "recordSurfaceLeadsForWaveHandoff", "recordSurfaceLeadsInternal");
   assertCallsInsideSessionLock(wavesSource, "writeWaveHandoff", "recordSurfaceLeadsForWaveHandoff");
   assert.throws(
     () => assertStateDisabledDelegatedCalls(`
