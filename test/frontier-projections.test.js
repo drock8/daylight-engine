@@ -16,7 +16,6 @@ const {
 } = require("../mcp/lib/frontier-projections.js");
 const {
   sessionDir,
-  statePath,
 } = require("../mcp/lib/paths.js");
 
 function withTempHome(fn) {
@@ -121,16 +120,14 @@ test("currentClosures projects merge-sourced closures and ignores logCoverage ba
   });
 });
 
-test("currentClosures falls back to state.explored when no qualifying surface-closure events exist", () => {
+test("currentClosures ignores non-qualifying batch coverage events (no fallback after D.3)", () => {
   withTempHome(() => {
-    const domain = "fallback-closures.example.com";
+    const domain = "no-fallback-closures.example.com";
     ensureSessionDir(domain);
-    fs.writeFileSync(statePath(domain), JSON.stringify({
-      explored: ["surface:legacy-a", "surface:legacy-b"],
-      terminally_blocked: [],
-    }, null, 2));
-    // Append one non-qualifying closure (logCoverage-style) and confirm we
-    // still fall back to state.explored.
+    // logCoverage-style events do not satisfy isSurfaceClosureEvent because
+    // they lack surface_fully_explored AND are not wave-merge-sourced. After
+    // D.3 the state.explored fallback is gone — the projection returns
+    // an empty array rather than back-reading state.json.
     appendFrontierEvent({
       target_domain: domain,
       kind: "closure.recorded",
@@ -140,31 +137,17 @@ test("currentClosures falls back to state.explored when no qualifying surface-cl
       source: { artifact: "coverage.jsonl", tool: "bob_log_coverage" },
     });
     const projected = currentClosures(domain);
-    assert.equal(projected.length, 2);
-    assert.deepEqual(projected.map((c) => c.surface_id), [
-      "surface:legacy-a",
-      "surface:legacy-b",
-    ]);
-    assert.equal(projected[0].source_event_id, null);
+    assert.deepEqual(projected, []);
   });
 });
 
-test("currentBlockers falls back to state.terminally_blocked when no qualifying surface-blocker events exist", () => {
+test("currentBlockers ignores non-qualifying dead-end batch events (no fallback after D.3)", () => {
   withTempHome(() => {
-    const domain = "fallback-blockers.example.com";
+    const domain = "no-fallback-blockers.example.com";
     ensureSessionDir(domain);
-    fs.writeFileSync(statePath(domain), JSON.stringify({
-      explored: [],
-      terminally_blocked: [
-        {
-          surface_id: "surface:legacy-blocked",
-          blocked_at_wave: 1,
-          blockers: [{ kind: "auth_missing" }],
-        },
-      ],
-    }, null, 2));
-    // Append one non-qualifying blocker (logDeadEnds-style) and confirm we
-    // still fall back to state.terminally_blocked.
+    // logDeadEnds-style events do not satisfy isSurfaceBlockerEvent because
+    // they lack terminally_blocked AND are not wave-merge-sourced. After
+    // D.3 the state.terminally_blocked fallback is gone.
     appendFrontierEvent({
       target_domain: domain,
       kind: "blocker.asserted",
@@ -179,10 +162,32 @@ test("currentBlockers falls back to state.terminally_blocked when no qualifying 
       source: { artifact: "live-dead-ends.jsonl", tool: "bob_log_dead_ends" },
     });
     const projected = currentBlockers(domain);
-    assert.equal(projected.length, 1);
-    assert.equal(projected[0].surface_id, "surface:legacy-blocked");
-    assert.equal(projected[0].reason, "auth_missing");
-    assert.equal(projected[0].source_event_id, null);
+    assert.deepEqual(projected, []);
+  });
+});
+
+test("currentBlockers excludes surfaces whose latest event is a closure (clear semantics)", () => {
+  withTempHome(() => {
+    const domain = "clear-supersedes-blocker.example.com";
+    ensureSessionDir(domain);
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "blocker.asserted",
+      ts: "2026-05-27T10:00:00.000Z",
+      surface_id: "surface:transient",
+      payload: { terminally_blocked: true, kind: "auth_missing" },
+      source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+    });
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "closure.recorded",
+      ts: "2026-05-27T10:01:00.000Z",
+      surface_id: "surface:transient",
+      payload: { surface_unblocked: true, reason: "operator_cleared_terminal_block" },
+      source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+    });
+    assert.deepEqual(currentBlockers(domain), []);
+    assert.equal(currentClosures(domain).length, 1);
   });
 });
 

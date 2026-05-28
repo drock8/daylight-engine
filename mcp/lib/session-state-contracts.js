@@ -310,64 +310,20 @@ function blockInternalHostsPolicyFields(policy) {
   };
 }
 
-// state.terminally_blocked carries one entry per terminally-blocked surface,
-// each with the blocker tuples (kind + identifier_hint + reason) that drove
-// promotion. Kind validation here is intentionally soft — the tuple was
-// already through normalizeBlockedPrereqs at handoff write time and through
-// the merge promotion logic before landing in state. State validation only
-// guards structural invariants so analytics / report writers can trust the
-// shape without re-walking handoff JSONs.
-function normalizeTerminallyBlocked(value, fieldName = "terminally_blocked") {
-  if (value == null) return [];
-  if (!Array.isArray(value)) {
-    throw new Error(`${fieldName} must be an array`);
-  }
-  const seenSurfaceIds = new Set();
-  return value.map((entry, index) => {
-    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new Error(`${fieldName}[${index}] must be an object`);
-    }
-    const surfaceId = assertNonEmptyString(entry.surface_id, `${fieldName}[${index}].surface_id`);
-    if (seenSurfaceIds.has(surfaceId)) {
-      throw new Error(`${fieldName} contains duplicate surface_id ${surfaceId}; one closure entry per surface`);
-    }
-    seenSurfaceIds.add(surfaceId);
-    const blockedAtWave = assertInteger(entry.blocked_at_wave, `${fieldName}[${index}].blocked_at_wave`, { min: 1 });
-    if (!Array.isArray(entry.blockers) || entry.blockers.length === 0) {
-      throw new Error(`${fieldName}[${index}].blockers must be a non-empty array`);
-    }
-    const blockers = entry.blockers.map((blocker, blockerIndex) => {
-      if (blocker == null || typeof blocker !== "object" || Array.isArray(blocker)) {
-        throw new Error(`${fieldName}[${index}].blockers[${blockerIndex}] must be an object`);
-      }
-      const result = {
-        kind: assertNonEmptyString(blocker.kind, `${fieldName}[${index}].blockers[${blockerIndex}].kind`),
-      };
-      if (blocker.identifier_hint != null) {
-        result.identifier_hint = assertNonEmptyString(
-          blocker.identifier_hint,
-          `${fieldName}[${index}].blockers[${blockerIndex}].identifier_hint`,
-        );
-      }
-      if (blocker.reason != null) {
-        result.reason = assertNonEmptyString(
-          blocker.reason,
-          `${fieldName}[${index}].blockers[${blockerIndex}].reason`,
-        );
-      }
-      return result;
-    });
-    return {
-      surface_id: surfaceId,
-      blocked_at_wave: blockedAtWave,
-      blockers,
-    };
-  });
-}
-
+// Cycle D.3 deleted state.terminally_blocked from the session-state
+// document. The blocker projection now derives from frontier-events.jsonl
+// via frontier-projections.currentBlockers. terminallyBlockedSurfaceIds
+// remains a public export because the wave planner consumes the projection
+// directly; callers route the projection through this helper for symmetry
+// with the legacy shape (a list of surface_ids).
 function terminallyBlockedSurfaceIds(state) {
-  const list = Array.isArray(state.terminally_blocked) ? state.terminally_blocked : [];
-  return list.map((entry) => entry.surface_id);
+  if (!state || typeof state.target !== "string" || !state.target) return [];
+  try {
+    const { currentBlockers } = require("./frontier-projections.js");
+    return currentBlockers(state.target).map((entry) => entry.surface_id);
+  } catch {
+    return [];
+  }
 }
 
 function buildInitialSessionState(domain, targetUrl, {
@@ -397,14 +353,11 @@ function buildInitialSessionState(domain, targetUrl, {
     evaluation_wave: 0,
     pending_wave: null,
     total_findings: 0,
-    explored: [],
-    terminally_blocked: [],
     prereq_registry_snapshots: [],
     blocked_prereq_history: [],
     terminal_block_clear_history: [],
     dead_ends: [],
     waf_blocked_endpoints: [],
-    lead_surface_ids: [],
     scope_exclusions: [],
     hold_count: 0,
     auth_status: "pending",
@@ -545,6 +498,23 @@ function publicSessionState(state) {
 }
 
 function compactSessionState(state) {
+  // explored_count, terminally_blocked_count, and lead_surface_ids derive
+  // from the frontier-events.jsonl projection (Cycle F.3 / D.3). Loaded
+  // lazily to avoid a cycle with frontier-projections at module-import time.
+  let exploredCount = 0;
+  let terminallyBlockedCount = 0;
+  let leadSurfaceIds = [];
+  if (state.target) {
+    try {
+      const projections = require("./frontier-projections.js");
+      exploredCount = projections.currentClosures(state.target).length;
+      terminallyBlockedCount = projections.currentBlockers(state.target).length;
+      leadSurfaceIds = projections.currentLeadSurfaceIds(state.target);
+    } catch {
+      // Projection unavailable (fresh session, malformed events); fall back
+      // to zero/empty rather than failing the compact serialization.
+    }
+  }
   return {
     target: state.target,
     deep_mode: state.deep_mode === true,
@@ -552,14 +522,15 @@ function compactSessionState(state) {
     block_internal_hosts: state.block_internal_hosts === true,
     block_internal_hosts_source: state.block_internal_hosts_source,
     phase: state.phase,
+    lifecycle_state: state.lifecycle_state,
     evaluation_wave: state.evaluation_wave,
     pending_wave: state.pending_wave,
     total_findings: state.total_findings,
-    explored_count: (state.explored || []).length,
-    terminally_blocked_count: (state.terminally_blocked || []).length,
+    explored_count: exploredCount,
+    terminally_blocked_count: terminallyBlockedCount,
     dead_ends_count: (state.dead_ends || []).length,
     waf_blocked_count: (state.waf_blocked_endpoints || []).length,
-    lead_surface_ids: state.lead_surface_ids || [],
+    lead_surface_ids: leadSurfaceIds,
     hold_count: state.hold_count,
     auth_status: state.auth_status,
     egress_profile: state.egress_profile,
@@ -631,14 +602,18 @@ function normalizeSessionStateDocument(document, requestedDomain) {
     total_findings: document.total_findings == null
       ? 0
       : assertInteger(document.total_findings, "total_findings", { min: 0 }),
-    explored: normalizeStringArray(document.explored, "explored"),
-    terminally_blocked: normalizeTerminallyBlocked(document.terminally_blocked, "terminally_blocked"),
+    // Cycle D.3 deleted state.explored / state.terminally_blocked /
+    // state.lead_surface_ids from the contract. Legacy sessions on disk may
+    // still carry these arrays; readers silently drop them and let the
+    // frontier-events.jsonl projection (frontier-projections) be the sole
+    // surface-state source. The fields are intentionally absent from the
+    // normalized result so consumers cannot accidentally route through
+    // stale state.json arrays.
     prereq_registry_snapshots: normalizePrereqRegistrySnapshots(document.prereq_registry_snapshots, "prereq_registry_snapshots"),
     blocked_prereq_history: normalizeBlockedPrereqHistory(document.blocked_prereq_history, "blocked_prereq_history"),
     terminal_block_clear_history: normalizeTerminalBlockClearHistory(document.terminal_block_clear_history, "terminal_block_clear_history"),
     dead_ends: normalizeStringArray(document.dead_ends, "dead_ends"),
     waf_blocked_endpoints: normalizeStringArray(document.waf_blocked_endpoints, "waf_blocked_endpoints"),
-    lead_surface_ids: normalizeStringArray(document.lead_surface_ids, "lead_surface_ids"),
     scope_exclusions: normalizeStringArray(document.scope_exclusions, "scope_exclusions"),
     hold_count: document.hold_count == null
       ? 0
@@ -691,17 +666,10 @@ function normalizeSessionStateDocument(document, requestedDomain) {
       : assertBoolean(document.handoff_provenance_required, "handoff_provenance_required"),
   };
 
-  // Disjointness invariant: a surface is either explored (evaluator declared
-  // complete) OR terminally_blocked (system promoted on stuck loop with no
-  // registry delta). Both at once would let consumers double-count or pick
-  // the wrong closure reason. Fail loud rather than silently dedupe.
-  const exploredSet = new Set(normalized.explored);
-  const collisions = normalized.terminally_blocked
-    .map((entry) => entry.surface_id)
-    .filter((id) => exploredSet.has(id));
-  if (collisions.length > 0) {
-    throw new Error(`state.explored and state.terminally_blocked must be disjoint; overlapping surface_id(s): ${collisions.join(", ")}`);
-  }
+  // Cycle D.3 removed state.explored and state.terminally_blocked from the
+  // contract; the disjointness invariant was lifted because the frontier
+  // ledger projection (foldLatestBySurface across closure / blocker events)
+  // is self-disjoint by construction — the latest surface-state event wins.
 
   return normalized;
 }

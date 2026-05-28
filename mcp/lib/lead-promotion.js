@@ -1,21 +1,22 @@
 "use strict";
 
 // Surface-lead promotion + recording flow. Owns the surface-leads.json
-// persistence loop and the frontier.enqueued / promotion dual-write event
-// stream. Selection and priority signals live in lead-scoring; the legacy
-// attack_surface.json mutation is delegated to surface-mutator.
+// persistence loop and emits the frontier events (frontier.enqueued and
+// surface.observed) that the materializer folds into surface-index.json and
+// task-queue.json. Selection and priority signals live in lead-scoring.
+//
+// Cycle D.3 deleted surface-mutator.js: attack_surface.json is no longer
+// written; surface-index.json (materialized from frontier events) is the
+// authoritative surface source. The promotion path emits one
+// surface.observed event per promoted lead so the materializer sees the
+// new surface without re-reading the legacy projection.
 
 const {
   assertBoolean,
   assertInteger,
   assertNonEmptyString,
-  pushUnique,
 } = require("./validation.js");
 const { surfaceLeadsPath } = require("./paths.js");
-const {
-  readSessionStateStrict,
-  writeSessionStateDocument,
-} = require("./session-state-store.js");
 const { withSessionLock } = require("./storage.js");
 const { appendFrontierEvent } = require("./frontier-events.js");
 const { scheduleMaterialization } = require("./frontier-materialize-debounce.js");
@@ -33,7 +34,83 @@ const {
   selectPromotableSurfaceLeads,
   sortLeadsByScore,
 } = require("./lead-scoring.js");
-const { applyPromotionToLegacySurface } = require("./surface-mutator.js");
+
+const PROMOTED_SURFACE_LEAD_LABEL = "promoted_surface_lead";
+
+function slugify(value) {
+  const slug = String(value || "lead")
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 54);
+  return slug || "lead";
+}
+
+function uniqueSurfaceId(lead, existingIds) {
+  const base = `lead-${slugify(lead.title || (lead.hosts && lead.hosts[0]) || (lead.endpoints && lead.endpoints[0]) || lead.id)}`;
+  let candidate = base;
+  let suffix = 2;
+  while (existingIds.has(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  existingIds.add(candidate);
+  return candidate;
+}
+
+function emitPromotedSurfaceObserved(domain, lead, surfaceId) {
+  try {
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "surface.observed",
+      surface_id: surfaceId,
+      payload: {
+        surface_type: lead.surface_type || "unknown",
+        title: lead.title,
+        hosts: lead.hosts,
+        endpoints: lead.endpoints,
+        priority: lead.priority,
+        score: lead.score,
+        confidence: lead.confidence,
+        labels: [PROMOTED_SURFACE_LEAD_LABEL, lead.confidence ? `confidence:${lead.confidence}` : null].filter(Boolean),
+        lead_id: lead.id,
+      },
+      source: { artifact: "surface-leads.json", tool: "bob_promote_surface_leads" },
+    });
+    scheduleMaterialization(domain);
+  } catch {
+    // Frontier ledger append is best-effort here; materialization runs on
+    // the next producer event.
+  }
+}
+
+function applyPromotionToFrontier(domain, candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return { promoted_surface_ids: [] };
+  }
+  // Allocate unique surface_ids based on the existing materialized surfaces
+  // so re-promotion across waves does not collide. The materialized view is
+  // accessed via frontier-projections.currentSurfaces to avoid a direct
+  // dependency on the materializer module from the producer path.
+  const { currentSurfaces } = require("./frontier-projections.js");
+  let knownSurfaceIds;
+  try {
+    const projection = currentSurfaces(domain);
+    knownSurfaceIds = new Set((projection.surfaces || [])
+      .map((surface) => String(surface.id || ""))
+      .filter(Boolean));
+  } catch {
+    knownSurfaceIds = new Set();
+  }
+  const promotedSurfaceIds = [];
+  for (const lead of candidates) {
+    const surfaceId = uniqueSurfaceId(lead, knownSurfaceIds);
+    emitPromotedSurfaceObserved(domain, lead, surfaceId);
+    promotedSurfaceIds.push(surfaceId);
+  }
+  return { promoted_surface_ids: promotedSurfaceIds };
+}
 
 function emitFrontierEnqueued(domain, lead) {
   try {
@@ -101,11 +178,16 @@ function previewSurfaceLeadPromotion(domain, options = {}) {
 }
 
 function promoteSurfaceLeadsInternal(domain, options = {}) {
-  const updateState = options.update_state == null ? true : assertBoolean(options.update_state, "update_state");
+  // update_state is retained for argument-shape compatibility but no longer
+  // mutates state.json — D.3 deleted state.lead_surface_ids; lead-surface
+  // membership is derived from frontier surface.observed events.
+  if (options.update_state != null) {
+    assertBoolean(options.update_state, "update_state");
+  }
   const document = readSurfaceLeadsDocument(domain);
   const candidates = selectPromotableSurfaceLeads(document, options);
   if (candidates.length === 0) return buildPromotionEnvelope(domain, []);
-  const { promoted_surface_ids: promotedSurfaceIds } = applyPromotionToLegacySurface(domain, candidates);
+  const { promoted_surface_ids: promotedSurfaceIds } = applyPromotionToFrontier(domain, candidates);
   const now = new Date().toISOString();
   for (let i = 0; i < candidates.length; i += 1) {
     const index = document.leads.findIndex((item) => item.id === candidates[i].id);
@@ -118,17 +200,6 @@ function promoteSurfaceLeadsInternal(domain, options = {}) {
     };
   }
   writeSurfaceLeadsDocument(domain, document);
-  if (updateState) {
-    try {
-      const { raw, state } = readSessionStateStrict(domain);
-      const leadSurfaceIds = [...state.lead_surface_ids];
-      pushUnique(leadSurfaceIds, new Set(leadSurfaceIds), promotedSurfaceIds);
-      writeSessionStateDocument(domain, raw, { ...state, lead_surface_ids: leadSurfaceIds });
-    } catch {
-      // Promotion can run immediately after surface-discovery before later state reads; a
-      // missing or legacy state should not corrupt the promoted attack surface.
-    }
-  }
   return buildPromotionEnvelope(domain, promotedSurfaceIds);
 }
 

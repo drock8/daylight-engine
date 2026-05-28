@@ -262,9 +262,10 @@ function buildCurrentWaveBlockerMaps(merge, priorHistory, waveNumber) {
   return { historyBySurface, currentWaveBlockersBySurface, nextHistory };
 }
 
-// Append one frontier event per blocker promoted into state.terminally_blocked.
-// Pact P2 dual-write: state mirror keeps the legacy contract; this event makes
-// the closure/blocker promotion visible to the frontier ledger projection.
+// Append one blocker.asserted frontier event per terminal promotion. After
+// D.3 the frontier ledger is the sole source of surface-state truth; the
+// `terminally_blocked: true` marker plus the wave-merge tool source make
+// these events authoritative for frontier-projections.currentBlockers.
 function appendBlockerPromotionFrontierEvents(domain, promotions, waveNumber) {
   for (const promotion of promotions) {
     for (const blocker of promotion.blockers) {
@@ -278,20 +279,20 @@ function appendBlockerPromotionFrontierEvents(domain, promotions, waveNumber) {
             kind: blocker.kind,
             identifier_hint: blocker.identifier_hint || null,
             reason: blocker.reason || null,
-            promotion: "terminally_blocked",
+            terminally_blocked: true,
           },
-          source: { artifact: "state.terminally_blocked", tool: "bob_apply_wave_merge" },
+          source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
         });
       } catch {
-        // Frontier ledger is dual-write best-effort.
+        // Frontier ledger append is best-effort.
       }
     }
   }
 }
 
-// Append one closure.recorded event per surface marked complete in this merge.
-// Pact P2 dual-write: state.explored keeps the legacy contract; this event lets
-// the frontier ledger projection observe closure without re-reading state.json.
+// Append one closure.recorded frontier event per surface marked complete in
+// this merge. The `surface_fully_explored: true` payload marker is the
+// authoritative signal frontier-projections.currentClosures folds.
 function appendClosureFrontierEvents(domain, completedSurfaceIds, waveNumber) {
   for (const surfaceId of completedSurfaceIds) {
     try {
@@ -299,11 +300,36 @@ function appendClosureFrontierEvents(domain, completedSurfaceIds, waveNumber) {
         target_domain: domain,
         kind: "closure.recorded",
         surface_id: surfaceId,
-        payload: { wave: waveNumber, closure: "surface_completed" },
-        source: { artifact: "state.explored", tool: "bob_apply_wave_merge" },
+        payload: { wave: waveNumber, surface_fully_explored: true, reason: "surface_completed" },
+        source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
       });
     } catch {
-      // Frontier ledger is dual-write best-effort.
+      // Frontier ledger append is best-effort.
+    }
+  }
+}
+
+// Append one surface.observed event per handoff-reported lead surface so the
+// frontier projection recognizes them as promoted lead surfaces. The
+// promoted_surface_lead label is the marker frontier-projections.currentLeadSurfaceIds
+// folds.
+function appendHandoffLeadSurfaceFrontierEvents(domain, leadSurfaceIds, waveNumber) {
+  if (!Array.isArray(leadSurfaceIds) || leadSurfaceIds.length === 0) return;
+  for (const surfaceId of leadSurfaceIds) {
+    if (typeof surfaceId !== "string" || !surfaceId.trim()) continue;
+    try {
+      appendFrontierEvent({
+        target_domain: domain,
+        kind: "surface.observed",
+        surface_id: surfaceId.trim(),
+        payload: {
+          wave: waveNumber,
+          labels: ["promoted_surface_lead", "wave_handoff_lead"],
+        },
+        source: { artifact: "wave-handoff", tool: "bob_apply_wave_merge" },
+      });
+    } catch {
+      // Frontier ledger append is best-effort.
     }
   }
 }
@@ -312,6 +338,7 @@ module.exports = {
   BLOCKED_PREREQ_KINDS_WITH_REGISTRY_DELTA,
   appendBlockerPromotionFrontierEvents,
   appendClosureFrontierEvents,
+  appendHandoffLeadSurfaceFrontierEvents,
   basePromotionPreviewForState,
   buildCurrentWaveBlockerMaps,
   buildNextActionForPlan,

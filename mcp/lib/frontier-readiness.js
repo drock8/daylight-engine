@@ -59,14 +59,12 @@ function pushUnique(target, seen, value) {
   target.push(value);
 }
 
-// Closures and blockers are read from frontier-projections (Cycle F.3): the
-// frontier-events.jsonl ledger is the authoritative source for surface-level
-// closure / blocker truth. The state.json arrays (state.explored,
-// state.terminally_blocked) are still written by applyWaveMerge under Pact P2
-// (dual-write before deletion) and the projection falls back to them when no
-// authoritative surface-level event has been emitted. D.3 deletes both the
-// state arrays and the fallback once waves.js emits authoritative
-// surface_fully_explored / terminally_blocked frontier events.
+// Closures and blockers are read from frontier-projections (Cycle F.3 / D.3):
+// the frontier-events.jsonl ledger is the authoritative source for
+// surface-level closure / blocker truth. After D.3 the legacy state.json
+// arrays were removed and the wave-merge path emits authoritative
+// surface_fully_explored / terminally_blocked frontier events as the sole
+// surface-state writer.
 function exploredSurfaceIdsForDomain(domain) {
   return currentClosures(domain).map((closure) => closure.surface_id);
 }

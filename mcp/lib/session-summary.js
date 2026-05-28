@@ -135,45 +135,57 @@ const BLOCKED_PREREQ_KIND_ACTIONABILITY = Object.freeze({
 });
 
 function summarizeBlockedPrereqs(state) {
+  // Folding "kind + identifier_hint" groups across blocked surfaces uses
+  // state.blocked_prereq_history (the durable per-wave audit trail) as the
+  // grouping source after D.3 removed state.terminally_blocked. The
+  // frontier projection identifies the currently-blocked surface set;
+  // groups are restricted to entries for those surfaces.
   const groups = new Map();
-  const terminallyBlocked = Array.isArray(state.terminally_blocked) ? state.terminally_blocked : [];
-  // Iterate in blocked_at_wave ASC order so the LATEST blocker
-  // overrides the example_reason field — operators care about the
-  // freshest signal, not the oldest sample.
-  const sortedEntries = [...terminallyBlocked].sort((a, b) =>
-    (a.blocked_at_wave || 0) - (b.blocked_at_wave || 0),
-  );
-  for (const entry of sortedEntries) {
-    if (!entry || !Array.isArray(entry.blockers)) continue;
-    for (const blocker of entry.blockers) {
-      const hint = blocker.identifier_hint || null;
-      const key = `${blocker.kind}\t${hint || ""}`;
-      if (!groups.has(key)) {
-        groups.set(key, {
-          kind: blocker.kind,
-          identifier_hint: hint,
-          surface_count: 0,
-          surface_ids: [],
-          latest_reason: null,
-          latest_blocked_at_wave: 0,
-        });
-      }
-      const group = groups.get(key);
-      group.surface_count += 1;
-      if (!group.surface_ids.includes(entry.surface_id)) {
-        group.surface_ids.push(entry.surface_id);
-      }
-      // Latest wave wins (entries are sorted ASC, so later iterations overwrite).
-      if (blocker.reason) {
-        group.latest_reason = blocker.reason;
-      }
-      if ((entry.blocked_at_wave || 0) > group.latest_blocked_at_wave) {
-        group.latest_blocked_at_wave = entry.blocked_at_wave || 0;
-      }
+  let blockedSurfaceIds = [];
+  if (state && typeof state.target === "string" && state.target) {
+    try {
+      const { currentBlockers } = require("./frontier-projections.js");
+      blockedSurfaceIds = currentBlockers(state.target).map((entry) => entry.surface_id);
+    } catch {
+      blockedSurfaceIds = [];
     }
   }
+  const blockedSet = new Set(blockedSurfaceIds);
+  const history = Array.isArray(state.blocked_prereq_history) ? state.blocked_prereq_history : [];
+  const surfaceWaveLookup = new Map();
+  // Sort history by (surface, wave ASC) so the latest reason for a (kind,
+  // identifier_hint) tuple wins.
+  const sortedHistory = [...history].sort((a, b) => (a.wave || 0) - (b.wave || 0));
+  for (const entry of sortedHistory) {
+    if (!entry || typeof entry.surface_id !== "string" || !blockedSet.has(entry.surface_id)) continue;
+    const hint = entry.identifier_hint || null;
+    const key = `${entry.kind}\t${hint || ""}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        kind: entry.kind,
+        identifier_hint: hint,
+        surface_count: 0,
+        surface_ids: [],
+        latest_reason: null,
+        latest_blocked_at_wave: 0,
+      });
+    }
+    const group = groups.get(key);
+    if (!group.surface_ids.includes(entry.surface_id)) {
+      group.surface_ids.push(entry.surface_id);
+      group.surface_count += 1;
+    }
+    if (entry.reason) {
+      group.latest_reason = entry.reason;
+    }
+    const wave = Number.isInteger(entry.wave) ? entry.wave : 0;
+    if (wave > group.latest_blocked_at_wave) {
+      group.latest_blocked_at_wave = wave;
+    }
+    surfaceWaveLookup.set(entry.surface_id, Math.max(surfaceWaveLookup.get(entry.surface_id) || 0, wave));
+  }
   return {
-    total_blocked_surfaces: terminallyBlocked.length,
+    total_blocked_surfaces: blockedSurfaceIds.length,
     by_kind: Array.from(groups.values()).sort((a, b) => {
       const aRank = BLOCKED_PREREQ_KIND_ACTIONABILITY[a.kind] ?? 99;
       const bRank = BLOCKED_PREREQ_KIND_ACTIONABILITY[b.kind] ?? 99;

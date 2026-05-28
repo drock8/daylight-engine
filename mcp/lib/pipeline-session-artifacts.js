@@ -877,12 +877,21 @@ function summarizeAttackSurfaceCoverage(targetDomain, state) {
       mtime,
     };
   }
-  const exploredSet = new Set(Array.isArray(state?.explored) ? state.explored : []);
-  const terminallyBlockedSet = new Set(
-    Array.isArray(state?.terminally_blocked)
-      ? state.terminally_blocked.map((entry) => entry && typeof entry.surface_id === "string" ? entry.surface_id : null).filter(Boolean)
-      : [],
-  );
+  // Explored / terminally-blocked sets derive from the frontier ledger
+  // projection (Cycle D.3). The legacy state arrays were removed; the
+  // frontier-projections fold is the sole source of surface-level closure
+  // and blocker truth.
+  let exploredSet = new Set();
+  let terminallyBlockedSet = new Set();
+  if (state && typeof state.target === "string" && state.target) {
+    try {
+      const projections = require("./frontier-projections.js");
+      exploredSet = new Set(projections.currentClosures(state.target).map((entry) => entry.surface_id));
+      terminallyBlockedSet = new Set(projections.currentBlockers(state.target).map((entry) => entry.surface_id));
+    } catch {
+      // Ledger projection unavailable; counts default to 0 / empty.
+    }
+  }
   const surfaces = surfaceList.filter((surface) => isPlainObject(surface) && typeof surface.id === "string");
   const nonLowSurfaces = surfaces.filter((surface) => (surface.priority || "HIGH").toUpperCase() !== "LOW");
   const highSurfaces = surfaces.filter((surface) => ["CRITICAL", "HIGH"].includes((surface.priority || "HIGH").toUpperCase()));

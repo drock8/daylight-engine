@@ -6,10 +6,8 @@ const {
   assertBoolean,
   assertNonEmptyString,
   parseWaveNumber,
-  pushUnique,
 } = require("../validation.js");
 const {
-  attackSurfacePath,
   surfaceLeadsPath,
   surfaceRoutesPath,
 } = require("../paths.js");
@@ -145,7 +143,7 @@ function startWaveLocked(domain, {
     } catch {}
   }
   safeAppendPipelineEventDirect(domain, "wave_started", {
-    phase: state.phase,
+    lifecycle_state: state.lifecycle_state,
     wave_number: waveNumber,
     status: "started",
     source,
@@ -241,8 +239,13 @@ function startNextWave(args) {
     let promotedForThisStart = false;
     try {
       if (!dryRun && state.deep_mode === true && basePromotionPreview.would_promote_lead_ids.length > 0) {
+        // D.3 removed the attack_surface.json writer; promotion no longer
+        // touches the legacy projection file, so the rollback snapshot list
+        // contracts to surface-leads.json + surface-routes.json. The frontier
+        // ledger is append-only and not rolled back here (it remains
+        // append-only authority; replay tooling handles any operator
+        // overrides).
         rollbackSnapshots = [
-          snapshotFileForRollback(attackSurfacePath(domain)),
           snapshotFileForRollback(surfaceLeadsPath(domain)),
           snapshotFileForRollback(surfaceRoutesPath(domain)),
         ];
@@ -255,9 +258,18 @@ function startNextWave(args) {
           leads_path: promoted.leads_path,
           attack_surface_path: promoted.attack_surface_path,
         };
-        const mergedLeadIds = Array.isArray(state.lead_surface_ids) ? [...state.lead_surface_ids] : [];
-        pushUnique(mergedLeadIds, new Set(mergedLeadIds), promoted.promoted_surface_ids);
-        planningState = { ...state, lead_surface_ids: mergedLeadIds };
+        // Force materialization so the just-promoted surfaces appear in
+        // surface-index.json before the wave planner reads them. The
+        // debounced flush would otherwise fire only after the outer
+        // session-lock releases (after planning has already run).
+        if (promotedForThisStart) {
+          try {
+            require("../frontier-materializer.js").materializeFrontier(domain, { write: true });
+          } catch {
+            // Materialization is best-effort; the planner will fall back
+            // to attack_surface.json (legacy projection) when available.
+          }
+        }
       }
 
       const plan = planNextWave({
@@ -272,7 +284,6 @@ function startNextWave(args) {
         if (promotedForThisStart) {
           for (const snapshot of rollbackSnapshots.slice().reverse()) restoreFileSnapshot(snapshot);
           promotion = { ...basePromotionPreview, promoted: 0, promoted_surface_ids: [] };
-          planningState = state;
         }
         return JSON.stringify(buildStartNextWaveResponse({ domain, dryRun, state: planningState, plan, promotion }));
       }
@@ -295,7 +306,6 @@ function startNextWave(args) {
         attackSurfaceInfo: readAttackSurfaceStrict(domain),
         source: "bob_start_next_wave",
         startedBy: "bob_start_next_wave",
-        statePatch: promotedForThisStart ? { lead_surface_ids: planningState.lead_surface_ids } : null,
         schedulerDecisionId: schedulerDecision ? schedulerDecision.scheduler_decision_id : null,
         assignmentBatchId: schedulerDecision ? schedulerDecision.assignment_batch_id : null,
       });

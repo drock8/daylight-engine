@@ -6,7 +6,6 @@ const {
   assertSafeDomain,
   attackSurfacePath,
   frontierEventsJsonlPath,
-  statePath,
   surfaceIndexPath,
 } = require("./paths.js");
 const {
@@ -17,100 +16,26 @@ const {
 } = require("./storage.js");
 
 // frontier-projections fold frontier-events.jsonl into per-surface views that
-// phase-gates.js (and downstream coverage gating) consume in place of
-// state.json arrays.
+// downstream readers (frontier-readiness, wave planner, coverage gating)
+// consume in place of state.json arrays.
 //
-// Cycle F.3 establishes the ledger as the read source while keeping legacy
-// writes (state.terminally_blocked / state.explored) in place per Pact P2
-// (dual-write before deletion). Cycle D.3 deletes those state arrays once the
-// ledger has been authoritative for one operational release.
+// Cycle F.3 established the ledger as the read source. Cycle D.3 deleted the
+// legacy state arrays (state.explored, state.terminally_blocked,
+// state.lead_surface_ids) along with the transitional state-fallback paths;
+// the ledger is now the sole source of surface-level closure / blocker /
+// lead truth.
 //
-// Transitional fallback: F.1 wired coverage.js and waves.js to emit closure /
-// blocker events, but the existing F.1 producers are coarser-grained than the
-// legacy state.json arrays. The state.explored array is populated only by
-// applyWaveMerge when a `surface_status: complete` handoff lands; F.1's
-// closure.recorded events from `bob_log_coverage` capture endpoint-batch
-// closures (not surface-fully-explored closures). state.terminally_blocked is
-// populated by the merge-promotion path; F.1's blocker.asserted events from
-// `bob_log_dead_ends` capture per-batch dead-end signals (not the
-// merge-promotion's terminally-blocked promotion).
-//
-// To preserve functional equivalence with the legacy reads during the
-// deprecation window, this module:
-//
-// 1. Treats only events that carry an explicit surface-level marker
-//    (`payload.surface_fully_explored: true` for closures,
-//    `payload.terminally_blocked: true` for blockers) — or that originate
-//    from the wave-merge tool — as authoritative surface-state events.
-// 2. Falls back to the legacy state.json arrays per projection when no
-//    qualifying event exists. This keeps both legacy sessions (no events at
-//    all) and current F.1 sessions (events that are coverage / dead-end
-//    batches, not surface-level state) reading the same surfaces as before.
-//
-// The fallback is removed in D.3 once waves.js merge-promotion path also
-// emits authoritative frontier events and the legacy state arrays are
-// themselves deleted.
+// Surface-level state events are authoritative when they:
+//   - carry the explicit payload marker (`surface_fully_explored: true` for
+//     closures, `terminally_blocked: true` for blockers), or
+//   - originate from the wave-merge tool (`source.tool === bob_apply_wave_merge`).
+// Coarse-grained signals (per-endpoint coverage rows from log_coverage,
+// dead-end batches from log_dead_ends) are excluded from the surface-state
+// projection so they do not mask the merge-promotion's surface-level truth.
 
 const SURFACE_STATE_MERGE_SOURCE = "bob_apply_wave_merge";
 
-function readStateRaw(domain) {
-  const filePath = statePath(domain);
-  if (!fs.existsSync(filePath)) return null;
-  try {
-    return readJsonFile(filePath, { label: "state.json" });
-  } catch {
-    return null;
-  }
-}
-
-function fallbackClosuresFromState(state) {
-  if (state == null || typeof state !== "object") return [];
-  const explored = Array.isArray(state.explored) ? state.explored : [];
-  const seen = new Set();
-  const closures = [];
-  for (const surfaceId of explored) {
-    if (typeof surfaceId !== "string" || !surfaceId.trim()) continue;
-    if (seen.has(surfaceId)) continue;
-    seen.add(surfaceId);
-    closures.push({
-      surface_id: surfaceId,
-      closed_at: null,
-      reason: null,
-      source_event_id: null,
-    });
-  }
-  return closures.sort((a, b) => a.surface_id.localeCompare(b.surface_id));
-}
-
-function fallbackBlockersFromState(state) {
-  if (state == null || typeof state !== "object") return [];
-  const list = Array.isArray(state.terminally_blocked) ? state.terminally_blocked : [];
-  const seen = new Set();
-  const blockers = [];
-  for (const entry of list) {
-    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const surfaceId = typeof entry.surface_id === "string" ? entry.surface_id.trim() : "";
-    if (!surfaceId || seen.has(surfaceId)) continue;
-    seen.add(surfaceId);
-    const reason = Array.isArray(entry.blockers) && entry.blockers.length > 0
-      ? entry.blockers
-        .map((blocker) => (
-          blocker && typeof blocker === "object" && typeof blocker.kind === "string"
-            ? blocker.kind
-            : null
-        ))
-        .filter((kind) => typeof kind === "string" && kind.length > 0)
-        .join(",") || null
-      : null;
-    blockers.push({
-      surface_id: surfaceId,
-      closed_at: null,
-      reason,
-      source_event_id: null,
-    });
-  }
-  return blockers.sort((a, b) => a.surface_id.localeCompare(b.surface_id));
-}
+const LEAD_SURFACE_LABEL = "promoted_surface_lead";
 
 function frontierEventsExist(domain) {
   return fs.existsSync(frontierEventsJsonlPath(domain));
@@ -161,25 +86,34 @@ function isSurfaceBlockerEvent(event) {
   return isMergeSourcedEvent(event);
 }
 
-function foldLatestBySurface(events, predicate) {
-  const latest = new Map();
+// A surface-state event is the union of closure / blocker surface-state
+// events. Folding "latest of either kind" lets a clear or re-closure
+// supersede a prior block, which is the semantic the merge-promotion and
+// operator clear paths rely on after D.3.
+function isSurfaceStateEvent(event) {
+  return isSurfaceClosureEvent(event) || isSurfaceBlockerEvent(event);
+}
+
+function compareEventOrder(a, b) {
+  const tsA = Date.parse(a.ts || "");
+  const tsB = Date.parse(b.ts || "");
+  if (Number.isFinite(tsA) && Number.isFinite(tsB) && tsA !== tsB) {
+    return tsA - tsB;
+  }
+  return 0;
+}
+
+function foldLatestBySurface(events, predicate, surfaceStatePredicate) {
+  const latestState = new Map();
   for (const event of events) {
-    if (!predicate(event)) continue;
-    const existing = latest.get(event.surface_id);
-    if (existing == null) {
-      latest.set(event.surface_id, event);
-      continue;
-    }
-    const existingTs = Date.parse(existing.ts || "");
-    const candidateTs = Date.parse(event.ts || "");
-    if (Number.isFinite(candidateTs) && Number.isFinite(existingTs)) {
-      if (candidateTs >= existingTs) latest.set(event.surface_id, event);
-    } else {
-      // ledger order wins when timestamps are not parseable
-      latest.set(event.surface_id, event);
+    if (!surfaceStatePredicate(event)) continue;
+    const existing = latestState.get(event.surface_id);
+    if (existing == null || compareEventOrder(existing, event) <= 0) {
+      latestState.set(event.surface_id, event);
     }
   }
-  return Array.from(latest.values())
+  return Array.from(latestState.values())
+    .filter((event) => predicate(event))
     .map((event) => ({
       surface_id: event.surface_id,
       closed_at: typeof event.ts === "string" ? event.ts : null,
@@ -192,24 +126,122 @@ function foldLatestBySurface(events, predicate) {
 function currentClosures(targetDomain) {
   const domain = assertSafeDomain(targetDomain);
   const events = loadFrontierEventsSafely(domain);
-  const projected = foldLatestBySurface(events, isSurfaceClosureEvent);
-  if (projected.length > 0) return projected;
-  // Transitional fallback (D.3 removes): no authoritative surface-closure events
-  // in the ledger — fall back to the legacy state.explored array so phase-gates
-  // gating preserves the legacy semantics during the dual-write window.
-  return fallbackClosuresFromState(readStateRaw(domain));
+  return foldLatestBySurface(events, isSurfaceClosureEvent, isSurfaceStateEvent);
 }
 
 function currentBlockers(targetDomain) {
   const domain = assertSafeDomain(targetDomain);
   const events = loadFrontierEventsSafely(domain);
-  const projected = foldLatestBySurface(events, isSurfaceBlockerEvent);
-  if (projected.length > 0) return projected;
-  // Transitional fallback (D.3 removes): no authoritative surface-blocker events
-  // in the ledger — fall back to the legacy state.terminally_blocked array so
-  // phase-gates gating preserves the legacy semantics during the dual-write
-  // window.
-  return fallbackBlockersFromState(readStateRaw(domain));
+  return foldLatestBySurface(events, isSurfaceBlockerEvent, isSurfaceStateEvent);
+}
+
+// A surface is a "lead" if its labels (folded across surface.observed
+// events) include the promoted-surface-lead marker. The projection excludes
+// surfaces whose latest surface-state event is closure or blocker — the
+// wave planner consumes only actionable leads.
+function eventCarriesLeadLabel(event) {
+  if (event.kind !== "surface.observed") return false;
+  if (typeof event.surface_id !== "string" || !event.surface_id) return false;
+  const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+    ? event.payload
+    : null;
+  if (!payload) return false;
+  if (Array.isArray(payload.labels) && payload.labels.includes(LEAD_SURFACE_LABEL)) {
+    return true;
+  }
+  if (Array.isArray(event.tags) && event.tags.includes(LEAD_SURFACE_LABEL)) {
+    return true;
+  }
+  return false;
+}
+
+function currentLeadSurfaceIds(targetDomain) {
+  const domain = assertSafeDomain(targetDomain);
+  const events = loadFrontierEventsSafely(domain);
+  const leadSurfaceIds = new Set();
+  for (const event of events) {
+    if (eventCarriesLeadLabel(event)) {
+      leadSurfaceIds.add(event.surface_id);
+    }
+  }
+  if (leadSurfaceIds.size === 0) return [];
+  // Drop lead surfaces whose latest surface-state event is a closure or a
+  // blocker; the wave planner can only assign actionable lead surfaces.
+  const latestState = new Map();
+  for (const event of events) {
+    if (!isSurfaceStateEvent(event)) continue;
+    const existing = latestState.get(event.surface_id);
+    if (existing == null || compareEventOrder(existing, event) <= 0) {
+      latestState.set(event.surface_id, event);
+    }
+  }
+  // Membership: union of attack_surface.json (legacy projection) and the
+  // materialized surface-index.json (or its synthesized projection). Either
+  // source is enough to keep a lead surface visible to the planner. The
+  // union avoids stale-state false negatives between materializer runs and
+  // the attack-surface promotion pipeline.
+  const knownSurfaceIds = new Set();
+  try {
+    if (fs.existsSync(attackSurfacePath(domain))) {
+      const legacy = readJsonFile(attackSurfacePath(domain), { label: "attack_surface.json" });
+      if (legacy && Array.isArray(legacy.surfaces)) {
+        for (const surface of legacy.surfaces) {
+          if (surface && typeof surface.id === "string" && surface.id) knownSurfaceIds.add(surface.id);
+        }
+      }
+    }
+  } catch {
+    // Malformed attack_surface.json — surface-index.json is consulted below.
+  }
+  try {
+    const surfaceProjection = currentSurfaces(domain);
+    if (surfaceProjection && surfaceProjection.source !== "missing") {
+      for (const surface of surfaceProjection.surfaces || []) {
+        if (surface && typeof surface.id === "string" && surface.id) knownSurfaceIds.add(surface.id);
+      }
+    }
+  } catch {
+    // Projection unavailable; the legacy projection above may still have entries.
+  }
+  // Also surface.observed events from lead-promotion's promote-to-frontier
+  // path constitute "known" surfaces — the promotion writer emits a rich
+  // payload (title, hosts, endpoints, score) that the planner can use even
+  // before the materializer flushes. Handoff-only lead events (payload only
+  // has labels) do not count: handoff-discovered surface ids without a
+  // surface.observed body are still leads pending future promotion.
+  for (const event of events) {
+    if (event.kind !== "surface.observed") continue;
+    if (typeof event.surface_id !== "string" || !event.surface_id) continue;
+    const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+      ? event.payload
+      : null;
+    if (!payload) continue;
+    // Heuristic: a "rich" surface.observed payload carries at least one of
+    // the planner-relevant scalar fields. A label-only event (e.g. emitted
+    // by appendHandoffLeadSurfaceFrontierEvents) does not promote the
+    // surface to known-surface status here.
+    if (typeof payload.title === "string"
+      || typeof payload.surface_type === "string"
+      || Array.isArray(payload.hosts)
+      || Array.isArray(payload.endpoints)
+      || Number.isFinite(payload.score)
+    ) {
+      knownSurfaceIds.add(event.surface_id);
+    }
+  }
+  const useFilter = knownSurfaceIds.size > 0;
+  const result = [];
+  for (const surfaceId of leadSurfaceIds) {
+    if (useFilter && !knownSurfaceIds.has(surfaceId)) continue;
+    const state = latestState.get(surfaceId);
+    if (state == null) {
+      result.push(surfaceId);
+      continue;
+    }
+    if (isSurfaceClosureEvent(state) || isSurfaceBlockerEvent(state)) continue;
+    result.push(surfaceId);
+  }
+  return result.sort((a, b) => a.localeCompare(b));
 }
 
 function normalizeObservationEvent(event) {
@@ -408,6 +440,7 @@ module.exports = {
   compareObservationEvents,
   currentBlockers,
   currentClosures,
+  currentLeadSurfaceIds,
   currentSurfaces,
   normalizeObservationEvent,
   observationsForSurface,

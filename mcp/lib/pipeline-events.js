@@ -157,16 +157,9 @@ function normalizePipelineEvent(targetDomain, type, fields = {}) {
     type: eventType,
   };
 
-  // Legacy phase fields and new lifecycle fields are both accepted during the
-  // dual-write window (Pact P2). D.3 deletes the legacy phase fields once the
-  // phase machine is fully retired. Until then both shapes serialize when
-  // present so analytics consumers can migrate independently.
-  const phase = capString(fields.phase, 40);
-  const fromPhase = capString(fields.from_phase, 40);
-  const toPhase = capString(fields.to_phase, 40);
-  if (phase) event.phase = phase;
-  if (fromPhase) event.from_phase = fromPhase;
-  if (toPhase) event.to_phase = toPhase;
+  // Lifecycle vocabulary is the sole accepted form. The legacy phase fields
+  // (phase / from_phase / to_phase) were removed in D.3 once the lifecycle
+  // authority on session-nucleus.json became canonical.
   const lifecycleState = capString(fields.lifecycle_state, 40);
   const fromState = capString(fields.from_state, 40);
   const toState = capString(fields.to_state, 40);
@@ -357,7 +350,7 @@ function normalizePipelineEventForRead(record, expectedDomain) {
     final_verification_hash: 128,
     nucleus_hash: 128,
   };
-  for (const field of ["phase", "from_phase", "to_phase", "lifecycle_state", "from_state", "to_state", "agent", "surface_id", "status", "block_code", "source", "kind", "identifier_hint", "verification_attempt_id", "verification_snapshot_hash", "adjudication_plan_hash", "final_verification_hash", "capability_pack", "lease_scope", "replay_purpose", "started_by", "checkpoint_mode", "block_internal_hosts_source", "egress_profile", "egress_region", "egress_profile_identity_hash", "nucleus_hash"]) {
+  for (const field of ["lifecycle_state", "from_state", "to_state", "agent", "surface_id", "status", "block_code", "source", "kind", "identifier_hint", "verification_attempt_id", "verification_snapshot_hash", "adjudication_plan_hash", "final_verification_hash", "capability_pack", "lease_scope", "replay_purpose", "started_by", "checkpoint_mode", "block_internal_hosts_source", "egress_profile", "egress_region", "egress_profile_identity_hash", "nucleus_hash"]) {
     const safe = capString(record[field], fieldCaps[field] || 120);
     if (safe) event[field] = safe;
   }

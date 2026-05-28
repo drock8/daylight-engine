@@ -27,23 +27,16 @@ function surfaceIdOf(value) {
   return null;
 }
 
-function terminallyBlockedSurfaceIds(state) {
-  return (Array.isArray(state && state.terminally_blocked) ? state.terminally_blocked : [])
-    .map((entry) => entry && entry.surface_id)
-    .filter((surfaceId) => typeof surfaceId === "string" && surfaceId.trim());
-}
-
+// Closures, blockers, and lead surfaces are read from frontier-projections
+// (Cycle D.3). The state.json projection arrays (state.explored,
+// state.terminally_blocked, state.lead_surface_ids) were removed; callers
+// pass the projected sets explicitly so the planner stays pure and testable.
 function isOpenForAssignment(surfaceOrId, state, options = {}) {
   const surfaceId = surfaceIdOf(surfaceOrId);
   if (!surfaceId) return false;
   if (options.surfaceIdSet && !options.surfaceIdSet.has(surfaceId)) return false;
-
-  const explored = new Set(Array.isArray(state && state.explored) ? state.explored : []);
-  if (explored.has(surfaceId)) return false;
-
-  const terminallyBlocked = new Set(terminallyBlockedSurfaceIds(state));
-  if (terminallyBlocked.has(surfaceId)) return false;
-
+  if (options.exploredSurfaceIds instanceof Set && options.exploredSurfaceIds.has(surfaceId)) return false;
+  if (options.terminallyBlockedSurfaceIds instanceof Set && options.terminallyBlockedSurfaceIds.has(surfaceId)) return false;
   return true;
 }
 
@@ -87,7 +80,7 @@ function normalizeSurfaces(surfaces) {
   return byId;
 }
 
-function computeOpenRequeueSurfaceIds(coverageRecords, state, surfaceIdSet) {
+function computeOpenRequeueSurfaceIds(coverageRecords, state, surfaceIdSet, openOptions = {}) {
   const latestRecords = Array.from(latestCoverageRecordsByKey(
     Array.isArray(coverageRecords) ? coverageRecords : [],
   ).values());
@@ -97,21 +90,21 @@ function computeOpenRequeueSurfaceIds(coverageRecords, state, surfaceIdSet) {
     if (!record || !isUnfinishedCoverageStatus(record.status)) continue;
     const surfaceId = surfaceIdOf(record.surface_id);
     if (!surfaceId || seen.has(surfaceId)) continue;
-    if (!isOpenForAssignment(surfaceId, state, { surfaceIdSet })) continue;
+    if (!isOpenForAssignment(surfaceId, state, { ...openOptions, surfaceIdSet })) continue;
     seen.add(surfaceId);
     ids.push(surfaceId);
   }
   return ids;
 }
 
-function surfacesForIds(ids, surfaceById, state, policy) {
+function surfacesForIds(ids, surfaceById, state, policy, openOptions = {}) {
   const result = [];
   const seen = new Set();
   const surfaceIdSet = new Set(surfaceById.keys());
   for (const id of Array.isArray(ids) ? ids : []) {
     const surfaceId = surfaceIdOf(id);
     if (!surfaceId || seen.has(surfaceId)) continue;
-    if (!isOpenForAssignment(surfaceId, state, { surfaceIdSet })) continue;
+    if (!isOpenForAssignment(surfaceId, state, { ...openOptions, surfaceIdSet })) continue;
     const surface = surfaceById.get(surfaceId);
     if (!surface) continue;
     seen.add(surfaceId);
@@ -120,12 +113,12 @@ function surfacesForIds(ids, surfaceById, state, policy) {
   return result.sort((a, b) => compareSurfaces(a, b, policy));
 }
 
-function priorityBucket(surfaces, state, priorities, policy) {
+function priorityBucket(surfaces, state, priorities, policy, openOptions = {}) {
   const wanted = new Set(priorities.map((priority) => String(priority).toUpperCase()));
   const surfaceIdSet = new Set(surfaces.map((surface) => surface.id));
   return surfaces
     .filter((surface) => (
-      isOpenForAssignment(surface, state, { surfaceIdSet }) &&
+      isOpenForAssignment(surface, state, { ...openOptions, surfaceIdSet }) &&
       wanted.has(String(surface.priority || "").toUpperCase())
     ))
     .sort((a, b) => compareSurfaces(a, b, policy));
@@ -207,7 +200,7 @@ function bucketSpecOrder(priorityOrder) {
   return order;
 }
 
-function priorityBuckets(openSurfaces, state, policy) {
+function priorityBuckets(openSurfaces, state, policy, openOptions = {}) {
   const order = bucketSpecOrder(policy.priority_order);
   return order.map((name) => {
     const priorityTokens = priorityTokensForBucket(name, policy.priority_order);
@@ -215,14 +208,14 @@ function priorityBuckets(openSurfaces, state, policy) {
     return {
       name,
       overflow_to_max: name === "critical_high",
-      surfaces: priorityBucket(openSurfaces, state, upperTokens, policy),
+      surfaces: priorityBucket(openSurfaces, state, upperTokens, policy, openOptions),
     };
   });
 }
 
-function legacySurfacesFromInputs(surfaceById, state, policy) {
+function legacySurfacesFromInputs(surfaceById, state, policy, openOptions = {}) {
   return Array.from(surfaceById.values())
-    .filter((surface) => isOpenForAssignment(surface, state, { surfaceIdSet: new Set(surfaceById.keys()) }))
+    .filter((surface) => isOpenForAssignment(surface, state, { ...openOptions, surfaceIdSet: new Set(surfaceById.keys()) }))
     .sort((a, b) => compareSurfaces(a, b, policy));
 }
 
@@ -248,6 +241,7 @@ function planNextWave({
   openRequeueSurfaceIds = null,
   taskQueueTasks = null,
   queuePolicy = null,
+  ...options
 } = {}) {
   const normalizedState = state || {};
   const policy = normalizeQueuePolicy(queuePolicy || DEFAULT_QUEUE_POLICY);
@@ -279,7 +273,39 @@ function planNextWave({
   const surfaceById = normalizeSurfaces(surfaces);
   const allSurfaces = Array.from(surfaceById.values());
   const surfaceIdSet = new Set(surfaceById.keys());
-  const openSurfaces = allSurfaces.filter((surface) => isOpenForAssignment(surface, normalizedState, { surfaceIdSet }));
+
+  // Surface-state projections (explored / terminally_blocked / lead surfaces)
+  // are derived from frontier-events via frontier-projections. The planner
+  // accepts pre-computed sets (test fixtures, replay tooling) and falls back
+  // to projecting the live target_domain when present.
+  let exploredSurfaceIds = options.exploredSurfaceIds instanceof Set
+    ? options.exploredSurfaceIds
+    : new Set(Array.isArray(options.exploredSurfaceIds) ? options.exploredSurfaceIds : []);
+  let terminallyBlockedSet = options.terminallyBlockedSurfaceIds instanceof Set
+    ? options.terminallyBlockedSurfaceIds
+    : new Set(Array.isArray(options.terminallyBlockedSurfaceIds) ? options.terminallyBlockedSurfaceIds : []);
+  let leadSurfaceIds = Array.isArray(options.leadSurfaceIds) ? options.leadSurfaceIds : null;
+  if ((exploredSurfaceIds.size === 0 || terminallyBlockedSet.size === 0 || leadSurfaceIds == null) && typeof normalizedState.target === "string" && normalizedState.target) {
+    try {
+      const projections = require("./frontier-projections.js");
+      if (exploredSurfaceIds.size === 0) {
+        exploredSurfaceIds = new Set(projections.currentClosures(normalizedState.target).map((entry) => entry.surface_id));
+      }
+      if (terminallyBlockedSet.size === 0) {
+        terminallyBlockedSet = new Set(projections.currentBlockers(normalizedState.target).map((entry) => entry.surface_id));
+      }
+      if (leadSurfaceIds == null) {
+        leadSurfaceIds = projections.currentLeadSurfaceIds(normalizedState.target);
+      }
+    } catch {
+      if (leadSurfaceIds == null) leadSurfaceIds = [];
+    }
+  } else if (leadSurfaceIds == null) {
+    leadSurfaceIds = [];
+  }
+
+  const openOptions = { surfaceIdSet, exploredSurfaceIds, terminallyBlockedSurfaceIds: terminallyBlockedSet };
+  const openSurfaces = allSurfaces.filter((surface) => isOpenForAssignment(surface, normalizedState, openOptions));
 
   const hasTaskQueueRows = Array.isArray(taskQueueTasks) && taskQueueTasks.length > 0;
 
@@ -293,7 +319,7 @@ function planNextWave({
       {
         name: "task_queue",
         overflow_to_max: true,
-        surfaces: surfacesForIds(orderedIds, surfaceById, normalizedState, policy),
+        surfaces: surfacesForIds(orderedIds, surfaceById, normalizedState, policy, openOptions),
       },
     ];
     if (nextWave > 1) {
@@ -301,38 +327,40 @@ function planNextWave({
         name: "open_requeue",
         overflow_to_max: true,
         surfaces: surfacesForIds(
-          openRequeueSurfaceIds || computeOpenRequeueSurfaceIds(coverageRecords, normalizedState, surfaceIdSet),
+          openRequeueSurfaceIds || computeOpenRequeueSurfaceIds(coverageRecords, normalizedState, surfaceIdSet, openOptions),
           surfaceById,
           normalizedState,
           policy,
+          openOptions,
         ),
       });
       bucketSpecs.splice(1, 0, {
         name: "lead_surface_ids",
         overflow_to_max: true,
-        surfaces: surfacesForIds(normalizedState.lead_surface_ids, surfaceById, normalizedState, policy),
+        surfaces: surfacesForIds(leadSurfaceIds, surfaceById, normalizedState, policy, openOptions),
       });
     }
   } else if (nextWave === 1) {
-    bucketSpecs = priorityBuckets(openSurfaces, normalizedState, policy);
+    bucketSpecs = priorityBuckets(openSurfaces, normalizedState, policy, openOptions);
   } else {
     bucketSpecs = [
       {
         name: "open_requeue",
         overflow_to_max: true,
         surfaces: surfacesForIds(
-          openRequeueSurfaceIds || computeOpenRequeueSurfaceIds(coverageRecords, normalizedState, surfaceIdSet),
+          openRequeueSurfaceIds || computeOpenRequeueSurfaceIds(coverageRecords, normalizedState, surfaceIdSet, openOptions),
           surfaceById,
           normalizedState,
           policy,
+          openOptions,
         ),
       },
       {
         name: "lead_surface_ids",
         overflow_to_max: true,
-        surfaces: surfacesForIds(normalizedState.lead_surface_ids, surfaceById, normalizedState, policy),
+        surfaces: surfacesForIds(leadSurfaceIds, surfaceById, normalizedState, policy, openOptions),
       },
-      ...priorityBuckets(openSurfaces, normalizedState, policy),
+      ...priorityBuckets(openSurfaces, normalizedState, policy, openOptions),
     ];
   }
 

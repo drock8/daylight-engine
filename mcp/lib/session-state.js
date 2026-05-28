@@ -122,7 +122,7 @@ function assertSessionEgressIdentity(domain, profile, { source = "egress_request
         };
         writeSessionStateDocument(domain, raw, nextState);
         safeAppendPipelineEventDirect(domain, "egress_identity_bound", {
-          phase: state.phase,
+          lifecycle_state: state.lifecycle_state,
           status: "bound",
           source,
           legacy_migration: true,
@@ -263,14 +263,9 @@ function initSession(args) {
       egressProfile,
       blockInternalHostsPolicy: sessionNucleus.scope_policy,
     });
-    // LEGACY: removed in Plane D — state.json keeps the legacy phase field
-    // shape so the waves planner still functions during the dual-write window.
-    // The legacy phase is the only lifecycle field persisted on disk;
-    // lifecycle_state is derived at read time from the nucleus / phase fallback.
     writeSessionStateDocument(domain, {}, state);
     safeAppendPipelineEventDirect(domain, "session_started", {
       lifecycle_state: state.lifecycle_state,
-      phase: state.phase,
       source: "bob_init_session",
       deep_mode: state.deep_mode,
       checkpoint_mode: state.checkpoint_mode,
@@ -594,13 +589,11 @@ function advanceSession(args) {
       },
     });
 
-    // Mirror the advance into pipeline-events.jsonl for analytics consumers
-    // that previously aggregated `phase_transitioned`. The new event uses
-    // lifecycle vocabulary; the legacy phase fields are derived for
-    // back-compat readers via the pipeline-events whitelist (G.4 / D.3).
+    // Mirror the advance into pipeline-events.jsonl for analytics consumers.
+    // Lifecycle vocabulary is canonical; the legacy phase fields are no
+    // longer accepted by the pipeline-events whitelist (D.3).
     try {
       const { state: nextStateForEvent } = readSessionStateStrict(domain);
-      const derivedLegacyPhase = deriveLegacyPhaseFromLifecycleState(toState);
       const eventFields = {
         from_state: fromState,
         to_state: toState,
@@ -613,10 +606,6 @@ function advanceSession(args) {
         egress_profile_identity_hash: nextStateForEvent.egress_profile_identity_hash,
         egress_profile_identity_version: nextStateForEvent.egress_profile_identity_version,
       };
-      if (derivedLegacyPhase) {
-        eventFields.phase = derivedLegacyPhase;
-        eventFields.to_phase = derivedLegacyPhase;
-      }
       if (override === "operator_force") {
         eventFields.override = true;
         if (overrideReason != null) eventFields.override_reason = overrideReason;
@@ -688,18 +677,46 @@ function clearTerminalBlock(args) {
         `Cannot clear a terminal block while wave ${state.pending_wave} is pending; merge the current wave first`,
       );
     }
-    const terminallyBlocked = Array.isArray(state.terminally_blocked) ? state.terminally_blocked : [];
-    const previousEntry = terminallyBlocked.find((entry) => entry.surface_id === surfaceId);
-    if (!previousEntry) {
+    // The blocker ledger is authoritative after D.3: read the current set
+    // through frontier-projections rather than state.terminally_blocked.
+    // Reconstruct the previous blocker tuple from the frontier event's
+    // payload so the audit trail in terminal_block_clear_history keeps the
+    // (kind, identifier_hint, reason) shape callers expect.
+    const { currentBlockers } = require("./frontier-projections.js");
+    const blockers = currentBlockers(domain);
+    const blockerEntry = blockers.find((entry) => entry.surface_id === surfaceId);
+    if (!blockerEntry) {
       throw new ToolError(
         ERROR_CODES.STATE_CONFLICT,
-        `Surface ${surfaceId} is not in state.terminally_blocked; nothing to clear`,
+        `Surface ${surfaceId} is not terminally blocked in the frontier ledger; nothing to clear`,
       );
     }
-    const remainingTerminallyBlocked = terminallyBlocked.filter((entry) => entry.surface_id !== surfaceId);
-    // Keep blocked_prereq_history for debugging; the loop detector uses
-    // terminal_block_clear_history to filter prior entries that came
-    // before the latest clear for this surface.
+    let previousBlockers = [];
+    let previouslyBlockedAtWave = null;
+    try {
+      const { readFrontierEvents } = require("./frontier-events.js");
+      const events = readFrontierEvents(domain);
+      const sourceEvent = events.find((event) => event.event_id === blockerEntry.source_event_id) || null;
+      if (sourceEvent && sourceEvent.payload && typeof sourceEvent.payload === "object" && !Array.isArray(sourceEvent.payload)) {
+        const payload = sourceEvent.payload;
+        if (typeof payload.kind === "string") {
+          const blocker = { kind: payload.kind };
+          if (typeof payload.identifier_hint === "string" && payload.identifier_hint) {
+            blocker.identifier_hint = payload.identifier_hint;
+          }
+          if (typeof payload.reason === "string" && payload.reason) {
+            blocker.reason = payload.reason;
+          }
+          previousBlockers = [blocker];
+        }
+        if (Number.isInteger(payload.wave) && payload.wave > 0) {
+          previouslyBlockedAtWave = payload.wave;
+        }
+      }
+    } catch {
+      // Source-event details are best-effort enrichment; the clear-history
+      // entry stays valid even if the ledger read fails.
+    }
     const clearedAtTs = new Date().toISOString();
     const priorClearHistory = Array.isArray(state.terminal_block_clear_history) ? state.terminal_block_clear_history : [];
     const clearEntry = {
@@ -707,25 +724,50 @@ function clearTerminalBlock(args) {
       cleared_at_wave: state.evaluation_wave,
       cleared_at_ts: clearedAtTs,
       reason,
-      previously_blocked_at_wave: previousEntry.blocked_at_wave,
-      previous_blockers: Array.isArray(previousEntry.blockers) ? previousEntry.blockers : [],
     };
+    if (previouslyBlockedAtWave != null) {
+      clearEntry.previously_blocked_at_wave = previouslyBlockedAtWave;
+    }
+    if (previousBlockers.length > 0) {
+      clearEntry.previous_blockers = previousBlockers;
+    }
     const nextClearHistory = [...priorClearHistory, clearEntry];
 
     const nextState = {
       ...state,
-      terminally_blocked: remainingTerminallyBlocked,
       terminal_block_clear_history: nextClearHistory,
     };
     writeSessionStateDocument(domain, raw, nextState);
 
+    // Emit a closure.recorded frontier event with surface_unblocked semantics
+    // so the projection's foldLatestBySurface returns the cleared state as
+    // the latest surface-state event. The event is sourced from the
+    // wave-merge tool sentinel so it satisfies the surface-state predicate
+    // without depending on the legacy payload markers.
+    try {
+      appendFrontierEvent({
+        target_domain: domain,
+        kind: "closure.recorded",
+        surface_id: surfaceId,
+        payload: {
+          surface_fully_explored: false,
+          surface_unblocked: true,
+          reason: "operator_cleared_terminal_block",
+          operator_reason: reason,
+        },
+        source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+      });
+    } catch {
+      // Frontier ledger append is best-effort.
+    }
+
     safeAppendPipelineEventDirect(domain, "terminal_block_cleared", {
-      phase: state.phase,
+      lifecycle_state: state.lifecycle_state,
       status: "cleared",
       source: "bob_clear_terminal_block",
       surface_id: surfaceId,
       counts: {
-        terminally_blocked_total: remainingTerminallyBlocked.length,
+        terminally_blocked_total: Math.max(0, blockers.length - 1),
         clear_history_size: nextClearHistory.length,
       },
     }, buildGovernanceContext(nextState));
@@ -736,8 +778,8 @@ function clearTerminalBlock(args) {
       surface_id: surfaceId,
       cleared_at_wave: state.evaluation_wave,
       cleared_at_ts: clearedAtTs,
-      previous_blockers: clearEntry.previous_blockers,
-      previously_blocked_at_wave: clearEntry.previously_blocked_at_wave,
+      previous_blockers: clearEntry.previous_blockers || [],
+      previously_blocked_at_wave: clearEntry.previously_blocked_at_wave || null,
       state: compactSessionState(nextState),
     });
   });

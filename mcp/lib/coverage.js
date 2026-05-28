@@ -268,9 +268,10 @@ function logCoverage(args) {
   }, { expectedDomain: domain }));
 
   return withSessionLock(domain, () => {
-    // LEGACY: removed in Plane D — coverage.jsonl plus the state.explored array
-    // remain during dual-write; the frontier projection (F.3 closures/blockers)
-    // takes over once Plane D ships.
+    // coverage.jsonl records per-endpoint coverage tests. After D.3,
+    // surface-level explored/closed truth lives entirely in the frontier
+    // ledger; coverage.jsonl is the per-endpoint per-wave history that
+    // feeds wave-readiness and analytics.
     appendJsonlLines(logPath, records, { maxRecords: COVERAGE_LOG_MAX_RECORDS });
     const statuses = COVERAGE_STATUS_VALUES.reduce((result, status) => {
       result[status] = records.filter((record) => record.status === status).length;

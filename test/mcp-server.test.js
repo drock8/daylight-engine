@@ -977,6 +977,11 @@ function transitionPhase(args) {
 function seedSessionState(domain, overrides = {}) {
   const dir = sessionDir(domain);
   fs.mkdirSync(dir, { recursive: true });
+  // Cycle D.3 deleted state.explored / state.terminally_blocked /
+  // state.lead_surface_ids from the contract. Legacy fixtures may still
+  // pass these via overrides; the contract's normalizer silently drops
+  // them. The seed itself no longer carries the fields by default so the
+  // serialized state.json matches the post-D.3 shape.
   const state = {
     target: domain,
     target_url: `https://${domain}`,
@@ -988,14 +993,11 @@ function seedSessionState(domain, overrides = {}) {
     evaluation_wave: 0,
     pending_wave: null,
     total_findings: 0,
-    explored: [],
-    terminally_blocked: [],
     prereq_registry_snapshots: [],
     blocked_prereq_history: [],
     terminal_block_clear_history: [],
     dead_ends: [],
     waf_blocked_endpoints: [],
-    lead_surface_ids: [],
     scope_exclusions: [],
     hold_count: 0,
     auth_status: "pending",
@@ -1007,6 +1009,15 @@ function seedSessionState(domain, overrides = {}) {
     verification_entered_at: null,
     ...overrides,
   };
+  // Translate legacy overrides into frontier events so downstream
+  // projections see the seeded state. The legacy fields are stripped from
+  // the on-disk state.json after this translation.
+  const legacyClosures = Array.isArray(overrides.explored) ? overrides.explored : null;
+  const legacyBlockers = Array.isArray(overrides.terminally_blocked) ? overrides.terminally_blocked : null;
+  const legacyLeadSurfaces = Array.isArray(overrides.lead_surface_ids) ? overrides.lead_surface_ids : null;
+  delete state.explored;
+  delete state.terminally_blocked;
+  delete state.lead_surface_ids;
   writeFileAtomic(statePath(domain), `${JSON.stringify(state, null, 2)}\n`);
   // Cycle D.1: tests that seed legacy state.json must also produce a session
   // nucleus so bob_advance_session has the lifecycle authority it expects.
@@ -1042,6 +1053,56 @@ function seedSessionState(domain, overrides = {}) {
         lifecycle_state: lifecycleState,
       });
       writeJsonDocument(nucleusPath, nucleus);
+    }
+  } catch {}
+  // Translate legacy projection overrides into frontier events so
+  // downstream projections (currentClosures / currentBlockers /
+  // currentLeadSurfaceIds) see the seeded state after D.3 removed the
+  // state.json arrays.
+  try {
+    const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+    if (legacyClosures && legacyClosures.length > 0) {
+      for (const surfaceId of legacyClosures) {
+        if (typeof surfaceId !== "string" || !surfaceId) continue;
+        appendFrontierEvent({
+          target_domain: domain,
+          kind: "closure.recorded",
+          surface_id: surfaceId,
+          payload: { surface_fully_explored: true, reason: "seeded_legacy_explored" },
+          source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+        });
+      }
+    }
+    if (legacyBlockers && legacyBlockers.length > 0) {
+      for (const entry of legacyBlockers) {
+        if (!entry || typeof entry.surface_id !== "string") continue;
+        const firstBlocker = Array.isArray(entry.blockers) && entry.blockers.length > 0 ? entry.blockers[0] : null;
+        appendFrontierEvent({
+          target_domain: domain,
+          kind: "blocker.asserted",
+          surface_id: entry.surface_id,
+          payload: {
+            terminally_blocked: true,
+            wave: entry.blocked_at_wave || 1,
+            kind: firstBlocker ? firstBlocker.kind : "auth_missing",
+            identifier_hint: firstBlocker ? firstBlocker.identifier_hint || null : null,
+            reason: firstBlocker ? firstBlocker.reason || null : null,
+          },
+          source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+        });
+      }
+    }
+    if (legacyLeadSurfaces && legacyLeadSurfaces.length > 0) {
+      for (const surfaceId of legacyLeadSurfaces) {
+        if (typeof surfaceId !== "string" || !surfaceId) continue;
+        appendFrontierEvent({
+          target_domain: domain,
+          kind: "surface.observed",
+          surface_id: surfaceId,
+          payload: { labels: ["promoted_surface_lead", "seeded_legacy_lead_surface"] },
+          source: { artifact: "wave-handoff", tool: "bob_apply_wave_merge" },
+        });
+      }
     }
   } catch {}
   return state;
@@ -3117,7 +3178,7 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
     assert.equal(analytics.event_log.exists, true);
     assert.equal(analytics.event_log.backfilled, false);
     assert.equal(analytics.sessions[0].health.status, "healthy");
-    assert.equal(analytics.sessions[0].phase, "REPORT");
+    assert.equal(analytics.sessions[0].lifecycle_state, "REPORT");
     assert.equal(analytics.sessions[0].findings.total, 1);
     assert.equal(analytics.sessions[0].chain_attempts_count, 1);
     assert.equal(analytics.sessions[0].chain_attempts_by_outcome.not_applicable, 1);
@@ -3125,7 +3186,7 @@ test("pipeline analytics records metadata-only events for a complete synthetic r
     assert.equal(analytics.sessions[0].technique_attempts.by_status.attempted, 1);
     assert.equal(analytics.sessions[0].technique_attempts.surface_count, 1);
     assert.equal(analytics.sessions[0].technique_attempts.pack_count, 1);
-    assert.equal(typeof analytics.sessions[0].chain_phase_duration_ms, "number");
+    assert.equal(typeof analytics.sessions[0].claim_freeze_duration_ms, "number");
     assert.equal(analytics.sessions[0].final_verification_count, 1);
     assert.equal(readSessionArtifactSummary(domain).verification.adjudication.adjudication_plan_hash, adjudicationEvent.adjudication_plan_hash);
     assert.equal(analytics.sessions[0].evidence.valid, true);
@@ -3514,26 +3575,26 @@ test("pipeline analytics reports chain attempts, chain duration, and no-attempt 
         version: 1,
         ts: "2026-04-24T00:00:00.000Z",
         target_domain: domain,
-        type: "phase_transitioned",
-        from_phase: "EVALUATE",
-        to_phase: "CHAIN",
-        phase: "CHAIN",
+        type: "lifecycle_advanced",
+        from_state: "OPEN_FRONTIER",
+        to_state: "CLAIM_FREEZE",
+        lifecycle_state: "CLAIM_FREEZE",
       },
       {
         version: 1,
         ts: "2026-04-24T00:01:00.000Z",
         target_domain: domain,
-        type: "phase_transitioned",
-        from_phase: "CHAIN",
-        to_phase: "VERIFY",
-        phase: "VERIFY",
+        type: "lifecycle_advanced",
+        from_state: "CLAIM_FREEZE",
+        to_state: "VERIFY",
+        lifecycle_state: "VERIFY",
       },
     ].map((event) => JSON.stringify(event)).join("\n") + "\n");
 
     const analytics = JSON.parse(readPipelineAnalytics({ target_domain: domain, include_events: true }));
     assert.equal(analytics.sessions[0].chain_attempts_count, 1);
     assert.equal(analytics.sessions[0].chain_attempts_by_outcome.inconclusive, 1);
-    assert.equal(analytics.sessions[0].chain_phase_duration_ms, 60_000);
+    assert.equal(analytics.sessions[0].claim_freeze_duration_ms, 60_000);
     assert.equal(analytics.sessions[0].health.status, "blocked");
     assert.ok(analytics.sessions[0].health.reasons.includes("chain_phase_no_attempts"));
     assert.ok(analytics.bottlenecks.some((bottleneck) => bottleneck.code === "chain_phase_no_attempts"));
@@ -3886,6 +3947,9 @@ test("bob_init_session creates the initial state and bob_read_session_state retu
   withTempHome(() => {
     const domain = "example.com";
     const targetUrl = "https://example.com";
+    // Cycle D.3 removed state.explored / state.terminally_blocked /
+    // state.lead_surface_ids; the lifecycle_state field is the canonical
+    // projection of nucleus.lifecycle_state into state.json (D.1 + D.3).
     const expectedState = {
       target: domain,
       target_url: targetUrl,
@@ -3894,17 +3958,15 @@ test("bob_init_session creates the initial state and bob_read_session_state retu
       block_internal_hosts: false,
       block_internal_hosts_source: "mode_default",
       phase: "SURFACE_DISCOVERY",
+      lifecycle_state: "SETUP",
       evaluation_wave: 0,
       pending_wave: null,
       total_findings: 0,
-      explored: [],
-      terminally_blocked: [],
       prereq_registry_snapshots: [],
       blocked_prereq_history: [],
       terminal_block_clear_history: [],
       dead_ends: [],
       waf_blocked_endpoints: [],
-      lead_surface_ids: [],
       scope_exclusions: [],
       hold_count: 0,
       auth_status: "pending",
@@ -4136,17 +4198,15 @@ test("legacy state normalization is applied while unknown fields remain on disk 
         block_internal_hosts: false,
         block_internal_hosts_source: "legacy_default",
         phase: "SURFACE_DISCOVERY",
+        lifecycle_state: "SETUP",
         evaluation_wave: 0,
         pending_wave: null,
         total_findings: 0,
-        explored: [],
-        terminally_blocked: [],
         prereq_registry_snapshots: [],
         blocked_prereq_history: [],
         terminal_block_clear_history: [],
         dead_ends: [],
         waf_blocked_endpoints: [],
-        lead_surface_ids: [],
         scope_exclusions: [],
         hold_count: 0,
         auth_status: "pending",
@@ -4561,6 +4621,7 @@ test("bob_start_wave validates inputs, writes assignments, and updates pending_w
       block_internal_hosts: false,
       block_internal_hosts_source: "legacy_default",
       phase: "EVALUATE",
+      lifecycle_state: "OPEN_FRONTIER",
       evaluation_wave: 1,
       pending_wave: 2,
       total_findings: 0,
@@ -4982,68 +5043,71 @@ function buildTerminallyBlockedEntry(surfaceId, kind, identifierHint, options = 
   };
 }
 
-test("compactSessionState exposes terminally_blocked_count and round-trips state.terminally_blocked", () => {
+test("compactSessionState exposes terminally_blocked_count derived from frontier blocker projection", () => {
   withTempHome(() => {
     const domain = "example.com";
     seedSessionState(domain, {
       phase: "EVALUATE",
       evaluation_wave: 1,
-      terminally_blocked: [
-        buildTerminallyBlockedEntry("surface-a", "auth_missing", "attacker", { reason: "no attacker profile registered" }),
-        buildTerminallyBlockedEntry("surface-b", "egress_unreachable", null, { reason: "default egress unreachable" }),
-      ],
+    });
+    // Cycle D.3 moved blocker authority to frontier-events.jsonl; the
+    // terminally_blocked_count surfaced by compactSessionState now folds
+    // blocker.asserted events with the surface-state markers.
+    const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "blocker.asserted",
+      surface_id: "surface-a",
+      payload: { terminally_blocked: true, kind: "auth_missing", identifier_hint: "attacker", reason: "no attacker profile registered" },
+      source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
+    });
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "blocker.asserted",
+      surface_id: "surface-b",
+      payload: { terminally_blocked: true, kind: "egress_unreachable", reason: "default egress unreachable" },
+      source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
     });
     const summary = JSON.parse(readStateSummary({ target_domain: domain }));
     assert.equal(summary.state.terminally_blocked_count, 2);
-    const fullState = JSON.parse(fs.readFileSync(statePath(domain), "utf8"));
-    assert.equal(fullState.terminally_blocked.length, 2);
-    assert.equal(fullState.terminally_blocked[0].surface_id, "surface-a");
-    assert.equal(fullState.terminally_blocked[0].blockers[0].kind, "auth_missing");
-    assert.equal(fullState.terminally_blocked[0].blockers[0].identifier_hint, "attacker");
-    assert.equal(fullState.terminally_blocked[1].blockers[0].identifier_hint, undefined);
   });
 });
 
-test("compactSessionState reports terminally_blocked_count: 0 when state pre-dates the field (migration safety)", () => {
+test("compactSessionState reports terminally_blocked_count: 0 when the frontier projection is empty", () => {
   withTempHome(() => {
     const domain = "example.com";
     seedSessionState(domain, { phase: "EVALUATE", evaluation_wave: 1 });
-    const stateFilePath = statePath(domain);
-    const stateDoc = JSON.parse(fs.readFileSync(stateFilePath, "utf8"));
-    delete stateDoc.terminally_blocked;
-    fs.writeFileSync(stateFilePath, JSON.stringify(stateDoc, null, 2) + "\n");
     const summary = JSON.parse(readStateSummary({ target_domain: domain }));
     assert.equal(summary.state.terminally_blocked_count, 0);
   });
 });
 
-test("normalizeSessionStateDocument rejects state with explored / terminally_blocked overlap", () => {
+test("normalizeSessionStateDocument silently drops legacy explored / terminally_blocked / lead_surface_ids", () => {
   withTempHome(() => {
     const domain = "example.com";
+    // Cycle D.3 removed these fields from the contract; legacy fixtures
+    // routing the arrays through seedSessionState get them translated
+    // into frontier events instead. The normalized state.json no longer
+    // exposes the deleted fields.
     seedSessionState(domain, {
       phase: "EVALUATE",
       evaluation_wave: 1,
       explored: ["surface-a"],
       terminally_blocked: [
-        buildTerminallyBlockedEntry("surface-a", "auth_missing", "attacker"),
+        buildTerminallyBlockedEntry("surface-b", "auth_missing", "attacker"),
       ],
+      lead_surface_ids: ["surface-c"],
     });
-    assert.throws(() => readStateSummary({ target_domain: domain }), /must be disjoint/);
-  });
-});
-
-test("normalizeSessionStateDocument rejects duplicate surface_id in terminally_blocked", () => {
-  withTempHome(() => {
-    const domain = "example.com";
-    seedSessionState(domain, {
-      phase: "EVALUATE",
-      evaluation_wave: 1,
-      terminally_blocked: [
-        buildTerminallyBlockedEntry("surface-a", "auth_missing", "attacker"),
-        buildTerminallyBlockedEntry("surface-a", "egress_unreachable", null),
-      ],
-    });
-    assert.throws(() => readStateSummary({ target_domain: domain }), /duplicate surface_id surface-a/);
+    // Provide a materialized surface so currentLeadSurfaceIds' attack-surface
+    // membership filter accepts the seeded lead.
+    seedAttackSurface(domain, ["surface-c"]);
+    const response = JSON.parse(readStateSummary({ target_domain: domain }));
+    assert.ok(!Object.prototype.hasOwnProperty.call(response.state, "explored"));
+    assert.ok(!Object.prototype.hasOwnProperty.call(response.state, "terminally_blocked"));
+    // lead_surface_ids in the compact summary derives from the frontier
+    // projection; the seeded lead is visible once the surface is in the
+    // materialized projection.
+    assert.deepEqual(response.state.lead_surface_ids, ["surface-c"]);
   });
 });
 
@@ -5161,9 +5225,9 @@ test("bob_apply_wave_merge adds surface_status: complete surfaces to state.explo
     }));
     assert.equal(result.status, "merged");
     assert.equal(result.state.explored_count, 1);
-    // Verify the surface really landed in state.explored (not just counted).
-    const fullState = JSON.parse(readSessionState({ target_domain: domain }));
-    assert.deepEqual(fullState.state.explored, ["surface-a"]);
+    // Verify the surface landed in the frontier closure projection (D.3).
+    const { currentClosures } = require("../mcp/lib/frontier-projections.js");
+    assert.deepEqual(currentClosures(domain).map((c) => c.surface_id), ["surface-a"]);
   });
 });
 
@@ -5277,13 +5341,21 @@ test("bob_apply_wave_merge merges state, findings, requeues, and scope exclusion
     assert.equal(result.state.pending_wave, null);
     assert.equal(result.state.evaluation_wave, 1);
     assert.equal(result.state.total_findings, 2);
-    // verify full state on disk has the arrays
+    // verify state.json (D.3 removed state.explored / state.terminally_blocked
+    // / state.lead_surface_ids; arrays for dead_ends, waf, scope still live).
     const fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
-    assert.deepEqual(fullState.explored, ["surface-a"]);
     assert.deepEqual(fullState.dead_ends, ["/existing", "/new-dead-end"]);
     assert.deepEqual(fullState.waf_blocked_endpoints, ["/old-waf", "/new-waf"]);
     assert.deepEqual(fullState.scope_exclusions, ["oos.example.net", "api.other.example"]);
     assert.deepEqual(readScopeExclusions(domain), ["oos.example.net", "api.other.example"]);
+    // explored / terminally_blocked / lead_surface_ids are absent from state.json.
+    assert.ok(!Object.prototype.hasOwnProperty.call(fullState, "explored"));
+    assert.ok(!Object.prototype.hasOwnProperty.call(fullState, "terminally_blocked"));
+    // The frontier projection now sources surface state; verify the closure
+    // event landed in the ledger.
+    const { currentClosures } = require("../mcp/lib/frontier-projections.js");
+    const closures = currentClosures(domain);
+    assert.deepEqual(closures.map((c) => c.surface_id), ["surface-a"]);
   });
 });
 
@@ -5695,12 +5767,12 @@ test("bob_apply_wave_merge requeues unfinished coverage without treating tested 
     // the orchestrator may re-queue them for a fresh look.
     assert.deepEqual(result.merge.requeue_surface_ids, ["surface-a", "surface-d", "surface-e"]);
 
-    // state.explored is "surfaces with a complete handoff this run." All
-    // five evaluators declared complete, so all five are explored. Re-queueing
-    // a surface in a later wave is independent — the orchestrator can
-    // assign an explored surface to a fresh evaluator without contradiction.
-    const fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
-    assert.deepEqual(fullState.explored, ["surface-a", "surface-b", "surface-c", "surface-d", "surface-e"]);
+    // Cycle D.3 moved surface-closure authority to the frontier ledger.
+    // All five evaluators declared complete, so the frontier-projections
+    // currentClosures returns all five.
+    const { currentClosures } = require("../mcp/lib/frontier-projections.js");
+    const closureIds = currentClosures(domain).map((closure) => closure.surface_id).sort();
+    assert.deepEqual(closureIds, ["surface-a", "surface-b", "surface-c", "surface-d", "surface-e"]);
   });
 });
 
@@ -5839,7 +5911,8 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
     });
     JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 1, force_merge: false }));
     let fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
-    assert.equal(fullState.terminally_blocked.length, 0);
+    const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
+    assert.equal(currentBlockers(domain).length, 0);
     assert.equal(fullState.blocked_prereq_history.length, 1);
 
     setStatePendingWave(domain, 2);
@@ -5864,9 +5937,9 @@ test("bob_apply_wave_merge promotes recurring blocked_prereqs to state.terminall
     assert.equal(result.merge.terminally_blocked_promoted[0].blockers[0].identifier_hint, "attacker");
 
     fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
-    assert.equal(fullState.terminally_blocked.length, 1);
-    assert.equal(fullState.terminally_blocked[0].surface_id, "surface-auth");
-    assert.equal(fullState.terminally_blocked[0].blocked_at_wave, 2);
+    const blockers = currentBlockers(domain);
+    assert.equal(blockers.length, 1);
+    assert.equal(blockers[0].surface_id, "surface-auth");
     assert.equal(fullState.blocked_prereq_history.length, 2);
     assert.ok(!result.merge.requeue_surface_ids.includes("surface-auth"));
   });
@@ -5913,8 +5986,8 @@ test("bob_apply_wave_merge does NOT promote auth_missing when the named handle w
     });
     const result = JSON.parse(applyWaveMerge({ target_domain: domain, wave_number: 2, force_merge: false }));
     assert.equal(result.merge.terminally_blocked_promoted.length, 0);
-    const fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
-    assert.equal(fullState.terminally_blocked.length, 0);
+    const { currentBlockers } = require("../mcp/lib/frontier-projections.js");
+    assert.equal(currentBlockers(domain).length, 0);
   });
 });
 
@@ -6015,14 +6088,22 @@ test("bob_clear_terminal_block removes a surface from terminally_blocked and rec
     seedSessionState(domain, {
       phase: "EVALUATE",
       evaluation_wave: 2,
-      terminally_blocked: [
-        buildTerminallyBlockedEntry("surface-auth", "auth_missing", "attacker", { reason: "no profile registered", blocked_at_wave: 2 }),
-      ],
       blocked_prereq_history: [
         { wave: 1, surface_id: "surface-auth", kind: "auth_missing", identifier_hint: "attacker", reason: "no profile" },
         { wave: 2, surface_id: "surface-auth", kind: "auth_missing", identifier_hint: "attacker", reason: "still no profile" },
         { wave: 1, surface_id: "surface-other", kind: "egress_unreachable", identifier_hint: "us-west", reason: "default egress unreachable" },
       ],
+    });
+    // Cycle D.3 moved blocker authority to frontier-events.jsonl; the
+    // clear path reads the ledger, not state.terminally_blocked. Seed a
+    // blocker.asserted event to drive the projection.
+    const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "blocker.asserted",
+      surface_id: "surface-auth",
+      payload: { terminally_blocked: true, wave: 2, kind: "auth_missing", identifier_hint: "attacker", reason: "no profile registered" },
+      source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
     });
 
     const result = JSON.parse(clearTerminalBlock({
@@ -6038,7 +6119,6 @@ test("bob_clear_terminal_block removes a surface from terminally_blocked and rec
     assert.equal(result.state.terminally_blocked_count, 0);
 
     const fullState = JSON.parse(readSessionState({ target_domain: domain })).state;
-    assert.equal(fullState.terminally_blocked.length, 0);
     // History is RETAINED for debugging; loop detector uses clear epoch.
     assert.equal(fullState.blocked_prereq_history.length, 3);
     // Clear is recorded durably in state, not just in pipeline event.
@@ -6057,9 +6137,14 @@ test("bob_clear_terminal_block rejects clearing while a wave is pending", () => 
       phase: "EVALUATE",
       evaluation_wave: 1,
       pending_wave: 2,
-      terminally_blocked: [
-        buildTerminallyBlockedEntry("surface-a", "auth_missing", "attacker", { reason: "no profile" }),
-      ],
+    });
+    const { appendFrontierEvent } = require("../mcp/lib/frontier-events.js");
+    appendFrontierEvent({
+      target_domain: domain,
+      kind: "blocker.asserted",
+      surface_id: "surface-a",
+      payload: { terminally_blocked: true, kind: "auth_missing", identifier_hint: "attacker", reason: "no profile" },
+      source: { artifact: "wave-merge", tool: "bob_apply_wave_merge" },
     });
     assert.throws(() => clearTerminalBlock({
       target_domain: domain,
@@ -6075,13 +6160,14 @@ test("bob_clear_terminal_block rejects clearing a surface that was never termina
     seedSessionState(domain, {
       phase: "EVALUATE",
       evaluation_wave: 1,
-      terminally_blocked: [],
     });
+    // No blocker.asserted event was emitted; the projection has no entry
+    // for surface-z, so the clear rejects.
     assert.throws(() => clearTerminalBlock({
       target_domain: domain,
       surface_id: "surface-z",
       reason: "operator wants to clear a non-blocked surface",
-    }), /not in state\.terminally_blocked/);
+    }), /not terminally blocked in the frontier ledger/);
   });
 });
 

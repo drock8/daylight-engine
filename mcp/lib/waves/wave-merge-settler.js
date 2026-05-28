@@ -13,7 +13,6 @@ const {
   writeSessionStateDocument,
 } = require("../session-state-store.js");
 const { readCoverageRecordsFromJsonl } = require("../coverage.js");
-const { readAttackSurfaceStrict } = require("../attack-surface.js");
 const {
   findingPayloadsFromClaims,
 } = require("../tools/record-candidate-claim.js");
@@ -33,6 +32,7 @@ const {
 const {
   appendBlockerPromotionFrontierEvents,
   appendClosureFrontierEvents,
+  appendHandoffLeadSurfaceFrontierEvents,
   buildCurrentWaveBlockerMaps,
   computeRequeueSurfaceIds,
   detectTerminalPromotions,
@@ -50,14 +50,13 @@ function emitWaveMergedPipelineEvents({
   merge,
   filteredRequeueSurfaceIds,
   promotions,
-  settledTerminallyBlocked,
   findings,
   mergeGovernanceContext,
 }) {
   for (const promotion of promotions) {
     for (const blocker of promotion.blockers) {
       safeAppendPipelineEventDirect(domain, "surface_terminally_blocked", {
-        phase: state.phase,
+        lifecycle_state: state.lifecycle_state,
         wave_number: waveNumber,
         status: "promoted",
         source: "bob_apply_wave_merge",
@@ -67,8 +66,15 @@ function emitWaveMergedPipelineEvents({
       }, mergeGovernanceContext);
     }
   }
+  const { currentBlockers } = require("../frontier-projections.js");
+  let terminallyBlockedTotal = 0;
+  try {
+    terminallyBlockedTotal = currentBlockers(domain).length;
+  } catch {
+    terminallyBlockedTotal = promotions.length;
+  }
   safeAppendPipelineEventDirect(domain, "wave_merged", {
-    phase: state.phase,
+    lifecycle_state: state.lifecycle_state,
     wave_number: waveNumber,
     force_merge: forceMerge,
     force_merge_reason: forceMergeReason,
@@ -86,7 +92,7 @@ function emitWaveMergedPipelineEvents({
       missing_surfaces: merge.missing_surface_ids.length,
       requeue_surfaces: filteredRequeueSurfaceIds.length,
       terminally_blocked_promoted: promotions.length,
-      terminally_blocked_total: settledTerminallyBlocked.length,
+      terminally_blocked_total: terminallyBlockedTotal,
       findings: findings.total,
     },
   }, mergeGovernanceContext);
@@ -94,7 +100,7 @@ function emitWaveMergedPipelineEvents({
 
 function emitMergePendingPipelineEvent(domain, state, waveNumber, readiness) {
   safeAppendPipelineEventDirect(domain, "wave_merge_pending", {
-    phase: state.phase,
+    lifecycle_state: state.lifecycle_state,
     wave_number: waveNumber,
     status: "pending",
     source: "bob_apply_wave_merge",
@@ -137,41 +143,23 @@ function computeMergeResolution({ domain, state, merge, artifacts, waveNumber })
     clearHistoryBySurface,
     currentWave: waveNumber,
   });
-  const promotedSurfaceIds = new Set(promotions.map((p) => p.surface_id));
-  const carriedTerminallyBlocked = (Array.isArray(state.terminally_blocked) ? state.terminally_blocked : [])
-    .filter((entry) => !promotedSurfaceIds.has(entry.surface_id));
-  const nextTerminallyBlocked = [...carriedTerminallyBlocked, ...promotions];
 
-  const explored = [...state.explored];
   const deadEnds = [...state.dead_ends];
   const wafBlockedEndpoints = [...state.waf_blocked_endpoints];
-  const leadSurfaceIds = [...state.lead_surface_ids];
-  const attackSurface = readAttackSurfaceStrict(domain);
 
-  // Trust the structured handoff's `surface_status: complete`. Silent downgrades
-  // would strand the surface in EVALUATE forever.
-  pushUnique(explored, new Set(explored), merge.completed_surface_ids);
   pushUnique(deadEnds, new Set(deadEnds), merge.dead_ends);
   pushUnique(wafBlockedEndpoints, new Set(wafBlockedEndpoints), merge.waf_blocked_endpoints);
-  pushUnique(leadSurfaceIds, new Set(leadSurfaceIds), merge.lead_surface_ids);
 
-  // Disjointness invariant: a surface marked complete in this wave wins over
-  // any prior terminal promotion. Strip from terminally_blocked.
-  const exploredSet = new Set(explored);
-  const settledTerminallyBlocked = nextTerminallyBlocked.filter(
-    (entry) => !exploredSet.has(entry.surface_id),
-  );
-  const settledTerminallySet = new Set(settledTerminallyBlocked.map((e) => e.surface_id));
-
-  const filteredLeadSurfaceIds = leadSurfaceIds.filter(
-    (surfaceId) =>
-      attackSurface.surface_id_set.has(surfaceId) &&
-      !explored.includes(surfaceId) &&
-      !settledTerminallySet.has(surfaceId),
-  );
-  // Terminally-blocked surfaces are not requeue candidates.
+  // explored / terminally_blocked / lead_surface_ids state-projection arrays
+  // were deleted in D.3. Surface-state projection now folds frontier events
+  // through frontier-projections; requeue filtering reads those projections
+  // directly so terminally-blocked surfaces stay off the requeue list.
+  const { currentBlockers } = require("../frontier-projections.js");
+  const blockedSurfaceIds = new Set(currentBlockers(domain).map((entry) => entry.surface_id));
+  for (const promotion of promotions) blockedSurfaceIds.add(promotion.surface_id);
+  for (const surfaceId of merge.completed_surface_ids) blockedSurfaceIds.delete(surfaceId);
   const filteredRequeueSurfaceIds = requeueSurfaceIds.filter(
-    (surfaceId) => !settledTerminallySet.has(surfaceId),
+    (surfaceId) => !blockedSurfaceIds.has(surfaceId),
   );
 
   return {
@@ -180,11 +168,8 @@ function computeMergeResolution({ domain, state, merge, artifacts, waveNumber })
     scopeExclusions,
     nextHistory,
     promotions,
-    settledTerminallyBlocked,
-    explored,
     deadEnds,
     wafBlockedEndpoints,
-    filteredLeadSurfaceIds,
     filteredRequeueSurfaceIds,
   };
 }
@@ -261,22 +246,16 @@ function applyWaveMerge(args) {
       scopeExclusions,
       nextHistory,
       promotions,
-      settledTerminallyBlocked,
-      explored,
       deadEnds,
       wafBlockedEndpoints,
-      filteredLeadSurfaceIds,
       filteredRequeueSurfaceIds,
     } = resolution;
 
     const nextState = {
       ...state,
-      explored,
-      terminally_blocked: settledTerminallyBlocked,
       blocked_prereq_history: nextHistory,
       dead_ends: deadEnds,
       waf_blocked_endpoints: wafBlockedEndpoints,
-      lead_surface_ids: filteredLeadSurfaceIds,
       scope_exclusions: scopeExclusions,
       pending_wave: null,
       evaluation_wave: waveNumber,
@@ -286,11 +265,15 @@ function applyWaveMerge(args) {
     writeSessionStateDocument(domain, raw, nextState);
     const mergeGovernanceContext = buildGovernanceContext(nextState);
 
-    // Dual-write per Pact P2: state.terminally_blocked + state.explored stay
-    // authoritative for the legacy contract; closure/blocker frontier events
-    // expose the same transitions to the frontier ledger projection.
+    // Surface-state transitions are emitted through the frontier ledger:
+    // blocker.asserted for terminal promotions, closure.recorded for
+    // completed surfaces, surface.observed (carrying the promoted-lead
+    // label) for handoff-reported new lead surfaces. The materializer folds
+    // these into surface-index.json and frontier-projections derive the
+    // current explored / blocked / lead-surface sets directly from events.
     appendBlockerPromotionFrontierEvents(domain, promotions, waveNumber);
     appendClosureFrontierEvents(domain, merge.completed_surface_ids, waveNumber);
+    appendHandoffLeadSurfaceFrontierEvents(domain, merge.lead_surface_ids, waveNumber);
     try { scheduleMaterialization(domain); } catch {}
 
     emitWaveMergedPipelineEvents({
@@ -304,7 +287,6 @@ function applyWaveMerge(args) {
       merge,
       filteredRequeueSurfaceIds,
       promotions,
-      settledTerminallyBlocked,
       findings,
       mergeGovernanceContext,
     });

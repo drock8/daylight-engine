@@ -66,12 +66,14 @@ function withTempHome(fn) {
 test("session state contract normalizes and reads the shared state shape", () => {
   withTempHome(() => {
     const domain = "state-contract.example";
+    // Cycle D.3 removed state.explored / state.terminally_blocked /
+    // state.lead_surface_ids from the session-state contract; the legacy
+    // disjointness invariant is gone because the frontier projection is
+    // self-disjoint (latest surface-state event wins).
     const raw = {
       target: domain,
       target_url: `https://${domain}`,
       phase: "EVALUATE",
-      explored: ["surface-a"],
-      terminally_blocked: [],
     };
     fs.mkdirSync(sessionDir(domain), { recursive: true });
     writeFileAtomic(statePath(domain), `${JSON.stringify(raw, null, 2)}\n`);
@@ -86,14 +88,10 @@ test("session state contract normalizes and reads the shared state shape", () =>
     assert.equal(read.state.block_internal_hosts_source, "legacy_default");
     assert.equal(read.state.egress_profile, "default");
     assert.equal(read.state.verification_schema_version, null);
-
-    assert.throws(
-      () => normalizeSessionStateDocument({
-        ...raw,
-        terminally_blocked: [{ surface_id: "surface-a", blocked_at_wave: 1, blockers: [{ kind: "auth_missing" }] }],
-      }, domain),
-      /state\.explored and state\.terminally_blocked must be disjoint/,
-    );
+    // The deleted projection fields no longer appear on the normalized state.
+    assert.ok(!Object.prototype.hasOwnProperty.call(read.state, "explored"));
+    assert.ok(!Object.prototype.hasOwnProperty.call(read.state, "terminally_blocked"));
+    assert.ok(!Object.prototype.hasOwnProperty.call(read.state, "lead_surface_ids"));
   });
 });
 
