@@ -286,6 +286,20 @@ function packEstimatedTokens(entry) {
   };
 }
 
+function normalizeLensAffinity(entry, packId) {
+  if (entry.lens_affinity == null) return null;
+  if (!Array.isArray(entry.lens_affinity)) {
+    throw new Error(`technique pack ${packId}: lens_affinity must be a string[] when set`);
+  }
+  const cleaned = entry.lens_affinity
+    .filter((item) => typeof item === "string" && item.trim())
+    .map((item) => item.trim());
+  if (cleaned.length !== entry.lens_affinity.length) {
+    throw new Error(`technique pack ${packId}: lens_affinity entries must be non-empty strings`);
+  }
+  return cleaned.length > 0 ? Object.freeze(cleaned) : null;
+}
+
 function normalizeRegistryEntry(entry, registryVersion) {
   if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("technique pack entry must be an object");
@@ -298,11 +312,17 @@ function normalizeRegistryEntry(entry, registryVersion) {
       throw new Error(`Unknown capability_pack in technique pack ${id}: ${capabilityPack}`);
     }
   }
+  // Plane T cycle T.4 — optional `lens_affinity` field. When set, the brief
+  // renderer foregrounds the pack for matching task lenses (e.g.
+  // `browser_behavior_probe`) and demotes packs without affinity to "Other
+  // applicable techniques". When absent, the pack stays in the default flow.
+  const lensAffinity = normalizeLensAffinity(entry, id);
   return {
     id,
     version: Number.isInteger(entry.version) ? entry.version : registryVersion,
     title,
     capability_packs: capabilityPacks,
+    ...(lensAffinity ? { lens_affinity: lensAffinity } : {}),
     match: entry.match && typeof entry.match === "object" && !Array.isArray(entry.match) ? entry.match : {},
     techniques: stringArray(entry.techniques)
       .map((item) => item.trim())
@@ -314,6 +334,7 @@ function normalizeRegistryEntry(entry, registryVersion) {
     raw_entry: {
       id,
       title,
+      ...(lensAffinity ? { lens_affinity: lensAffinity } : {}),
       match: entry.match && typeof entry.match === "object" && !Array.isArray(entry.match) ? entry.match : {},
       techniques: stringArray(entry.techniques)
         .map((item) => item.trim())
@@ -376,6 +397,9 @@ function techniquePackSummary(pack, { matches = [], score = 0, attempt = null } 
     version: pack.version,
     title: pack.title,
     capability_packs: pack.capability_packs.slice(),
+    // Plane T cycle T.4 — expose `lens_affinity` so the brief renderer can
+    // foreground/demote summaries without re-reading the registry.
+    ...(Array.isArray(pack.lens_affinity) ? { lens_affinity: pack.lens_affinity.slice() } : {}),
     matched: matches.slice(0, 8),
     score,
     summary: {

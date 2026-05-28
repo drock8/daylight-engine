@@ -141,21 +141,61 @@ function briefSliceEntry(key, budget_chars, read) {
   });
 }
 
+// Plane T cycle T.4 — when the assignment's lens is `browser_behavior_probe`,
+// the brief leads with a browser-shaped workflow stanza naming the Patchright
+// session driver tools. The HTTP-shaped technique-pack narrative and CLI tools
+// stay AVAILABLE (under "Other applicable techniques" / shorter snippets) but
+// the brief de-emphasizes them — per T-P1 "brief mentions are the rendering
+// target". Sentinel value is the literal lens name; helpers below branch on it.
+const BROWSER_BEHAVIOR_PROBE_LENS = "browser_behavior_probe";
+
+// Static intro stanza for the browser_behavior_probe lens. Pinned content so
+// the renderer is deterministic across calls. Names the Patchright session
+// driver tools the evaluator must use, plus the browser-shaped surface
+// vocabulary (DOM source/sink, postMessage, WebAuthn ceremonies, OAuth
+// callbacks, ServiceWorker, IndexedDB, multi-step in-session flows).
+const BROWSER_BEHAVIOR_PROBE_WORKFLOW_TEXT = [
+  "## Browser-shaped surfaces",
+  "This wave is assigned `task_lens: browser_behavior_probe`. Lead with the",
+  "Patchright session workflow rather than curl-shaped HTTP probes. The browser",
+  "session driver is the canonical substrate for DOM source/sink analysis,",
+  "postMessage handlers, WebAuthn ceremonies, OAuth callbacks with client-side",
+  "token storage, ServiceWorker / IndexedDB inspection, and multi-step",
+  "in-session flows.",
+  "",
+  "Patchright session workflow:",
+  "1. `bob_browser_session_start({ target_url })` — opens a stealth Chrome",
+  "   session, returns `session_id`. Sessions are scope-checked.",
+  "2. `bob_browser_navigate({ session_id, url })` — drive in-scope navigation.",
+  "3. `bob_browser_snapshot({ session_id })` — capture the accessibility tree.",
+  "4. Exercise the surface with `bob_browser_click`, `bob_browser_type`,",
+  "   `bob_browser_fill_form`, `bob_browser_press_key`, `bob_browser_evaluate`",
+  "   (scope-guarded — no off-target fetch / XMLHttpRequest).",
+  "5. Diff observations via `bob_browser_network_requests`,",
+  "   `bob_browser_console_messages`, repeated snapshots.",
+  "6. `bob_browser_session_close({ session_id })` when finished — sessions are",
+  "   session-scoped and idle-timeout at 5 min.",
+  "",
+  "The curl-shaped HTTP playbook (`bob_http_scan`, ffuf-style content discovery,",
+  "param fuzzing) remains available for follow-up confirmation but is",
+  "de-emphasized in this lens to reduce context competition. See",
+  "`technique_packs.other_applicable` and `cli_tools` for shorter snippets.",
+].join("\n");
+
 const WEB_BRIEF_SLICE_REGISTRY = Object.freeze([
+  // Plane T cycle T.4 — `browser_workflow` is the first slice under the
+  // `browser_behavior_probe` lens. Other lenses see "" and the slice key is
+  // dropped by the registry assembly pass (no empty header inflation).
+  briefSliceEntry("browser_workflow", 2048, (context) => (
+    context.taskLens === BROWSER_BEHAVIOR_PROBE_LENS
+      ? BROWSER_BEHAVIOR_PROBE_WORKFLOW_TEXT
+      : ""
+  )),
   briefSliceEntry("bypass_table", 4096, (context) => context.bypassTable),
   briefSliceEntry("techniques", 4096, (context) => context.knowledge.techniques),
   briefSliceEntry("payload_hints", 2048, (context) => context.knowledge.payload_hints),
   briefSliceEntry("knowledge_summary", 1024, (context) => context.knowledge.knowledge_summary),
-  briefSliceEntry("technique_packs", 8192, (context) => ({
-    selected: context.selectedTechniquePacks,
-    selection_limits: context.selectedTechniquePackLimits,
-    registry_warnings: context.selectedTechniquePackResult.registry_warnings,
-    selection_budget: {
-      candidate_pack_limit: context.candidatePackLimit,
-      full_pack_read_limit: context.routeMetadata.context_budget.full_pack_read_limit,
-      attempt_log_required: context.routeMetadata.context_budget.attempt_log_required,
-    },
-  })),
+  briefSliceEntry("technique_packs", 8192, (context) => buildTechniquePacksSlice(context)),
   // Plane T cycle T.3 — `cli_tools` lands immediately after `technique_packs`
   // so the operator reads the conditional toolkit alongside the narrative pack
   // selection. Slice returns "" when no packs apply; the registry pass deletes
@@ -175,6 +215,64 @@ const WEB_BRIEF_SLICE_REGISTRY = Object.freeze([
   briefSliceEntry("surface_graph_slice", 8192, (context) => context.surfaceGraphSlice),
   briefSliceEntry("auth_profiles_hint", 512, () => "Call `bob_list_auth_profiles`; pass the chosen profile name as `auth_profile` to `bob_http_scan`."),
 ]);
+
+// Plane T cycle T.4 — partition the selected technique packs by lens affinity
+// when the active lens is `browser_behavior_probe`:
+//   - Packs declaring `lens_affinity: ["browser_behavior_probe"]` are
+//     FOREGROUNDED (full summary, listed under `selected`).
+//   - Packs declaring `lens_affinity: ["behavior_probe"]` (HTTP-only) or no
+//     affinity at all are demoted to `other_applicable` with a shorter snippet
+//     (id, title, score, matched only — guidance/payload_hints stripped).
+// Other lenses keep the existing flat `selected` layout — the partition only
+// activates under `browser_behavior_probe`. This is parameter wiring: no
+// browser-affined packs ship in T.4; the plumbing is what's load-bearing.
+function partitionTechniquePacksByLensAffinity(packs, lens) {
+  if (lens !== BROWSER_BEHAVIOR_PROBE_LENS) {
+    return { selected: packs.slice(), other_applicable: [] };
+  }
+  const foregrounded = [];
+  const demoted = [];
+  for (const pack of packs) {
+    const affinity = Array.isArray(pack.lens_affinity) ? pack.lens_affinity : null;
+    if (affinity && affinity.includes(BROWSER_BEHAVIOR_PROBE_LENS)) {
+      foregrounded.push(pack);
+    } else {
+      demoted.push({
+        id: pack.id,
+        title: pack.title,
+        matched: Array.isArray(pack.matched) ? pack.matched.slice(0, 4) : [],
+        score: pack.score,
+        ...(Array.isArray(pack.lens_affinity) ? { lens_affinity: pack.lens_affinity.slice() } : {}),
+      });
+    }
+  }
+  return { selected: foregrounded, other_applicable: demoted };
+}
+
+function buildTechniquePacksSlice(context) {
+  const partitioned = partitionTechniquePacksByLensAffinity(
+    context.selectedTechniquePacks,
+    context.taskLens,
+  );
+  const base = {
+    selected: partitioned.selected,
+    selection_limits: context.selectedTechniquePackLimits,
+    registry_warnings: context.selectedTechniquePackResult.registry_warnings,
+    selection_budget: {
+      candidate_pack_limit: context.candidatePackLimit,
+      full_pack_read_limit: context.routeMetadata.context_budget.full_pack_read_limit,
+      attempt_log_required: context.routeMetadata.context_budget.attempt_log_required,
+    },
+  };
+  // Only attach `other_applicable` under the browser lens. Under other lenses
+  // an empty array would leak the partition plumbing into briefs that never
+  // wanted it.
+  if (context.taskLens === BROWSER_BEHAVIOR_PROBE_LENS) {
+    base.other_applicable = partitioned.other_applicable;
+    base.lens_partitioned = true;
+  }
+  return base;
+}
 
 const SMART_CONTRACT_BRIEF_SLICE_REGISTRY = Object.freeze([
   briefSliceEntry("bob_spec_status", 4096, (context) => context.bobSpecStatus),
@@ -577,6 +675,10 @@ function buildWebBriefExtras(domain, surfaceObj, routeMetadata, assignment) {
     summary: pack.summary,
     summary_limits: pack.summary_limits,
     estimated_tokens: pack.estimated_tokens,
+    // Plane T cycle T.4 — `lens_affinity` flows through to the brief so the
+    // operator (and downstream renderers) can see which packs target the
+    // active lens. Absent on packs that did not declare an affinity.
+    ...(Array.isArray(pack.lens_affinity) ? { lens_affinity: pack.lens_affinity.slice() } : {}),
   }));
   const selectedTechniquePackLimits = {
     ...selectedTechniquePackResult.selection_limits,
@@ -602,6 +704,11 @@ function buildWebBriefExtras(domain, surfaceObj, routeMetadata, assignment) {
   const cliToolTaskLens = assignment && typeof assignment.task_lens === "string" ? assignment.task_lens : null;
   const cliToolObservations = buildCliToolObservationsSummary(surfaceObj);
   const webBriefContext = {
+    // Plane T cycle T.4 — `taskLens` drives lens-aware slice rendering
+    // (browser_workflow stanza, technique-pack partitioning). Distinct from
+    // `cliToolTaskLens` only because the latter is the explicit knob the cli
+    // tool predicates already consume; both currently mirror the same value.
+    taskLens: cliToolTaskLens,
     bypassTable: bypassTable || null,
     knowledge,
     selectedTechniquePacks,
@@ -627,6 +734,11 @@ function buildWebBriefExtras(domain, surfaceObj, routeMetadata, assignment) {
   // who would scan for invocations under the section.
   if (!extras.cli_tools) {
     delete extras.cli_tools;
+  }
+  // Same rule for the T.4 `browser_workflow` slice — empty under any lens
+  // other than `browser_behavior_probe`.
+  if (!extras.browser_workflow) {
+    delete extras.browser_workflow;
   }
   return extras;
 }
@@ -846,6 +958,11 @@ module.exports = {
   INSTALL_PRESENT_WEIGHT,
   TELEMETRY_PROMOTION_WEIGHT,
   BOB_SPEC_ABSENT_MESSAGE,
+  // Plane T cycle T.4 — surfaced so tests can pin the browser-workflow stanza
+  // and partition behavior without re-encoding the strings.
+  BROWSER_BEHAVIOR_PROBE_LENS,
+  BROWSER_BEHAVIOR_PROBE_WORKFLOW_TEXT,
+  partitionTechniquePacksByLensAffinity,
   ASSIGNMENT_BRIEF_SLICE_REGISTRY,
   readAssignmentBrief,
   renderAvailableCliToolsSection,

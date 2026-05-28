@@ -106,6 +106,10 @@ function assertBriefWithinBudget(label, args) {
 
 test("evaluator brief slice registry is explicit and budgeted per profile", () => {
   assert.deepEqual(ASSIGNMENT_BRIEF_SLICE_REGISTRY.web.map((slice) => slice.key), [
+    // Plane T cycle T.4 — `browser_workflow` leads the web brief so the
+    // Patchright workflow stanza appears first under `browser_behavior_probe`.
+    // Other lenses see "" and the slice is dropped by the registry assembly.
+    "browser_workflow",
     "bypass_table",
     "techniques",
     "payload_hints",
