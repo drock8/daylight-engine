@@ -69,6 +69,15 @@ const {
   resolveEvaluatorKnowledge,
   selectTechniquePacksForSurface,
 } = require("./technique-packs.js");
+const {
+  CLI_TOOL_PACKS,
+  fillInvocationPlaceholders,
+  observationList,
+  selectCliToolPacks,
+} = require("./cli-tool-packs.js");
+const {
+  checkCliToolInstallation,
+} = require("./cli-tool-presence.js");
 
 // Bypass table tech-to-file map used by evaluator brief generation.
 const BYPASS_TABLE_MAP = {
@@ -531,10 +540,117 @@ function buildSmartContractBriefExtras(domain, surfaceObj, assignment) {
   return buildBriefExtrasFromRegistry(SMART_CONTRACT_BRIEF_SLICE_REGISTRY, smartContractBriefContext);
 }
 
+// Plane T Cycle T.2 — surface-conditional CLI tool block (scaffold).
+//
+// Returns a markdown section listing the CLI tool packs that apply to a
+// surface + lens + observations triple, ranked by:
+//   score = install_present * 1 + applicable_when_match * 2
+// and capped at 5 (T-P2 "conditional, not totaled"). Packs whose tool is not
+// installed are still scored — they just contribute 0 to the install term.
+// Empty input projection returns "" (no header) so the brief stays clean
+// when nothing applies.
+//
+// TODO(T.3): wire this into the live brief renderer alongside
+// WEB_BRIEF_SLICE_REGISTRY. T.2 only ships the function + unit tests; T.3
+// owns the integration (placement after the technique-pack narrative,
+// telemetry_promotion term, lens-driven suppression hooks).
+const AVAILABLE_CLI_TOOLS_HEADER = "Available CLI tools for this surface";
+const AVAILABLE_CLI_TOOLS_MAX = 5;
+
+async function loadCliToolInstallStatus(targetDomain, packs) {
+  const status = {};
+  if (!targetDomain) return status;
+  for (const pack of packs) {
+    try {
+      const result = await checkCliToolInstallation(
+        pack.id,
+        pack.install_check,
+        targetDomain,
+      );
+      status[pack.id] = result;
+    } catch {
+      status[pack.id] = { installed: false, cached: false };
+    }
+  }
+  return status;
+}
+
+function buildCliToolRenderContext(surface_fingerprint, observations, target_domain) {
+  const ctx = {};
+  if (surface_fingerprint && typeof surface_fingerprint === "object") {
+    if (surface_fingerprint.host) ctx.host = surface_fingerprint.host;
+    if (surface_fingerprint.hosts && Array.isArray(surface_fingerprint.hosts) && surface_fingerprint.hosts.length) {
+      ctx.host = ctx.host || surface_fingerprint.hosts[0];
+    }
+    if (surface_fingerprint.session_dir) ctx.session_dir = surface_fingerprint.session_dir;
+    if (surface_fingerprint.target_domain) ctx.target_domain = surface_fingerprint.target_domain;
+  }
+  if (target_domain && !ctx.target_domain) ctx.target_domain = target_domain;
+  if (target_domain && !ctx.host) ctx.host = target_domain;
+  const list = observationList(observations);
+  for (const observation of list) {
+    if (!observation || typeof observation !== "object") continue;
+    const payload = observation.payload && typeof observation.payload === "object" ? observation.payload : observation;
+    if (!ctx.endpoint && payload.endpoint) ctx.endpoint = payload.endpoint;
+    if (!ctx.param && payload.param) ctx.param = payload.param;
+    if (!ctx.token && payload.snippet) ctx.token = payload.snippet;
+  }
+  if (observations && typeof observations === "object" && !Array.isArray(observations)) {
+    if (!ctx.endpoint && Array.isArray(observations.observed_endpoints) && observations.observed_endpoints.length) {
+      ctx.endpoint = observations.observed_endpoints[0];
+    }
+  }
+  return ctx;
+}
+
+async function renderAvailableCliToolsSection({
+  surface_fingerprint,
+  task_lens,
+  observations,
+  target_domain,
+} = {}) {
+  const applicable = selectCliToolPacks({
+    surface_fingerprint,
+    task_lens,
+    observations,
+    install_status: {},
+  });
+  const installStatus = await loadCliToolInstallStatus(target_domain, CLI_TOOL_PACKS);
+  const applicableIds = new Set(applicable.map((pack) => pack.id));
+  const scored = CLI_TOOL_PACKS
+    .map((pack) => {
+      const installEntry = installStatus[pack.id] || { installed: false };
+      const installScore = installEntry.installed ? 1 : 0;
+      const applicableScore = applicableIds.has(pack.id) ? 2 : 0;
+      const score = installScore + applicableScore;
+      return { pack, score, applicable: applicableIds.has(pack.id), installEntry };
+    })
+    .filter((entry) => entry.applicable)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.pack.id.localeCompare(b.pack.id);
+    })
+    .slice(0, AVAILABLE_CLI_TOOLS_MAX);
+  if (scored.length === 0) return "";
+  const renderContext = buildCliToolRenderContext(surface_fingerprint, observations, target_domain);
+  const lines = [`### ${AVAILABLE_CLI_TOOLS_HEADER}`];
+  for (const entry of scored) {
+    const version = entry.installEntry && entry.installEntry.version ? entry.installEntry.version : null;
+    const versionLabel = version ? ` (v${version})` : "";
+    const invocation = fillInvocationPlaceholders(entry.pack.invocation_template, renderContext);
+    lines.push(`- **${entry.pack.id}**${versionLabel} — ${entry.pack.narrative}`);
+    lines.push(`  \`${invocation}\``);
+  }
+  return lines.join("\n");
+}
+
 module.exports = {
+  AVAILABLE_CLI_TOOLS_HEADER,
+  AVAILABLE_CLI_TOOLS_MAX,
   BOB_SPEC_ABSENT_MESSAGE,
   ASSIGNMENT_BRIEF_SLICE_REGISTRY,
   readAssignmentBrief,
+  renderAvailableCliToolsSection,
   evaluatorKnowledgeCandidatePaths,
   resolveBypassTable,
   resolveEvaluatorKnowledge,
