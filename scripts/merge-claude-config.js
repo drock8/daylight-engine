@@ -39,6 +39,17 @@ const CANONICAL_SERVER_KEY = "hacker-bob";
 const LEGACY_PERMISSION_PREFIX = `mcp__${LEGACY_SERVER_KEY}__`;
 const CANONICAL_PERMISSION_PREFIX = `mcp__${CANONICAL_SERVER_KEY}__`;
 
+// Hook command-string rewrites applied to merged `.claude/settings.json` so
+// operator-customized hook arrays that reference filenames from prior rename
+// generations (`hunter-subagent-stop.js` -> `agent-run-stop.js`,
+// `bounty-statusline.js` -> `bob-statusline.js`) point at the canonical hook
+// files this install ships. Filename-only rewrites; the project-dir prefix
+// and surrounding quoting in the command string are preserved verbatim.
+const LEGACY_HOOK_COMMAND_REWRITES = Object.freeze([
+  Object.freeze({ from: "hunter-subagent-stop.js", to: "agent-run-stop.js" }),
+  Object.freeze({ from: "bounty-statusline.js", to: "bob-statusline.js" }),
+]);
+
 function rewriteLegacyPermissionString(value) {
   if (typeof value !== "string") return value;
   if (!value.startsWith(LEGACY_PERMISSION_PREFIX)) return value;
@@ -106,18 +117,128 @@ function migrateLegacySettings(existing) {
 
 function migrateLegacyServerKey({ mcp, settings, logger } = {}) {
   const mcpResult = migrateLegacyMcp(mcp);
-  const settingsResult = migrateLegacySettings(settings);
-  if (logger && (mcpResult.migrated || settingsResult.migrated)) {
+  const settingsPermissions = migrateLegacySettings(settings);
+  const settingsHooks = migrateLegacyHookCommands(settingsPermissions.value);
+  const settingsMigrated = settingsPermissions.migrated || settingsHooks.migrated;
+  if (logger && (mcpResult.migrated || settingsMigrated)) {
     const surfaces = [];
     if (mcpResult.migrated) surfaces.push(".mcp.json");
-    if (settingsResult.migrated) surfaces.push(".claude/settings.json");
+    if (settingsMigrated) surfaces.push(".claude/settings.json");
     logger(`migrating legacy MCP server key ${LEGACY_SERVER_KEY} -> ${CANONICAL_SERVER_KEY} in: ${surfaces.join(", ")}`);
   }
   return {
     mcp: mcpResult.value,
-    settings: settingsResult.value,
-    migrated: mcpResult.migrated || settingsResult.migrated,
+    settings: settingsHooks.value,
+    migrated: mcpResult.migrated || settingsMigrated,
   };
+}
+
+function rewriteLegacyHookCommand(command) {
+  if (typeof command !== "string") return command;
+  let next = command;
+  for (const rewrite of LEGACY_HOOK_COMMAND_REWRITES) {
+    if (next.includes(rewrite.from)) {
+      // Restrict replacement to the embedded `.claude/hooks/<file>` segment so
+      // unrelated tokens that happen to contain the same substring (e.g. a
+      // path comment) are not rewritten.
+      next = next.split(`.claude/hooks/${rewrite.from}`).join(`.claude/hooks/${rewrite.to}`);
+    }
+  }
+  return next;
+}
+
+function rewriteHookEntry(entry) {
+  if (!entry || typeof entry !== "object" || !Array.isArray(entry.hooks)) return { entry, changed: false };
+  let touched = false;
+  const hooks = entry.hooks.map((hook) => {
+    if (!hook || typeof hook !== "object" || typeof hook.command !== "string") return hook;
+    const next = rewriteLegacyHookCommand(hook.command);
+    if (next === hook.command) return hook;
+    touched = true;
+    return { ...hook, command: next };
+  });
+  if (!touched) return { entry, changed: false };
+  return { entry: { ...entry, hooks }, changed: true };
+}
+
+function dedupeHookEntries(entries) {
+  if (!Array.isArray(entries)) return { entries, changed: false };
+  let changed = false;
+  const out = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || !Array.isArray(entry.hooks)) {
+      out.push(entry);
+      continue;
+    }
+    const seenScripts = new Set();
+    const hooks = [];
+    for (const hook of entry.hooks) {
+      const scriptName = hookScriptName(hook && hook.command);
+      if (scriptName) {
+        if (seenScripts.has(scriptName)) {
+          changed = true;
+          continue;
+        }
+        seenScripts.add(scriptName);
+      }
+      hooks.push(hook);
+    }
+    if (hooks.length === entry.hooks.length) {
+      out.push(entry);
+    } else {
+      out.push({ ...entry, hooks });
+    }
+  }
+  return { entries: out, changed };
+}
+
+function migrateLegacyHookCommands(existing) {
+  if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+    return { value: existing, migrated: false };
+  }
+  let touched = false;
+  let next = existing;
+
+  // statusLine: rewrite the embedded hook filename if it points at a legacy
+  // script name.
+  if (existing.statusLine && typeof existing.statusLine === "object" && typeof existing.statusLine.command === "string") {
+    const nextStatusLineCommand = rewriteLegacyHookCommand(existing.statusLine.command);
+    if (nextStatusLineCommand !== existing.statusLine.command) {
+      touched = true;
+      next = {
+        ...next,
+        statusLine: { ...existing.statusLine, command: nextStatusLineCommand },
+      };
+    }
+  }
+
+  // hooks.*: walk every event -> entry -> hook and rewrite, then dedupe by
+  // script filename so a legacy-pointing entry and a canonical-pointing entry
+  // for the same trigger collapse to a single canonical entry.
+  if (existing.hooks && typeof existing.hooks === "object" && !Array.isArray(existing.hooks)) {
+    const nextHooks = { ...existing.hooks };
+    let hooksTouched = false;
+    for (const [eventName, entries] of Object.entries(existing.hooks)) {
+      if (!Array.isArray(entries)) continue;
+      let eventTouched = false;
+      const rewrittenEntries = entries.map((entry) => {
+        const result = rewriteHookEntry(entry);
+        if (result.changed) eventTouched = true;
+        return result.entry;
+      });
+      const dedupedResult = dedupeHookEntries(rewrittenEntries);
+      if (eventTouched || dedupedResult.changed) {
+        nextHooks[eventName] = dedupedResult.entries;
+        hooksTouched = true;
+      }
+    }
+    if (hooksTouched) {
+      touched = true;
+      next = { ...next, hooks: nextHooks };
+    }
+  }
+
+  return { value: next, migrated: touched };
 }
 
 function hookKey(hook) {
@@ -191,9 +312,10 @@ function mergeHooks(existingHooks, bobHooks) {
 }
 
 function mergeSettings(existing, bobSettings) {
-  const migrated = migrateLegacySettings(existing).value;
-  const next = migrated && typeof migrated === "object" && !Array.isArray(migrated)
-    ? { ...migrated }
+  const permissionsMigrated = migrateLegacySettings(existing).value;
+  const hooksMigrated = migrateLegacyHookCommands(permissionsMigrated).value;
+  const next = hooksMigrated && typeof hooksMigrated === "object" && !Array.isArray(hooksMigrated)
+    ? { ...hooksMigrated }
     : {};
   const existingPermissions = next.permissions && typeof next.permissions === "object"
     ? next.permissions
@@ -270,6 +392,7 @@ if (require.main === module) {
 module.exports = {
   BRUTALIST_MCP_SERVER,
   CANONICAL_SERVER_KEY,
+  LEGACY_HOOK_COMMAND_REWRITES,
   LEGACY_SERVER_KEY,
   LEGACY_PERMISSION_PREFIX,
   CANONICAL_PERMISSION_PREFIX,
@@ -281,8 +404,10 @@ module.exports = {
   mergeHooks,
   mergePreToolUseHooks,
   mergeSettings,
+  migrateLegacyHookCommands,
   migrateLegacyMcp,
   migrateLegacySettings,
   migrateLegacyServerKey,
+  rewriteLegacyHookCommand,
   rewriteLegacyPermissionString,
 };

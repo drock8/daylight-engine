@@ -66,7 +66,7 @@
     "check:skill": "node scripts/generate-hacker-bob-skill.js --check",
     "test:mcp": "node scripts/run-mcp-tests.js",
     "test:prompts": "npm run check:agent-tools && npm run check:skill && node --test test/prompt-contracts.test.js",
-    "test:install": "node --test test/install-smoke.test.js",
+    "test:install": "node --test test/install-smoke.test.js test/installer-legacy-upgrade.test.js",
     "test:update": "node --test test/update-check.test.js",
     "test:cli": "node --test test/cli.test.js",
     "test:adapter-detection": "node --test test/adapter-detection.test.js",

@@ -84,6 +84,40 @@ const LEGACY_BOB_SKILLS = Object.freeze([
   "bountyagentstatus",
 ]);
 
+// Legacy agent files left behind by prior rename generations. The "hunter-*"
+// family pre-dated "evaluator-*"; "recon-agent" / "deep-recon-agent" pre-dated
+// "surface-discovery-*". These names no longer exist in the source tree, so
+// any survivor inside a target install came from a v1.x install and must be
+// removed on upgrade to avoid the operator launching stale agents.
+const LEGACY_AGENT_FILES = Object.freeze([
+  "hunter-agent.md",
+  "hunter-cosmwasm-agent.md",
+  "hunter-evm-agent.md",
+  "hunter-move-agent.md",
+  "hunter-substrate-agent.md",
+  "hunter-svm-agent.md",
+  "recon-agent.md",
+  "deep-recon-agent.md",
+]);
+
+// Legacy hook files renamed across the v1.x -> v2.x line. `bob-statusline.js`
+// is the current name for what was `bounty-statusline.js`; `agent-run-stop.js`
+// replaced `hunter-subagent-stop.js`. The settings.json migration shim
+// rewrites the command strings; this list is for sweeping the files
+// themselves off disk.
+const LEGACY_HOOK_FILES = Object.freeze([
+  "hunter-subagent-stop.js",
+  "bounty-statusline.js",
+]);
+
+// Settings-side rewrites that mirror LEGACY_HOOK_FILES. The merge shim walks
+// every hook entry and rewrites stale filenames embedded in command strings
+// (e.g. `node "${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/hunter-subagent-stop.js"`).
+const LEGACY_HOOK_COMMAND_REWRITES = Object.freeze([
+  Object.freeze({ from: "hunter-subagent-stop.js", to: "agent-run-stop.js" }),
+  Object.freeze({ from: "bounty-statusline.js", to: "bob-statusline.js" }),
+]);
+
 function isPlainObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -360,6 +394,14 @@ function install({
   }
   for (const hook of STALE_HOOK_FILES) {
     removeIfExists(path.join(claudeDir, "hooks", hook));
+  }
+  // Sweep legacy v1.x agent/hook files left behind by prior rename
+  // generations. Idempotent: no-op when the legacy files are absent.
+  for (const legacyAgent of LEGACY_AGENT_FILES) {
+    removeIfExists(path.join(claudeDir, "agents", legacyAgent));
+  }
+  for (const legacyHook of LEGACY_HOOK_FILES) {
+    removeIfExists(path.join(claudeDir, "hooks", legacyHook));
   }
 
   const agents = copyDirFiles(
@@ -816,8 +858,11 @@ module.exports = {
   COMMAND_SPECS,
   EXECUTABLE_HOOKS,
   HOOK_FILES,
+  LEGACY_AGENT_FILES,
   LEGACY_BOB_COMMAND_FILES,
   LEGACY_BOB_SKILLS,
+  LEGACY_HOOK_COMMAND_REWRITES,
+  LEGACY_HOOK_FILES,
   config,
   commandIds,
   commandOutputPath,
