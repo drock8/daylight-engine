@@ -45,5 +45,6 @@
   "test/unified-diff-parser.test.js",
   "test/cve-feed-parser.test.js",
   "test/cve-scope-matcher.test.js",
+  "test/realization-e2e-smoke.test.js",
   "test/mcp-test-discovery.test.js"
 ]
