@@ -414,8 +414,9 @@ test("smoke: session close drains residual record_mode buffer before exit", { sk
       }).catch(() => {});
       await new Promise((r) => setTimeout(r, 500));
     } finally {
-      // We close via the registry directly so we can read the drain payload
-      // (the wrapped MCP tool discards it; the registry response carries it).
+      // The registry-level closeSession returns the drained payload. The
+      // wrapped MCP tool (covered by the regression test below) routes that
+      // payload through importHttpTraffic so the entries actually persist.
       const close = await browserSessions.closeSession(sessionId, "test_close");
       assert.equal(close.closed, true);
       // The drain payload contract: closeSession returns recorded[] for
@@ -424,6 +425,131 @@ test("smoke: session close drains residual record_mode buffer before exit", { sk
       // what matters is the close path produced an array and did not throw.
       assert.ok(Array.isArray(close.recorded), "close must return recorded[] for record_mode sessions");
     }
+  });
+});
+
+// T.7 fixup regression — close-without-prior-flush must persist captures.
+//
+// Reviewer gate 5: browser_session_close used to return the drained recorded[]
+// from the driver but never piped it through importHttpTraffic, so a close
+// without an explicit flush would silently drop the captures. This test
+// exercises the wrapped MCP tool end-to-end: start recording, generate at
+// least one request, call browser_session_close WITHOUT calling flush first,
+// then confirm the entries landed in traffic.jsonl with source ===
+// "browser_capture" and source_meta.session_id set to the closed session.
+test("regression: browser_session_close persists drained captures via importHttpTraffic (no prior flush)", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async (t) => {
+  await withTempHome(async (home) => {
+    const domain = "example.com";
+    seedSessionStateForDomain(home, domain);
+
+    const start = await callTool("bob_browser_session_start_recording", {
+      target_domain: domain,
+      target_url: `https://${domain}`,
+      headless: true,
+    });
+    assert.equal(start.ok, true, `start failed: ${JSON.stringify(start)}`);
+    const sessionId = start.session_id;
+
+    // Generate traffic the driver will buffer. We do NOT call flush — that is
+    // the whole point of the regression: close must drain what flush would
+    // have drained.
+    const navResult = await callTool("bob_browser_navigate", {
+      target_domain: domain,
+      session_id: sessionId,
+      url: `https://${domain}/`,
+    });
+    assert.equal(navResult.ok, true, `navigate failed: ${JSON.stringify(navResult)}`);
+    await new Promise((r) => setTimeout(r, 500));
+
+    // traffic.jsonl must be empty before close (no flush was called).
+    const preCloseRecords = readTrafficRecordsFromJsonl(domain);
+    assert.equal(
+      preCloseRecords.length,
+      0,
+      "traffic.jsonl should be empty before close (no explicit flush was called)",
+    );
+
+    // Close through the wrapped MCP tool. Old behavior: the residual buffer
+    // was returned by the driver, discarded by the wrapper, and never reached
+    // http-records. New behavior: the wrapper pipes those records through
+    // importHttpTraffic exactly the way the flush tool does.
+    const close = await callTool("bob_browser_session_close", {
+      target_domain: domain,
+      session_id: sessionId,
+    });
+    assert.equal(close.ok, true, `close failed: ${JSON.stringify(close)}`);
+    assert.equal(close.closed, true, "close envelope must report closed: true");
+    t.diagnostic(`close drained ${close.flushed_count} entries; ingested ${close.ingested_count}`);
+    assert.ok(close.flushed_count >= 1, `expected at least one drained entry on close; got ${close.flushed_count}`);
+    assert.ok(close.ingested_count >= 1, `expected at least one ingested entry on close; got ${close.ingested_count}`);
+
+    // The entries must have landed with source: "browser_capture" and
+    // source_meta.session_id === <the closed session>. This is the T-R5
+    // invariant the fixup is upholding.
+    const records = readTrafficRecordsFromJsonl(domain);
+    assert.ok(records.length >= 1, "traffic.jsonl should have at least one record after close");
+    const captured = records.find(
+      (r) => r.source === "browser_capture" && r.source_meta && r.source_meta.session_id === sessionId,
+    );
+    assert.ok(
+      captured,
+      `expected a record with source: "browser_capture" and source_meta.session_id === ${sessionId}; got sources=${JSON.stringify(records.map((r) => ({ source: r.source, session_id: r.source_meta && r.source_meta.session_id })))}`,
+    );
+    assert.equal(captured.source_meta.kind, "browser_capture");
+  });
+});
+
+// T.7 fixup regression — idempotent close on an already-closed session must
+// not crash and must not double-write.
+test("regression: browser_session_close is idempotent and does not double-write", { skip: !PATCHRIGHT_AVAILABLE, todo: PATCHRIGHT_AVAILABLE ? undefined : PATCHRIGHT_SKIP_REASON }, async () => {
+  await withTempHome(async (home) => {
+    const domain = "example.com";
+    seedSessionStateForDomain(home, domain);
+
+    const start = await callTool("bob_browser_session_start_recording", {
+      target_domain: domain,
+      target_url: `https://${domain}`,
+      headless: true,
+    });
+    assert.equal(start.ok, true);
+    const sessionId = start.session_id;
+    await callTool("bob_browser_navigate", {
+      target_domain: domain,
+      session_id: sessionId,
+      url: `https://${domain}/`,
+    }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 500));
+
+    const firstClose = await callTool("bob_browser_session_close", {
+      target_domain: domain,
+      session_id: sessionId,
+    });
+    assert.equal(firstClose.ok, true, `first close failed: ${JSON.stringify(firstClose)}`);
+    const recordsAfterFirstClose = readTrafficRecordsFromJsonl(domain);
+    const ingestedFirst = recordsAfterFirstClose.filter(
+      (r) => r.source === "browser_capture" && r.source_meta && r.source_meta.session_id === sessionId,
+    ).length;
+
+    // Second close on the same session must not throw and must not write
+    // additional traffic records.
+    const secondClose = await callTool("bob_browser_session_close", {
+      target_domain: domain,
+      session_id: sessionId,
+    });
+    assert.equal(secondClose.ok, true, `second close failed: ${JSON.stringify(secondClose)}`);
+    assert.equal(secondClose.closed, true, "second close should still report closed: true");
+    assert.equal(secondClose.flushed_count, 0, "second close should drain nothing — buffer is gone");
+    assert.equal(secondClose.ingested_count, 0, "second close should not ingest anything");
+
+    const recordsAfterSecondClose = readTrafficRecordsFromJsonl(domain);
+    const ingestedSecond = recordsAfterSecondClose.filter(
+      (r) => r.source === "browser_capture" && r.source_meta && r.source_meta.session_id === sessionId,
+    ).length;
+    assert.equal(
+      ingestedSecond,
+      ingestedFirst,
+      `second close must not double-write: first=${ingestedFirst} second=${ingestedSecond}`,
+    );
   });
 });
 
