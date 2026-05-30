@@ -24,9 +24,13 @@
 //
 // Init payload (BOB_BROWSER_DRIVER_INIT env var, JSON):
 //   { session_id, target_domain, target_url, headless?, sessions_root?,
-//     record_mode? }. record_mode=true installs a per-page request listener
-//     that buffers http(s) requests; the buffer is flushed via the
-//     `flush_recorded_requests` command and on the final `close`.
+//     record_mode?, proxy? }. record_mode=true installs a per-page request
+//     listener that buffers http(s) requests; the buffer is flushed via the
+//     `flush_recorded_requests` command and on the final `close`. proxy, when
+//     present, must be { server, username?, password? } in Patchright/
+//     Playwright launch-options shape and is threaded into
+//     chromium.launch({ proxy }) BEFORE the anti-detection stack runs so the
+//     operator still gets a real Chrome fingerprint behind the proxy.
 
 "use strict";
 
@@ -139,7 +143,7 @@ function sanitizeDomainForPath(domain) {
 // ── Driver core ──
 
 class BrowserDriver {
-  constructor({ sessionId, targetDomain, targetUrl, headless, sessionsRoot, recordMode }) {
+  constructor({ sessionId, targetDomain, targetUrl, headless, sessionsRoot, recordMode, proxy }) {
     this.sessionId = sessionId;
     this.targetDomain = targetDomain;
     this.targetUrl = targetUrl;
@@ -159,6 +163,12 @@ class BrowserDriver {
     // import-http-traffic.js (which holds the session lock — see T-R5).
     this.recordMode = recordMode === true;
     this.recordedRequests = [];
+    // Egress proxy is { server, username?, password? } in Playwright's launch-
+    // options shape. Already resolved + env-expanded + scheme-validated by the
+    // tool wrapper. null = direct egress.
+    this.proxy = proxy && typeof proxy === "object" && typeof proxy.server === "string"
+      ? proxy
+      : null;
   }
 
   async start() {
@@ -184,6 +194,16 @@ class BrowserDriver {
       ],
       ignoreDefaultArgs: ["--enable-automation"],
     };
+    // Proxy is composed with — not in place of — the anti-detection stack:
+    // channel=chrome, the AutomationControlled disable flag, and the
+    // ignoreDefaultArgs filter all still apply, so the proxy carries a real
+    // Chrome fingerprint instead of leaking a headless/Playwright signature.
+    // The proxy was env-expanded and scheme-validated upstream
+    // (mcp/lib/browser-tools-shared.js#resolveBrowserEgressProfile) — the
+    // driver only sees the structured { server, username?, password? } form.
+    if (this.proxy) {
+      launchOptions.proxy = this.proxy;
+    }
 
     try {
       this.browser = await patchright.chromium.launch({ ...launchOptions, channel: "chrome" });
@@ -668,6 +688,12 @@ async function main() {
   const headless = initConfig.headless === true;
   const recordMode = initConfig.record_mode === true;
   const sessionsRoot = initConfig.sessions_root || path.join(os.homedir(), "hacker-bob-sessions");
+  // Egress proxy already validated by the tool wrapper before spawn; the
+  // driver just trusts the structured shape and refuses anything else.
+  const proxy = initConfig.proxy && typeof initConfig.proxy === "object"
+    && typeof initConfig.proxy.server === "string"
+    ? initConfig.proxy
+    : null;
 
   if (!targetDomain) {
     writeResponse({ ready: false, error: "init_invalid: target_domain is required" });
@@ -695,6 +721,7 @@ async function main() {
     headless,
     sessionsRoot,
     recordMode,
+    proxy,
   });
   try {
     await driver.start();

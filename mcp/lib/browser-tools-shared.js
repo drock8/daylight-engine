@@ -11,6 +11,140 @@ const {
   assertNonEmptyString,
 } = require("./validation.js");
 const browserSessions = require("./browser-sessions.js");
+const {
+  EGRESS_PROFILE_NAME_RE,
+  resolveEgressProfile,
+} = require("./egress-profiles.js");
+
+// Playwright's chromium.launch accepts proxy: { server, username?, password?,
+// bypass? }. We coerce the egress-profile proxy_url (already env-expanded and
+// scheme-validated by resolveEgressProfile) into that shape here so the
+// subprocess only ever sees the structured form.
+const PLAYWRIGHT_PROXY_SCHEMES = new Set(["http:", "https:", "socks5:"]);
+
+function errorEnvelope(code, message, extra = {}) {
+  return {
+    ok: false,
+    error: { code, message, ...extra },
+  };
+}
+
+function parseProxyUrlForPlaywright(proxyUrl) {
+  if (proxyUrl == null) return null;
+  let parsed;
+  try {
+    parsed = new URL(proxyUrl);
+  } catch (err) {
+    const wrapped = new Error(`egress_proxy_url_malformed: ${err && err.message ? err.message : err}`);
+    wrapped.code = "egress_proxy_url_malformed";
+    throw wrapped;
+  }
+  if (!PLAYWRIGHT_PROXY_SCHEMES.has(parsed.protocol)) {
+    // socks5h is supported by the HTTP proxy-agent but Patchright/Playwright's
+    // chromium.launch only knows http/https/socks5. Refuse rather than silently
+    // dropping into a wrong-scheme proxy.
+    const err = new Error(
+      `egress_proxy_url_unsupported_scheme: ${parsed.protocol} (allowed for browser sessions: http://, https://, socks5://)`,
+    );
+    err.code = "egress_proxy_url_unsupported_scheme";
+    throw err;
+  }
+  if (!parsed.hostname) {
+    const err = new Error("egress_proxy_url_missing_host");
+    err.code = "egress_proxy_url_malformed";
+    throw err;
+  }
+  const portFragment = parsed.port ? `:${parsed.port}` : "";
+  const server = `${parsed.protocol}//${parsed.hostname}${portFragment}`;
+  const proxy = { server };
+  // URL decodes percent-encoded username/password automatically; pass through
+  // the decoded form (Playwright handles re-encoding in CONNECT headers).
+  if (parsed.username) {
+    proxy.username = decodeURIComponent(parsed.username);
+  }
+  if (parsed.password) {
+    proxy.password = decodeURIComponent(parsed.password);
+  }
+  return proxy;
+}
+
+// Returns:
+//   { ok: true,  proxy, profile: { name, region, proxy_configured } }
+//   { ok: false, envelope: <structured error string ready to return to caller> }
+//
+// Direct (no proxy) is signaled by ok:true + proxy:null. The default profile
+// always resolves to { ok:true, proxy:null } (no env lookup, no validation).
+function resolveBrowserEgressProfile(requestedName) {
+  const trimmed = typeof requestedName === "string" ? requestedName.trim() : "";
+  const name = trimmed || "default";
+
+  // Cheap shape check at the wrapper so an obviously bad name returns a stable
+  // error code before we read the config file.
+  if (!EGRESS_PROFILE_NAME_RE.test(name)) {
+    return {
+      ok: false,
+      envelope: JSON.stringify(errorEnvelope(
+        "egress_profile_invalid_name",
+        `egress_profile name must match ${EGRESS_PROFILE_NAME_RE.source}`,
+        { egress_profile: name },
+      )),
+    };
+  }
+
+  if (name === "default") {
+    // Preserve current direct-egress behavior: the default profile is always
+    // present, always enabled, and uses proxy_url: null. Skip the file read so
+    // an absent .claude/bob/egress-profiles.json still resolves cleanly.
+    return {
+      ok: true,
+      proxy: null,
+      profile: { name: "default", region: null, proxy_configured: false },
+    };
+  }
+
+  let resolved;
+  try {
+    resolved = resolveEgressProfile(name);
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    let code = "egress_profile_resolve_failed";
+    if (/was not found/i.test(message)) code = "egress_profile_not_found";
+    else if (/is disabled/i.test(message)) code = "egress_profile_disabled";
+    else if (/env var .* is not set/i.test(message)) code = "egress_profile_env_missing";
+    else if (/unsupported egress proxy protocol/i.test(message)) code = "egress_profile_unsupported_protocol";
+    else if (/proxy URL is malformed/i.test(message)) code = "egress_profile_malformed_url";
+    return {
+      ok: false,
+      envelope: JSON.stringify(errorEnvelope(code, message, { egress_profile: name })),
+    };
+  }
+
+  let proxy = null;
+  if (resolved.proxy_url != null) {
+    try {
+      proxy = parseProxyUrlForPlaywright(resolved.proxy_url);
+    } catch (err) {
+      return {
+        ok: false,
+        envelope: JSON.stringify(errorEnvelope(
+          err && err.code ? err.code : "egress_profile_malformed_url",
+          err && err.message ? err.message : String(err),
+          { egress_profile: name },
+        )),
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    proxy,
+    profile: {
+      name: resolved.name,
+      region: resolved.region || null,
+      proxy_configured: resolved.proxy_configured === true,
+    },
+  };
+}
 
 // Defense-in-depth: the wrapper rejects the same forbidden patterns the driver
 // rejects, so we never even spawn the subprocess for an obviously bad expr.
@@ -30,13 +164,6 @@ const browserSessions = require("./browser-sessions.js");
 // agent's choice — the page itself wired them in HTML/JS. They run unblocked.
 const FORBIDDEN_EVAL_PATTERN =
   /XMLHttpRequest|fetch\(|navigator\.sendBeacon|new\s+EventSource|new\s+WebSocket|window\.open\(|(?:window|document|top|parent)\.location\s*=|location\.(?:href|assign|replace)/i;
-
-function errorEnvelope(code, message, extra = {}) {
-  return {
-    ok: false,
-    error: { code, message, ...extra },
-  };
-}
 
 function patchrightUnavailableEnvelope() {
   return errorEnvelope(
@@ -110,6 +237,7 @@ function envelopeFromError(err) {
 
 module.exports = {
   FORBIDDEN_EVAL_PATTERN,
+  PLAYWRIGHT_PROXY_SCHEMES,
   assertExpressionSandbox,
   browserSessions,
   callBrowser,
@@ -117,7 +245,9 @@ module.exports = {
   envelopeFromError,
   envelopeSuccess,
   errorEnvelope,
+  parseProxyUrlForPlaywright,
   patchrightUnavailableEnvelope,
+  resolveBrowserEgressProfile,
   safeSessionId,
   safeTargetDomain,
 };

@@ -22,11 +22,15 @@ const {
   envelopeFromError,
   envelopeSuccess,
   patchrightUnavailableEnvelope,
+  resolveBrowserEgressProfile,
   safeTargetDomain,
 } = require("../browser-tools-shared.js");
 const {
   assertNonEmptyString,
 } = require("../validation.js");
+const {
+  EGRESS_PROFILE_NAME_RE,
+} = require("../egress-profiles.js");
 
 const BROWSER_BUNDLES = ["evaluator-shared", "surface-discovery", "deep-surface-discovery"];
 
@@ -130,11 +134,21 @@ async function handler(args = {}) {
       plan = args.navigation_plan.map((step, index) => normalizeStep(step, index));
     }
 
+    // Egress resolution runs BEFORE the subprocess spawn. If it fails (unknown
+    // profile, disabled, env var missing, scheme unsupported) we return the
+    // structured envelope and never start Chromium. Default profile = direct
+    // egress, preserving the pre-cycle behavior.
+    const egress = resolveBrowserEgressProfile(args.egress_profile);
+    if (!egress.ok) {
+      return egress.envelope;
+    }
+
     const started = await browserSessions.startSession({
       targetDomain,
       targetUrl,
       headless: args.headless === true,
       recordMode: true,
+      proxy: egress.proxy,
     });
 
     if (plan.length > 0) {
@@ -164,6 +178,9 @@ async function handler(args = {}) {
       record_mode: true,
       recorded_count: 0,
       navigation_plan_executed: plan.length,
+      egress_profile_resolved: egress.profile.name,
+      egress_region: egress.profile.region,
+      proxy_configured: egress.profile.proxy_configured,
     });
   } catch (err) {
     return envelopeFromError(err);
@@ -173,13 +190,18 @@ async function handler(args = {}) {
 module.exports = Object.freeze({
   name: "bob_browser_session_start_recording",
   description:
-    "Start a Patchright browser session with record_mode: true so every browser-emitted HTTP(S) request is buffered for ingestion via bob_browser_flush_recorded_requests. Useful for capturing client-side auth flows (OAuth callbacks, SPA login posts, in-page CSRF/anti-bot tokens) so the captured requests can be mutated and replayed through bob_http_scan. Optionally drives a navigation_plan immediately after session start; each step is one of {action: navigate|click|type|wait_for, args}. Captured traffic does NOT flow on its own — the caller must pull batches via bob_browser_flush_recorded_requests (which is what writes them to http-records.jsonl). Limitation: this tool drives DOM events but cannot impersonate a WebAuthn authenticator; ceremonies that require navigator.credentials cannot be replayed from the captured request alone.",
+    "Start a Patchright browser session with record_mode: true so every browser-emitted HTTP(S) request is buffered for ingestion via bob_browser_flush_recorded_requests. Useful for capturing client-side auth flows (OAuth callbacks, SPA login posts, in-page CSRF/anti-bot tokens) so the captured requests can be mutated and replayed through bob_http_scan. Optionally drives a navigation_plan immediately after session start; each step is one of {action: navigate|click|type|wait_for, args}. Captured traffic does NOT flow on its own — the caller must pull batches via bob_browser_flush_recorded_requests (which is what writes them to http-records.jsonl). Optional egress_profile names an entry from .claude/bob/egress-profiles.json; the resolved proxy_url is threaded into Patchright chromium.launch({proxy}) (default = direct). Limitation: this tool drives DOM events but cannot impersonate a WebAuthn authenticator; ceremonies that require navigator.credentials cannot be replayed from the captured request alone.",
   inputSchema: {
     type: "object",
     properties: {
       target_domain: { type: "string", description: "Session domain anchor; the URL host must equal this or be a subdomain." },
       target_url: { type: "string", description: "Initial in-scope URL the browser will eventually navigate to. Scope-checked via the same validator that gates bob_http_scan." },
       headless: { type: "boolean", description: "Run headless. Default false (headed) to preserve anti-detection fingerprint." },
+      egress_profile: {
+        type: "string",
+        pattern: EGRESS_PROFILE_NAME_RE.source,
+        description: "Name of an enabled profile from .claude/bob/egress-profiles.json. Defaults to 'default' (direct connection). The resolved proxy_url is parsed (env-var expansion + http/https/socks5 scheme validation) and threaded into Patchright chromium.launch({proxy}) before the anti-detection stack runs, so the operator still gets a real Chrome fingerprint behind the proxy.",
+      },
       navigation_plan: {
         type: "array",
         description: "Optional sequence of actions driven immediately after session start. Each step: {action: 'navigate'|'click'|'type'|'wait_for', args: {...}}. navigate.args.url is scope-checked. The session is torn down if any step fails.",

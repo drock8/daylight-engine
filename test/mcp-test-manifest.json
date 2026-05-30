@@ -56,5 +56,6 @@
   "test/graphql-openapi-observation.test.js",
   "test/browser-behavior-probe-lens.test.js",
   "test/browser-record-mode.test.js",
+  "test/browser-egress-wiring.test.js",
   "test/pack-telemetry.test.js"
 ]

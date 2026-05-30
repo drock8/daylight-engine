@@ -233,6 +233,8 @@ async function startSession({
   recordMode = false,
   sessionsRoot,
   patchrightCheck = isPatchrightAvailable,
+  proxy = null,
+  spawnFn = spawn,
 } = {}) {
   if (!patchrightCheck()) {
     throw patchrightUnavailableError();
@@ -264,9 +266,15 @@ async function startSession({
     headless: headless === true,
     record_mode: recordMode === true,
     sessions_root: resolvedSessionsRoot,
+    // proxy: { server, username?, password? } — passed straight to Patchright's
+    // chromium.launch({ proxy }) in the subprocess. The egress profile is
+    // already resolved + env-expanded + scheme-validated by the tool wrapper
+    // (see mcp/lib/browser-tools-shared.js#resolveBrowserEgressProfile). null
+    // means direct egress (no proxy), which is the default.
+    proxy: proxy && typeof proxy === "object" ? proxy : null,
   };
 
-  const child = spawn(process.execPath, [DRIVER_SCRIPT_PATH], {
+  const child = spawnFn(process.execPath, [DRIVER_SCRIPT_PATH], {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,
