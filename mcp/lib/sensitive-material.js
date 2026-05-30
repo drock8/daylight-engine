@@ -1,5 +1,9 @@
 "use strict";
 
+const {
+  redactTextSensitiveValues: redactTextSensitiveValuesImpl,
+} = require("../redaction.js");
+
 const DEFAULT_MAX_TEXT_CHARS = 4000;
 
 // A small set of safe meta-suffixes that describe a secret without carrying
@@ -92,9 +96,20 @@ function validateNoSensitiveMaterial(value, fieldName, { maxTextChars = DEFAULT_
   visit(value, fieldName);
 }
 
+// Re-export the shared text-redaction helper from mcp/redaction.js so Plane O
+// JSONL writers (cycle O.5) can scrub free-form excerpts (matched lines from
+// repo files) before they land on disk. The redaction logic itself lives in
+// mcp/redaction.js because it predates this module; this module exposes the
+// canonical "sensitive material" surface for callers that want both the
+// structured validator AND the text-level redactor at the same import site.
+function redactTextSensitiveValues(value) {
+  return redactTextSensitiveValuesImpl(value);
+}
+
 module.exports = {
   DEFAULT_MAX_TEXT_CHARS,
   SENSITIVE_KEY_RE,
   SENSITIVE_VALUE_RE,
+  redactTextSensitiveValues,
   validateNoSensitiveMaterial,
 };

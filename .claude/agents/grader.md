@@ -1,7 +1,7 @@
 ---
 name: grader
 description: Scores verified findings on 5 axes and issues SUBMIT/HOLD/SKIP verdict
-tools: mcp__hacker-bob__bob_read_candidate_claims, mcp__hacker-bob__bob_read_chain_attempts, mcp__hacker-bob__bob_read_verification_round, mcp__hacker-bob__bob_read_verification_context, mcp__hacker-bob__bob_read_evidence_packs, mcp__hacker-bob__bob_write_grade_verdict, mcp__hacker-bob__bob_read_grade_verdict
+tools: mcp__hacker-bob__bob_read_candidate_claims, mcp__hacker-bob__bob_read_chain_attempts, mcp__hacker-bob__bob_read_verification_round, mcp__hacker-bob__bob_read_verification_context, mcp__hacker-bob__bob_read_evidence_packs, mcp__hacker-bob__bob_write_grade_verdict, mcp__hacker-bob__bob_read_grade_verdict, mcp__hacker-bob__bob_repo_check
 model: sonnet
 color: orange
 mcpServers:

@@ -377,6 +377,7 @@ const EXPECTED_TOOL_NAMES = [
   "bob_repo_inventory",
   "bob_repo_prepare_env",
   "bob_repo_docker_run",
+  "bob_repo_check",
   "bob_read_session_state",
   "bob_read_session_nucleus",
   "bob_advance_session",

@@ -6,16 +6,16 @@ The `Target URL` and `Tests` columns are authority contracts for N2-004 enforcem
 
 ## Summary
 
-- Registered tools: 129
-- Tools with `target_domain`: 121
-- Tools requiring `target_domain`: 116
+- Registered tools: 130
+- Tools with `target_domain`: 122
+- Tools requiring `target_domain`: 117
 - Mode-dependent tools: 5
 
 | Authority Class | Default Tool Count | Resolved Mode/Tool Count |
 | --- | ---: | ---: |
 | `bootstrap_session` | 2 | 2 |
 | `initialized_session_read` | 34 | 38 |
-| `initialized_session_mutation` | 55 | 56 |
+| `initialized_session_mutation` | 56 | 57 |
 | `scoped_http_network` | 7 | 7 |
 | `smart_contract_contextual` | 19 | 19 |
 | `optional_session_context` | 0 | 0 |
@@ -107,6 +107,7 @@ Fail-closed fields: `target`, `target_url`, `checkpoint_mode`, `block_internal_h
 | bob_repo_inventory | mcp/lib/tools/repo-inventory.js | `initialized_session_mutation` | has=true<br>required=true | mutating=true<br>global_preapproval=false<br>network_access=false<br>browser_access=false<br>scope_required=false<br>sensitive_output=false<br>artifacts=repo-inventory.json+frontier-events.jsonl+surface-index.json+task-queue.json | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | Writes session artifacts or mutates session state and must be bound to an initialized session. | Require initialized session, target match, target_url validation, and legacy allowlist before write. | Direct tests for missing session, mismatch, legacy fail-closed fields, and artifact write path. |
 | bob_repo_prepare_env | mcp/lib/tools/repo-prepare-env.js | `initialized_session_mutation` | has=true<br>required=true | mutating=true<br>global_preapproval=false<br>network_access=false<br>browser_access=false<br>scope_required=false<br>sensitive_output=false<br>artifacts=Dockerfile.bob+repo-env.json | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | Writes session artifacts or mutates session state and must be bound to an initialized session. | Require initialized session, target match, target_url validation, and legacy allowlist before write. | Direct tests for missing session, mismatch, legacy fail-closed fields, and artifact write path. |
 | bob_repo_docker_run | mcp/lib/tools/repo-docker-run.js | `initialized_session_mutation` | has=true<br>required=true | mutating=true<br>global_preapproval=false<br>network_access=false<br>browser_access=false<br>scope_required=false<br>sensitive_output=false<br>artifacts=repo-command-runs.jsonl+repo-runs/+repo-work/ | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | Writes session artifacts or mutates session state and must be bound to an initialized session. | Require initialized session, target match, target_url validation, and legacy allowlist before write. | Direct tests for missing session, mismatch, legacy fail-closed fields, and artifact write path. |
+| bob_repo_check | mcp/lib/tools/repo-check.js | `initialized_session_mutation` | has=true<br>required=true | mutating=true<br>global_preapproval=false<br>network_access=false<br>browser_access=false<br>scope_required=false<br>sensitive_output=false<br>artifacts=repo-checks.jsonl | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | Writes session artifacts or mutates session state and must be bound to an initialized session. | Require initialized session, target match, target_url validation, and legacy allowlist before write. | Direct tests for missing session, mismatch, legacy fail-closed fields, and artifact write path. |
 | bob_read_session_state | mcp/lib/tools/read-session-state.js | `initialized_session_read` | has=true<br>required=true | mutating=false<br>global_preapproval=true<br>network_access=false<br>browser_access=false<br>scope_required=false<br>sensitive_output=false<br>artifacts=[] | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | Reads target-bound session artifacts and must resolve an initialized session first. | Require initialized session, target match, target_url validation, and legacy allowlist before read. | Direct tests for missing session, mismatch, target_url drift, and legacy allowlist. |
 | bob_read_session_nucleus | mcp/lib/tools/read-session-nucleus.js | `initialized_session_read` | has=true<br>required=true | mutating=false<br>global_preapproval=true<br>network_access=false<br>browser_access=false<br>scope_required=false<br>sensitive_output=false<br>artifacts=[] | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | Reads target-bound session artifacts and must resolve an initialized session first. | Require initialized session, target match, target_url validation, and legacy allowlist before read. | Direct tests for missing session, mismatch, target_url drift, and legacy allowlist. |
 | bob_advance_session | mcp/lib/tools/advance-session.js | `initialized_session_mutation` | has=true<br>required=true | mutating=true<br>global_preapproval=false<br>network_access=false<br>browser_access=false<br>scope_required=false<br>sensitive_output=false<br>artifacts=session-nucleus.json+session-events.jsonl | [] | validate_session_target_url | allowlist_required | not_applicable | not_applicable | Writes session artifacts or mutates session state and must be bound to an initialized session. | Require initialized session, target match, target_url validation, and legacy allowlist before write. | Direct tests for missing session, mismatch, legacy fail-closed fields, and artifact write path. |

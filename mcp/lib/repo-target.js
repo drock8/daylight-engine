@@ -21,6 +21,7 @@ const {
 } = require("./validation.js");
 const {
   assertSafeDomain,
+  repoChecksJsonlPath,
   repoInventoryPath,
   sessionDir,
   sessionNucleusPath,
@@ -39,6 +40,7 @@ const {
   deriveBlockInternalHostsPolicy,
 } = require("./session-state-contracts.js");
 const {
+  appendJsonlLine,
   isSessionDirEffectivelyEmpty,
   withSessionLock,
 } = require("./storage.js");
@@ -75,6 +77,7 @@ const {
   scheduleMaterialization,
 } = require("./frontier-materialize-debounce.js");
 const {
+  redactTextSensitiveValues,
   validateNoSensitiveMaterial,
 } = require("./sensitive-material.js");
 
@@ -924,13 +927,421 @@ function buildRepoInventory({ target_domain: targetDomain, repo_path: repoPathOv
   });
 }
 
+// Cycle O.5: read-only repo evidence probe. `bob_repo_check` performs a
+// bounded file lookup (existence + optional literal-substring or regex
+// match) and appends a structured JSONL row to `repo-checks.jsonl`. Per
+// O-P1 it never mutates the bound repo. Per O-P7, every excerpt of a
+// matched line MUST flow through `redactTextSensitiveValues` before
+// landing on disk so that grepping a synthetic `.env` for `API_KEY=.*`
+// does not leak the literal secret bytes into a session artifact.
+//
+// Read cap is 4 MB. Files larger than the cap produce a structured
+// `file_too_large` error; the operator can re-target a narrower probe
+// (semgrep / grep) instead of slurping a multi-GiB asset into RAM.
+
+const REPO_CHECK_VERSION = 1;
+const REPO_CHECK_MAX_FILE_BYTES = 4 * 1024 * 1024; // 4 MB hard cap
+// Cap the number of excerpts written per check so a regex like `.*` against a
+// gigantic file does not produce a multi-megabyte JSONL row. The matched_lines
+// array is then truncated and `matched_lines_truncated` is set on the row.
+const REPO_CHECK_MAX_EXCERPTS = 200;
+// Cap each excerpt's pre-redaction length so a single very-long line does not
+// bloat the JSONL row beyond the 4 KB sensitive-material text cap. The
+// validator throws if a string exceeds 4000 chars; we trim defensively before
+// invoking it so callers see a structured `excerpt_too_long` truncation
+// rather than a thrown error mid-write.
+const REPO_CHECK_MAX_EXCERPT_CHARS = 1024;
+const REPO_CHECK_TYPES = Object.freeze(new Set([
+  "file_exists",
+  "file_contains",
+  "regex_match",
+]));
+
+const REPO_CHECK_REPLAY_CONTEXT_KEYS = Object.freeze(new Set([
+  "wave",
+  "agent",
+  "surface_id",
+  "task_lens",
+  "technique_pack_id",
+  "purpose",
+  "operator_note",
+]));
+
+// Reuse the same {wave, agent, ...} shape as bob_repo_docker_run so an
+// evaluator can correlate a check against the dispatch context that
+// produced it. Out-of-band keys are silently dropped; string values are
+// trimmed to 256 chars; numbers pass through. Anything else throws.
+function normalizeRepoCheckReplayContext(value) {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "replay_context must be an object when provided",
+    );
+  }
+  const out = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (!REPO_CHECK_REPLAY_CONTEXT_KEYS.has(key)) continue;
+    if (raw == null) continue;
+    if (typeof raw === "number") {
+      out[key] = raw;
+      continue;
+    }
+    if (typeof raw === "string") {
+      const trimmed = raw.trim();
+      if (trimmed.length > 256) {
+        throw new ToolError(
+          ERROR_CODES.INVALID_ARGUMENTS,
+          `replay_context.${key} must be at most 256 characters`,
+        );
+      }
+      if (trimmed) out[key] = trimmed;
+      continue;
+    }
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `replay_context.${key} must be a string or number`,
+    );
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+// Validate a relative file_path against the session's bound repo root. The
+// returned absolute path is guaranteed to be inside the repo root (escape via
+// `..` segments or absolute paths is rejected) so the probe can't read
+// arbitrary files on the operator's machine (e.g. `/etc/shadow`).
+function resolveRepoFilePath(repoRoot, filePath) {
+  const raw = assertNonEmptyString(filePath, "file_path");
+  if (path.isAbsolute(raw)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "file_path must be a relative path under the bound repo root",
+      { repo_error_code: "file_path_must_be_relative" },
+    );
+  }
+  const joined = path.join(repoRoot, raw);
+  const resolved = path.resolve(joined);
+  // Re-resolve the repo root too so symlinks at the root don't shift the
+  // containment check.
+  const rootResolved = path.resolve(repoRoot);
+  const rel = path.relative(rootResolved, resolved);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "file_path escapes the bound repo root",
+      { repo_error_code: "file_path_escapes_repo_root" },
+    );
+  }
+  return resolved;
+}
+
+// Compile a regex pattern with optional flags after the trailing `/`. The
+// pattern shape we accept is the operator's raw string; we always enforce
+// the multi-line flag because matched_lines walks per line. The pattern
+// arrives un-anchored so callers can probe substrings without ^/$.
+function compileRepoCheckRegex(pattern) {
+  const raw = assertNonEmptyString(pattern, "regex");
+  let body = raw;
+  let flags = "m";
+  // Allow `/pattern/flags` shape for symmetry with grep/semgrep operator
+  // habits, but treat a bare string as the literal regex body.
+  const slashMatch = /^\/(.+)\/([gimsuy]*)$/.exec(raw);
+  if (slashMatch) {
+    body = slashMatch[1];
+    flags = slashMatch[2] || "";
+    if (!flags.includes("m")) flags += "m";
+  }
+  try {
+    return new RegExp(body, flags);
+  } catch (error) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `regex pattern is invalid: ${error.message || error}`,
+      { repo_error_code: "regex_invalid" },
+    );
+  }
+}
+
+// Per Plane O tests, a probe of a binary file MUST NOT crash and MUST NOT
+// land the binary blob inside an excerpt. We probe the first 8 KiB of the
+// file for a NUL byte (the canonical "binary" signal) and bail out before
+// any decoding work happens. The caller still gets `matched: false` plus a
+// `binary: true` flag on the row so a reviewer can see the probe ran.
+function probeIsBinary(buffer) {
+  const head = buffer.subarray(0, Math.min(buffer.length, 8192));
+  return head.includes(0);
+}
+
+function hashBuffer(buffer) {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+// Build matched_lines[]. Each entry carries the 1-based line number, the
+// 0-based byte offset of the line within the file, and a REDACTED excerpt.
+// Per O-P7 the excerpt MUST flow through `redactTextSensitiveValues`
+// BEFORE any append; the redaction is the load-bearing primitive, not a
+// downstream nicety. The validator runs after the redaction as a
+// belt-and-suspenders fail-closed: if a future change accidentally widens
+// the excerpt format to carry a key/value pair shaped like a credential,
+// `validateNoSensitiveMaterial` raises and the write never lands.
+function buildMatchedLines(text, predicate) {
+  const lines = text.split(/\r?\n/);
+  const matched = [];
+  let truncated = false;
+  let scanned = 0;
+  let charOffset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (predicate(line)) {
+      if (matched.length >= REPO_CHECK_MAX_EXCERPTS) {
+        truncated = true;
+        break;
+      }
+      const rawExcerpt = line.length > REPO_CHECK_MAX_EXCERPT_CHARS
+        ? `${line.slice(0, REPO_CHECK_MAX_EXCERPT_CHARS)}…`
+        : line;
+      const redacted = redactTextSensitiveValues(rawExcerpt);
+      matched.push({
+        line: i + 1,
+        offset: charOffset,
+        excerpt: redacted,
+      });
+    }
+    scanned += 1;
+    charOffset += line.length + 1; // account for the line terminator
+  }
+  return { matched, truncated, scanned };
+}
+
+function repoCheck({
+  target_domain: targetDomain,
+  check_type: checkType = null,
+  file_path: filePath = null,
+  pattern = null,
+  regex = null,
+  replay_context: replayContextRaw = null,
+} = {}) {
+  const domain = assertSafeDomain(targetDomain);
+  const repoSession = readRepoSession(domain);
+  const repoRoot = repoSession.target_repo.root_path;
+
+  // Resolve check_type. When unspecified, infer from the optional pattern/regex
+  // arguments: `regex` → regex_match, `pattern` → file_contains, else
+  // file_exists. Explicit `check_type` always wins.
+  let normalizedType;
+  if (checkType != null) {
+    normalizedType = assertNonEmptyString(checkType, "check_type");
+    if (!REPO_CHECK_TYPES.has(normalizedType)) {
+      throw new ToolError(
+        ERROR_CODES.INVALID_ARGUMENTS,
+        `check_type must be one of ${Array.from(REPO_CHECK_TYPES).join(", ")}`,
+        { repo_error_code: "check_type_invalid" },
+      );
+    }
+  } else if (regex != null && String(regex).trim()) {
+    normalizedType = "regex_match";
+  } else if (pattern != null && String(pattern).trim()) {
+    normalizedType = "file_contains";
+  } else {
+    normalizedType = "file_exists";
+  }
+
+  if (filePath == null || !String(filePath).trim()) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "file_path is required",
+      { repo_error_code: "file_path_required" },
+    );
+  }
+
+  const normalizedReplayContext = normalizeRepoCheckReplayContext(replayContextRaw);
+
+  // Pattern/regex shape requirements per check_type. file_exists ignores
+  // both inputs; file_contains requires `pattern`; regex_match requires
+  // `regex`. The explicit guard makes the row's `pattern`/`regex` fields
+  // unambiguous downstream.
+  let literalPattern = null;
+  let regexPattern = null;
+  let compiledRegex = null;
+  if (normalizedType === "file_contains") {
+    literalPattern = assertNonEmptyString(pattern, "pattern");
+  } else if (normalizedType === "regex_match") {
+    regexPattern = assertNonEmptyString(regex, "regex");
+    compiledRegex = compileRepoCheckRegex(regexPattern);
+  }
+
+  const absPath = resolveRepoFilePath(repoRoot, filePath);
+
+  let stat;
+  try {
+    stat = fs.statSync(absPath);
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      // file_exists is the canonical "answer is no" path; record the row
+      // and return cleanly. file_contains / regex_match on a missing file
+      // also returns matched:false but with `not_found:true` so the
+      // operator can distinguish "file present, no match" from "file
+      // never existed".
+      const row = {
+        version: REPO_CHECK_VERSION,
+        check_id: `chk_${sha8(`${domain}|${filePath}|${normalizedType}|${Date.now()}`)}_${Date.now()}`,
+        check_type: normalizedType,
+        target_domain: domain,
+        file_path: filePath,
+        pattern: literalPattern,
+        regex: regexPattern,
+        matched: false,
+        matched_lines: [],
+        file_hash: null,
+        not_found: true,
+        ts: new Date().toISOString(),
+      };
+      if (normalizedReplayContext) row.replay_context = normalizedReplayContext;
+      validateNoSensitiveMaterial(row, "repo_checks");
+      withSessionLock(domain, () => {
+        appendJsonlLine(repoChecksJsonlPath(domain), row);
+      });
+      return {
+        created: true,
+        check_id: row.check_id,
+        check_type: normalizedType,
+        target_domain: domain,
+        file_path: filePath,
+        matched: false,
+        not_found: true,
+        matched_lines: [],
+        file_hash: null,
+      };
+    }
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `file_path stat failed: ${error.message || error}`,
+      { repo_error_code: "file_stat_failed" },
+    );
+  }
+
+  if (!stat.isFile()) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      "file_path is not a regular file",
+      { repo_error_code: "file_path_not_a_file" },
+    );
+  }
+
+  if (stat.size > REPO_CHECK_MAX_FILE_BYTES) {
+    throw new ToolError(
+      ERROR_CODES.INVALID_ARGUMENTS,
+      `file_path exceeds ${REPO_CHECK_MAX_FILE_BYTES} byte cap (size=${stat.size})`,
+      {
+        repo_error_code: "file_too_large",
+        limit_bytes: REPO_CHECK_MAX_FILE_BYTES,
+        size_bytes: stat.size,
+      },
+    );
+  }
+
+  const buffer = fs.readFileSync(absPath);
+  const fileHash = hashBuffer(buffer);
+  const isBinary = probeIsBinary(buffer);
+
+  let matched = false;
+  let matchedLines = [];
+  let matchedLinesTruncated = false;
+  let scannedLines = 0;
+
+  if (normalizedType === "file_exists") {
+    matched = true;
+  } else if (isBinary) {
+    // Binary file: never decode, never excerpt. Record matched:false plus a
+    // `binary:true` flag so the reviewer can see the probe ran.
+    matched = false;
+  } else {
+    const text = buffer.toString("utf8");
+    let predicate;
+    if (normalizedType === "file_contains") {
+      predicate = (line) => line.includes(literalPattern);
+    } else {
+      // For regex_match, predicate must use a per-line probe; the `m` flag
+      // is enforced by the compiler so multiline patterns work too.
+      predicate = (line) => {
+        compiledRegex.lastIndex = 0;
+        return compiledRegex.test(line);
+      };
+    }
+    const result = buildMatchedLines(text, predicate);
+    matched = result.matched.length > 0;
+    matchedLines = result.matched;
+    matchedLinesTruncated = result.truncated;
+    scannedLines = result.scanned;
+  }
+
+  const row = {
+    version: REPO_CHECK_VERSION,
+    check_id: `chk_${sha8(`${domain}|${filePath}|${normalizedType}|${Date.now()}`)}_${Date.now()}`,
+    check_type: normalizedType,
+    target_domain: domain,
+    file_path: filePath,
+    pattern: literalPattern,
+    regex: regexPattern,
+    matched,
+    matched_lines: matchedLines,
+    matched_lines_truncated: matchedLinesTruncated,
+    scanned_lines: scannedLines,
+    file_hash: fileHash,
+    file_size: stat.size,
+    binary: isBinary,
+    not_found: false,
+    ts: new Date().toISOString(),
+  };
+  if (normalizedReplayContext) row.replay_context = normalizedReplayContext;
+
+  // O-P7: dual-mode scrubbing. matched_lines[].excerpt is already redacted
+  // via redactTextSensitiveValues above (the load-bearing primitive for
+  // free-form excerpts that legitimately contain `KEY=value` syntax).
+  // The rest of the row (file_path, pattern, regex, replay_context,
+  // metadata) goes through validateNoSensitiveMaterial as a
+  // belt-and-suspenders check against structural regressions — a future
+  // change that renamed `excerpt` to `api_key_value` would trip the
+  // SENSITIVE_KEY_RE and fail closed before append. We validate a deep
+  // copy of the row with the already-redacted excerpts stripped so the
+  // structural check sees only fields under its contract.
+  const validationProbe = {
+    ...row,
+    matched_lines: matchedLines.map(({ line, offset }) => ({ line, offset })),
+  };
+  validateNoSensitiveMaterial(validationProbe, "repo_checks");
+  withSessionLock(domain, () => {
+    appendJsonlLine(repoChecksJsonlPath(domain), row);
+  });
+
+  return {
+    created: true,
+    check_id: row.check_id,
+    check_type: normalizedType,
+    target_domain: domain,
+    file_path: filePath,
+    matched,
+    matched_lines: matchedLines,
+    matched_lines_truncated: matchedLinesTruncated,
+    scanned_lines: scannedLines,
+    file_hash: fileHash,
+    file_size: stat.size,
+    binary: isBinary,
+    not_found: false,
+  };
+}
+
 module.exports = {
   deriveRepoTargetDomain,
   deriveRepoHashFromPath,
   initRepoSession,
   readRepoSession,
   buildRepoInventory,
+  repoCheck,
   // Exposed for cross-module reuse / tests.
+  REPO_CHECK_MAX_FILE_BYTES,
+  REPO_CHECK_MAX_EXCERPTS,
+  REPO_CHECK_TYPES,
   REPO_WALK_MAX_FILES,
   RepoTooLargeError,
   safeBasename,

@@ -913,11 +913,14 @@ test("evaluator agents stay under their MCP tool budget", () => {
   // client-side auth flows and pivot via bob_http_scan for mutate-and-replay.
   // Cycle O.4 (Plane O) adds bob_repo_docker_run to evaluator-shared so the
   // OSS axis can drive sandboxed docker runs from the same evaluator agent.
+  // Cycle O.5 (Plane O) adds bob_repo_check to evaluator-shared so the OSS
+  // axis can probe repo files for existence/literal/regex evidence without
+  // ever leaving the read-only repo mount (O-P1).
   // The browser-driver family is opaque-context (one verb per command, idle/
   // hard timeouts reap sessions) so it doesn't compound brief-rendered text;
-  // budgets stay bumped (SC 30→33, web 32→35) to keep parity with the role
+  // budgets stay bumped (SC 30→34, web 32→36) to keep parity with the role
   // bundle's actual surface.
-  const EVALUATOR_MCP_TOOL_BUDGET = 33;
+  const EVALUATOR_MCP_TOOL_BUDGET = 34;
   const agentNameToRoleId = {};
   for (const [roleId, spec] of Object.entries(CLAUDE_ROLE_SPECS)) {
     if (spec.kind === "agent" && typeof spec.output_path === "string") {
@@ -926,7 +929,7 @@ test("evaluator agents stay under their MCP tool budget", () => {
   }
   for (const pack of Object.values(CAPABILITY_PACKS)) {
     const roleId = agentNameToRoleId[pack.evaluator_agent];
-    const budget = pack.brief_profile === "web" ? 35 : EVALUATOR_MCP_TOOL_BUDGET;
+    const budget = pack.brief_profile === "web" ? 36 : EVALUATOR_MCP_TOOL_BUDGET;
     assert.ok(
       mcpToolNamesForRole(roleId).length <= budget,
       `pack ${pack.id} evaluator over budget (got ${mcpToolNamesForRole(roleId).length}, budget ${budget})`,
@@ -944,11 +947,15 @@ test("verifier role bundle exposes the documented mutating set and no orchestrat
   // Cycle O.4 (Plane O) adds bob_repo_docker_run to the verifier bundle so
   // verifiers can replay sandboxed docker runs against bound repo sessions
   // without escalating to a claim-writing tool.
+  // Cycle O.5 (Plane O) adds bob_repo_check so verifiers can do bounded,
+  // read-only file probes (file_exists / file_contains / regex_match)
+  // against the bound repo without taking the docker path.
   assert.deepEqual(
     mutating.sort(),
     [
       "bob_evm_fetch_source",
       "bob_http_scan",
+      "bob_repo_check",
       "bob_repo_docker_run",
       "bob_write_verification_round",
     ].sort(),
