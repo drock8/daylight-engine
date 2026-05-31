@@ -30,6 +30,12 @@ const {
   ToolError,
 } = require("./envelope.js");
 const {
+  readSessionStateStrict,
+} = require("./session-state-store.js");
+const {
+  tierVerificationRounds,
+} = require("./tier-config.js");
+const {
   safeAppendPipelineEventDirect,
 } = require("./pipeline-events.js");
 const {
@@ -266,6 +272,18 @@ function writeVerificationRound(args) {
   const domain = assertNonEmptyString(args.target_domain, "target_domain");
   return withSessionLock(domain, () => {
   const round = assertEnumValue(args.round, VERIFICATION_ROUND_VALUES, "round");
+
+  const ROUND_ORDINAL = { brutalist: 1, balanced: 2, final: 3 };
+  let effectiveTier = 3;
+  try {
+    const { state: sessionState } = readSessionStateStrict(domain);
+    effectiveTier = sessionState.tier_level != null ? sessionState.tier_level : 3;
+  } catch {}
+  const maxRounds = tierVerificationRounds(effectiveTier);
+  if (ROUND_ORDINAL[round] > maxRounds) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Verification round "${round}" is not available for tier_${effectiveTier}: max ${maxRounds} round(s)`);
+  }
+
   const notes = normalizeOptionalText(args.notes, "notes");
   if (!Array.isArray(args.results)) {
     throw new Error("results must be an array");

@@ -39,6 +39,9 @@ const {
   computeVerifyToGradeGate,
   formatTransitionBlockers,
 } = require("./phase-gates.js");
+const {
+  isPhaseAllowedForTier,
+} = require("./tier-config.js");
 
 const {
   assertOperatorNote,
@@ -224,6 +227,7 @@ function initSession(args) {
     safeAppendPipelineEventDirect(domain, "session_started", {
       phase: state.phase,
       source: "bounty_init_session",
+      tier_level: state.tier_level,
       deep_mode: state.deep_mode,
       checkpoint_mode: state.checkpoint_mode,
       block_internal_hosts: state.block_internal_hosts,
@@ -319,6 +323,11 @@ function transitionPhase(args) {
       throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Invalid phase transition: ${fromPhase} -> ${toPhase}`);
     }
 
+    const effectiveTier = state.tier_level != null ? state.tier_level : 3;
+    if (!isPhaseAllowedForTier(toPhase, effectiveTier)) {
+      throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Phase ${toPhase} is not available for tier_${effectiveTier}`);
+    }
+
     let overrideReason = null;
     const overrideAllowed = (
       (fromPhase === "HUNT" && toPhase === "CHAIN") ||
@@ -407,6 +416,7 @@ function transitionPhase(args) {
       phase: toPhase,
       status: "transitioned",
       source: "bounty_transition_phase",
+      tier_level: nextState.tier_level != null ? nextState.tier_level : 3,
       egress_profile: nextState.egress_profile,
       egress_region: nextState.egress_region,
       proxy_configured: nextState.proxy_configured,

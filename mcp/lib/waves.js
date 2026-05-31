@@ -44,6 +44,7 @@ const {
   readCoverageRecordsFromJsonl,
 } = require("./coverage.js");
 const { readAttackSurfaceStrict } = require("./attack-surface.js");
+const { tierWaveLimit } = require("./tier-config.js");
 const {
   routeSurfacesInternal,
 } = require("./surface-router.js");
@@ -215,6 +216,12 @@ function startWaveLocked(domain, {
   statePatch = null,
 } = {}) {
   assertWaveStartState(state, waveNumber);
+
+  const effectiveTier = state.tier_level != null ? state.tier_level : 3;
+  const waveLimit = tierWaveLimit(effectiveTier);
+  if (state.hunt_wave >= waveLimit) {
+    throw new ToolError(ERROR_CODES.STATE_CONFLICT, `Wave limit reached for tier_${effectiveTier}: max ${waveLimit} wave(s)`);
+  }
 
   const assignmentsPath = waveAssignmentsPath(domain, waveNumber);
   if (fs.existsSync(assignmentsPath)) {
