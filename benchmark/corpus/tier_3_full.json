@@ -1,0 +1,311 @@
+{
+  "name": "tier_3_full",
+  "description": "Tier 3 full-depth multi-wave scan with chain building and exploration. Validates that all phases including EXPLORE are reached and coverage is comprehensive.",
+  "tier": 3,
+  "target_domain": "enterprise-app.benchmark.local",
+  "expected_phases": ["RECON", "AUTH", "HUNT", "CHAIN", "VERIFY", "GRADE", "REPORT", "EXPLORE"],
+  "seed_artifacts": {
+    "state": {
+      "phase": "REPORT",
+      "auth_status": "authenticated",
+      "hunt_wave": 3,
+      "pending_wave": null,
+      "checkpoint_mode": "paranoid",
+      "block_internal_hosts": true
+    },
+    "attack_surface": {
+      "version": 1,
+      "target_domain": "enterprise-app.benchmark.local",
+      "surfaces": [
+        {
+          "surface_id": "S-1",
+          "type": "web",
+          "base_url": "https://enterprise-app.benchmark.local",
+          "priority": "CRITICAL",
+          "endpoints": [
+            { "method": "POST", "path": "/api/auth/login", "description": "Login" },
+            { "method": "POST", "path": "/api/auth/oauth/callback", "description": "OAuth callback" },
+            { "method": "GET", "path": "/api/users", "description": "User listing" },
+            { "method": "PUT", "path": "/api/users/:id/role", "description": "Role assignment" },
+            { "method": "GET", "path": "/api/secrets", "description": "Secrets vault" },
+            { "method": "POST", "path": "/api/deploy", "description": "Deployment trigger" }
+          ]
+        },
+        {
+          "surface_id": "S-2",
+          "type": "web",
+          "base_url": "https://enterprise-app.benchmark.local",
+          "priority": "HIGH",
+          "endpoints": [
+            { "method": "GET", "path": "/api/audit-log", "description": "Audit log" },
+            { "method": "POST", "path": "/api/webhooks", "description": "Webhook registration" },
+            { "method": "GET", "path": "/api/integrations", "description": "Third-party integrations" },
+            { "method": "POST", "path": "/api/upload", "description": "File upload" }
+          ]
+        },
+        {
+          "surface_id": "S-3",
+          "type": "web",
+          "base_url": "https://api-v2.enterprise-app.benchmark.local",
+          "priority": "MEDIUM",
+          "endpoints": [
+            { "method": "GET", "path": "/v2/health", "description": "Health check" },
+            { "method": "GET", "path": "/v2/metrics", "description": "Metrics endpoint" },
+            { "method": "POST", "path": "/v2/graphql", "description": "GraphQL endpoint" }
+          ]
+        }
+      ]
+    },
+    "findings": [
+      {
+        "finding_id": "F-1",
+        "title": "OAuth state parameter not validated",
+        "description": "OAuth callback accepts any state value, enabling CSRF-based account takeover",
+        "severity": "critical",
+        "attack_class": "oauth_misconfiguration",
+        "endpoint": "/api/auth/oauth/callback",
+        "surface_id": "S-1",
+        "wave": "w1",
+        "agent": "a1"
+      },
+      {
+        "finding_id": "F-2",
+        "title": "Horizontal privilege escalation via role assignment",
+        "description": "Non-admin users can assign admin role to themselves via PUT /api/users/:id/role",
+        "severity": "critical",
+        "attack_class": "privilege_escalation",
+        "endpoint": "/api/users/:id/role",
+        "surface_id": "S-1",
+        "wave": "w1",
+        "agent": "a2"
+      },
+      {
+        "finding_id": "F-3",
+        "title": "SSRF via webhook registration",
+        "description": "POST /api/webhooks URL parameter follows redirects to internal services",
+        "severity": "high",
+        "attack_class": "ssrf",
+        "endpoint": "/api/webhooks",
+        "surface_id": "S-2",
+        "wave": "w2",
+        "agent": "a1"
+      },
+      {
+        "finding_id": "F-4",
+        "title": "Unrestricted file upload allows web shell",
+        "description": "POST /api/upload accepts .php files that are served from the uploads directory",
+        "severity": "critical",
+        "attack_class": "unrestricted_upload",
+        "endpoint": "/api/upload",
+        "surface_id": "S-2",
+        "wave": "w2",
+        "agent": "a2"
+      },
+      {
+        "finding_id": "F-5",
+        "title": "GraphQL introspection exposes internal schema",
+        "description": "Introspection query reveals undocumented admin mutations",
+        "severity": "medium",
+        "attack_class": "info_disclosure",
+        "endpoint": "/v2/graphql",
+        "surface_id": "S-3",
+        "wave": "w3",
+        "agent": "a1"
+      },
+      {
+        "finding_id": "F-6",
+        "title": "Secrets vault accessible with expired token",
+        "description": "GET /api/secrets returns data when JWT exp is in the past",
+        "severity": "critical",
+        "attack_class": "broken_authentication",
+        "endpoint": "/api/secrets",
+        "surface_id": "S-1",
+        "wave": "w3",
+        "agent": "a2"
+      }
+    ],
+    "coverage": [
+      {
+        "version": 1,
+        "target_domain": "enterprise-app.benchmark.local",
+        "wave": "w1",
+        "agent": "a1",
+        "surface_id": "S-1",
+        "endpoint": "/api/auth/oauth/callback",
+        "method": "POST",
+        "bug_class": "oauth_misconfiguration",
+        "auth_profile": "user",
+        "status": "promising",
+        "evidence_summary": "State parameter ignored in callback"
+      },
+      {
+        "version": 1,
+        "target_domain": "enterprise-app.benchmark.local",
+        "wave": "w1",
+        "agent": "a2",
+        "surface_id": "S-1",
+        "endpoint": "/api/users/:id/role",
+        "method": "PUT",
+        "bug_class": "privilege_escalation",
+        "auth_profile": "user",
+        "status": "promising",
+        "evidence_summary": "Role updated to admin successfully"
+      },
+      {
+        "version": 1,
+        "target_domain": "enterprise-app.benchmark.local",
+        "wave": "w2",
+        "agent": "a1",
+        "surface_id": "S-2",
+        "endpoint": "/api/webhooks",
+        "method": "POST",
+        "bug_class": "ssrf",
+        "auth_profile": "user",
+        "status": "promising",
+        "evidence_summary": "Internal metadata endpoint reachable via redirect"
+      },
+      {
+        "version": 1,
+        "target_domain": "enterprise-app.benchmark.local",
+        "wave": "w2",
+        "agent": "a2",
+        "surface_id": "S-2",
+        "endpoint": "/api/upload",
+        "method": "POST",
+        "bug_class": "unrestricted_upload",
+        "auth_profile": "user",
+        "status": "promising",
+        "evidence_summary": "PHP file uploaded and executed"
+      },
+      {
+        "version": 1,
+        "target_domain": "enterprise-app.benchmark.local",
+        "wave": "w3",
+        "agent": "a1",
+        "surface_id": "S-3",
+        "endpoint": "/v2/graphql",
+        "method": "POST",
+        "bug_class": "info_disclosure",
+        "status": "tested",
+        "evidence_summary": "Introspection returned full schema"
+      },
+      {
+        "version": 1,
+        "target_domain": "enterprise-app.benchmark.local",
+        "wave": "w3",
+        "agent": "a2",
+        "surface_id": "S-1",
+        "endpoint": "/api/secrets",
+        "method": "GET",
+        "bug_class": "broken_authentication",
+        "auth_profile": "expired",
+        "status": "promising",
+        "evidence_summary": "Expired JWT accepted, secrets returned"
+      },
+      {
+        "version": 1,
+        "target_domain": "enterprise-app.benchmark.local",
+        "wave": "w1",
+        "agent": "a1",
+        "surface_id": "S-1",
+        "endpoint": "/api/auth/login",
+        "method": "POST",
+        "bug_class": "brute_force",
+        "status": "tested",
+        "evidence_summary": "Account lockout after 5 failed attempts"
+      },
+      {
+        "version": 1,
+        "target_domain": "enterprise-app.benchmark.local",
+        "wave": "w2",
+        "agent": "a1",
+        "surface_id": "S-2",
+        "endpoint": "/api/audit-log",
+        "method": "GET",
+        "bug_class": "info_disclosure",
+        "auth_profile": "user",
+        "status": "tested",
+        "evidence_summary": "Only own audit entries returned"
+      },
+      {
+        "version": 1,
+        "target_domain": "enterprise-app.benchmark.local",
+        "wave": "w1",
+        "agent": "a2",
+        "surface_id": "S-1",
+        "endpoint": "/api/deploy",
+        "method": "POST",
+        "bug_class": "access_control",
+        "auth_profile": "user",
+        "status": "blocked",
+        "evidence_summary": "403 Forbidden — admin-only endpoint"
+      }
+    ],
+    "pipeline_events": [
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:00:00.000Z",
+        "target_domain": "enterprise-app.benchmark.local",
+        "type": "session_started",
+        "phase": "RECON"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:02:00.000Z",
+        "target_domain": "enterprise-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "AUTH"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:05:00.000Z",
+        "target_domain": "enterprise-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "HUNT"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:10:00.000Z",
+        "target_domain": "enterprise-app.benchmark.local",
+        "type": "finding_recorded",
+        "status": "recorded",
+        "counts": { "findings": 1 }
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:40:00.000Z",
+        "target_domain": "enterprise-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "CHAIN"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:50:00.000Z",
+        "target_domain": "enterprise-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "VERIFY"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T11:00:00.000Z",
+        "target_domain": "enterprise-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "GRADE"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T11:05:00.000Z",
+        "target_domain": "enterprise-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "REPORT"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T11:10:00.000Z",
+        "target_domain": "enterprise-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "EXPLORE"
+      }
+    ]
+  }
+}

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0] - 2026-05-31
+
+### Benchmark harness (Milestone 4)
+
+- Added `benchmark/` directory with automated benchmark harness for scan quality metrics.
+- Runner (`benchmark/run.js`) seeds synthetic sessions from a test corpus, scores them across 5 automated metrics (coverage, time-to-insight, freshness, phase completion, finding density), and outputs structured JSON comparison reports.
+- Test corpus covers tiers 1–3 (tier_0 First Look is a separate repo): `tier_1_webapp.json` (single-wave web scan), `tier_2_auth_heavy.json` (multi-wave auth-differential), `tier_3_full.json` (full-depth with chain building and EXPLORE).
+- Comparison engine (`benchmark/lib/compare.js`) detects regressions between baseline and current runs (>5% coverage drop, phase completion regression).
+- All benchmark scans use synthetic `.benchmark.local` domains with pre-seeded artifacts — no live network requests.
+- Added CI job (`.github/workflows/benchmark.yml`) to run automated metrics on every release tag and upload results as artifacts.
+- Added manual interpretability testing protocol (`benchmark/INTERPRETABILITY-PROTOCOL.md`) with 5-dimension scoring rubric and weighted scoring template.
+- Added testing consent documentation (`benchmark/TESTING-CONSENT.md`).
+- Added 17 tests (`test/benchmark-harness.test.js`) covering corpus validation, session seeding, all 5 scorers, and comparison logic.
+- Internal tier IDs only (tier_1 through tier_3) — no public names in engine code.
+- Fully additive: no existing code modified.
+
 ## [0.3.0] - 2026-05-31
 
 ### Tier configuration system (Milestone 1)

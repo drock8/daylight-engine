@@ -1,0 +1,45 @@
+name: Benchmark
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run benchmark harness
+        run: node benchmark/run.js --out benchmark/results/latest.json
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark/results/latest.json
+          retention-days: 90
+
+      - name: Check for regressions
+        run: |
+          node -e "
+            const r = require('./benchmark/results/latest.json');
+            if (r.summary.failed > 0) {
+              console.error('Benchmark failures:', r.summary.failed);
+              process.exit(1);
+            }
+            console.log('All benchmarks passed:', r.summary.passed, '/', r.summary.total);
+          "

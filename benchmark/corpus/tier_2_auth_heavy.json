@@ -1,0 +1,235 @@
+{
+  "name": "tier_2_auth_heavy",
+  "description": "Tier 2 multi-wave scan with auth-differential testing. Validates that the AUTH phase is reached, coverage spans authenticated endpoints, and chain building is exercised.",
+  "tier": 2,
+  "target_domain": "auth-heavy-app.benchmark.local",
+  "expected_phases": ["RECON", "AUTH", "HUNT", "CHAIN", "VERIFY", "GRADE", "REPORT"],
+  "seed_artifacts": {
+    "state": {
+      "phase": "REPORT",
+      "auth_status": "authenticated",
+      "hunt_wave": 2,
+      "pending_wave": null,
+      "checkpoint_mode": "normal",
+      "block_internal_hosts": true
+    },
+    "attack_surface": {
+      "version": 1,
+      "target_domain": "auth-heavy-app.benchmark.local",
+      "surfaces": [
+        {
+          "surface_id": "S-1",
+          "type": "web",
+          "base_url": "https://auth-heavy-app.benchmark.local",
+          "priority": "CRITICAL",
+          "endpoints": [
+            { "method": "POST", "path": "/api/auth/login", "description": "Login endpoint" },
+            { "method": "POST", "path": "/api/auth/register", "description": "Registration" },
+            { "method": "GET", "path": "/api/profile", "description": "User profile (auth required)" },
+            { "method": "PUT", "path": "/api/profile", "description": "Update profile (auth required)" },
+            { "method": "GET", "path": "/api/admin/users", "description": "Admin user listing" },
+            { "method": "DELETE", "path": "/api/admin/users/:id", "description": "Admin delete user" },
+            { "method": "GET", "path": "/api/billing/invoices", "description": "Billing invoices" },
+            { "method": "POST", "path": "/api/billing/charge", "description": "Process charge" }
+          ]
+        },
+        {
+          "surface_id": "S-2",
+          "type": "web",
+          "base_url": "https://auth-heavy-app.benchmark.local",
+          "priority": "HIGH",
+          "endpoints": [
+            { "method": "GET", "path": "/api/reports", "description": "Report listing" },
+            { "method": "GET", "path": "/api/reports/:id", "description": "Report detail" },
+            { "method": "POST", "path": "/api/reports/:id/export", "description": "Export report" },
+            { "method": "GET", "path": "/api/settings", "description": "App settings" }
+          ]
+        }
+      ]
+    },
+    "findings": [
+      {
+        "finding_id": "F-1",
+        "title": "Broken access control on admin endpoints",
+        "description": "Regular user can access /api/admin/users without admin role",
+        "severity": "critical",
+        "attack_class": "broken_access_control",
+        "endpoint": "/api/admin/users",
+        "surface_id": "S-1",
+        "wave": "w1",
+        "agent": "a1"
+      },
+      {
+        "finding_id": "F-2",
+        "title": "IDOR on billing invoices",
+        "description": "Changing user ID in request returns other users' invoices",
+        "severity": "high",
+        "attack_class": "idor",
+        "endpoint": "/api/billing/invoices",
+        "surface_id": "S-1",
+        "wave": "w1",
+        "agent": "a2"
+      },
+      {
+        "finding_id": "F-3",
+        "title": "Privilege escalation via profile update",
+        "description": "PUT /api/profile accepts role field, allowing user to set admin role",
+        "severity": "critical",
+        "attack_class": "privilege_escalation",
+        "endpoint": "/api/profile",
+        "surface_id": "S-1",
+        "wave": "w2",
+        "agent": "a1"
+      },
+      {
+        "finding_id": "F-4",
+        "title": "Insecure report export allows path traversal",
+        "description": "POST /api/reports/:id/export filename parameter allows ../../../etc/passwd",
+        "severity": "high",
+        "attack_class": "path_traversal",
+        "endpoint": "/api/reports/:id/export",
+        "surface_id": "S-2",
+        "wave": "w2",
+        "agent": "a2"
+      }
+    ],
+    "coverage": [
+      {
+        "version": 1,
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "wave": "w1",
+        "agent": "a1",
+        "surface_id": "S-1",
+        "endpoint": "/api/admin/users",
+        "method": "GET",
+        "bug_class": "broken_access_control",
+        "auth_profile": "user",
+        "status": "promising",
+        "evidence_summary": "200 OK with user role — expected 403"
+      },
+      {
+        "version": 1,
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "wave": "w1",
+        "agent": "a2",
+        "surface_id": "S-1",
+        "endpoint": "/api/billing/invoices",
+        "method": "GET",
+        "bug_class": "idor",
+        "auth_profile": "user",
+        "status": "promising",
+        "evidence_summary": "Other users invoices returned"
+      },
+      {
+        "version": 1,
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "wave": "w2",
+        "agent": "a1",
+        "surface_id": "S-1",
+        "endpoint": "/api/profile",
+        "method": "PUT",
+        "bug_class": "privilege_escalation",
+        "auth_profile": "user",
+        "status": "promising",
+        "evidence_summary": "Role field accepted and applied"
+      },
+      {
+        "version": 1,
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "wave": "w2",
+        "agent": "a2",
+        "surface_id": "S-2",
+        "endpoint": "/api/reports/:id/export",
+        "method": "POST",
+        "bug_class": "path_traversal",
+        "auth_profile": "user",
+        "status": "promising",
+        "evidence_summary": "Path traversal returned /etc/passwd contents"
+      },
+      {
+        "version": 1,
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "wave": "w1",
+        "agent": "a1",
+        "surface_id": "S-1",
+        "endpoint": "/api/auth/login",
+        "method": "POST",
+        "bug_class": "brute_force",
+        "status": "tested",
+        "evidence_summary": "Rate limiting active after 5 attempts"
+      },
+      {
+        "version": 1,
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "wave": "w1",
+        "agent": "a2",
+        "surface_id": "S-2",
+        "endpoint": "/api/reports",
+        "method": "GET",
+        "bug_class": "info_disclosure",
+        "auth_profile": "user",
+        "status": "tested",
+        "evidence_summary": "Only own reports returned"
+      }
+    ],
+    "pipeline_events": [
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:00:00.000Z",
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "type": "session_started",
+        "phase": "RECON"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:01:00.000Z",
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "AUTH"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:03:00.000Z",
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "HUNT"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:08:00.000Z",
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "type": "finding_recorded",
+        "status": "recorded",
+        "counts": { "findings": 1 }
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:25:00.000Z",
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "CHAIN"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:30:00.000Z",
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "VERIFY"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:35:00.000Z",
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "GRADE"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:37:00.000Z",
+        "target_domain": "auth-heavy-app.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "REPORT"
+      }
+    ]
+  }
+}

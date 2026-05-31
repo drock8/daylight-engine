@@ -1,0 +1,191 @@
+{
+  "name": "tier_1_webapp",
+  "description": "Tier 1 single-wave scan of a web application with mixed findings. Validates coverage scoring, time-to-insight measurement, and phase completion through REPORT.",
+  "tier": 1,
+  "target_domain": "webapp-standard.benchmark.local",
+  "expected_phases": ["RECON", "HUNT", "VERIFY", "GRADE", "REPORT"],
+  "seed_artifacts": {
+    "state": {
+      "phase": "REPORT",
+      "auth_status": "unauthenticated",
+      "hunt_wave": 1,
+      "pending_wave": null,
+      "checkpoint_mode": "normal",
+      "block_internal_hosts": true
+    },
+    "attack_surface": {
+      "version": 1,
+      "target_domain": "webapp-standard.benchmark.local",
+      "surfaces": [
+        {
+          "surface_id": "S-1",
+          "type": "web",
+          "base_url": "https://webapp-standard.benchmark.local",
+          "priority": "HIGH",
+          "endpoints": [
+            { "method": "GET", "path": "/", "description": "Homepage" },
+            { "method": "GET", "path": "/login", "description": "Login page" },
+            { "method": "POST", "path": "/api/login", "description": "Login endpoint" },
+            { "method": "GET", "path": "/api/users", "description": "User listing" },
+            { "method": "GET", "path": "/api/users/:id", "description": "User detail" },
+            { "method": "PUT", "path": "/api/users/:id", "description": "User update" },
+            { "method": "GET", "path": "/api/admin/config", "description": "Admin config" },
+            { "method": "POST", "path": "/api/search", "description": "Search endpoint" }
+          ]
+        },
+        {
+          "surface_id": "S-2",
+          "type": "web",
+          "base_url": "https://webapp-standard.benchmark.local",
+          "priority": "MEDIUM",
+          "endpoints": [
+            { "method": "GET", "path": "/docs", "description": "Documentation" },
+            { "method": "GET", "path": "/api/version", "description": "Version endpoint" }
+          ]
+        }
+      ]
+    },
+    "findings": [
+      {
+        "finding_id": "F-1",
+        "title": "Reflected XSS in search parameter",
+        "description": "The /api/search endpoint reflects user input without sanitization",
+        "severity": "high",
+        "attack_class": "xss",
+        "endpoint": "/api/search",
+        "surface_id": "S-1",
+        "wave": "w1",
+        "agent": "a1"
+      },
+      {
+        "finding_id": "F-2",
+        "title": "IDOR on user detail endpoint",
+        "description": "GET /api/users/:id returns data for any user ID without authorization check",
+        "severity": "high",
+        "attack_class": "idor",
+        "endpoint": "/api/users/:id",
+        "surface_id": "S-1",
+        "wave": "w1",
+        "agent": "a1"
+      },
+      {
+        "finding_id": "F-3",
+        "title": "Missing rate limiting on login endpoint",
+        "description": "POST /api/login allows unlimited attempts without rate limiting",
+        "severity": "medium",
+        "attack_class": "brute_force",
+        "endpoint": "/api/login",
+        "surface_id": "S-1",
+        "wave": "w1",
+        "agent": "a1"
+      }
+    ],
+    "coverage": [
+      {
+        "version": 1,
+        "target_domain": "webapp-standard.benchmark.local",
+        "wave": "w1",
+        "agent": "a1",
+        "surface_id": "S-1",
+        "endpoint": "/api/search",
+        "method": "POST",
+        "bug_class": "xss",
+        "status": "promising",
+        "evidence_summary": "Reflected input in response body"
+      },
+      {
+        "version": 1,
+        "target_domain": "webapp-standard.benchmark.local",
+        "wave": "w1",
+        "agent": "a1",
+        "surface_id": "S-1",
+        "endpoint": "/api/users/:id",
+        "method": "GET",
+        "bug_class": "idor",
+        "status": "promising",
+        "evidence_summary": "Different user data returned without auth"
+      },
+      {
+        "version": 1,
+        "target_domain": "webapp-standard.benchmark.local",
+        "wave": "w1",
+        "agent": "a1",
+        "surface_id": "S-1",
+        "endpoint": "/api/login",
+        "method": "POST",
+        "bug_class": "brute_force",
+        "status": "tested",
+        "evidence_summary": "No rate limit after 100 attempts"
+      },
+      {
+        "version": 1,
+        "target_domain": "webapp-standard.benchmark.local",
+        "wave": "w1",
+        "agent": "a1",
+        "surface_id": "S-1",
+        "endpoint": "/api/admin/config",
+        "method": "GET",
+        "bug_class": "access_control",
+        "status": "blocked",
+        "evidence_summary": "403 Forbidden — endpoint not reachable without auth"
+      },
+      {
+        "version": 1,
+        "target_domain": "webapp-standard.benchmark.local",
+        "wave": "w1",
+        "agent": "a1",
+        "surface_id": "S-2",
+        "endpoint": "/docs",
+        "method": "GET",
+        "bug_class": "info_disclosure",
+        "status": "tested",
+        "evidence_summary": "No sensitive information in documentation pages"
+      }
+    ],
+    "pipeline_events": [
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:00:00.000Z",
+        "target_domain": "webapp-standard.benchmark.local",
+        "type": "session_started",
+        "phase": "RECON"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:00:30.000Z",
+        "target_domain": "webapp-standard.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "HUNT"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:05:00.000Z",
+        "target_domain": "webapp-standard.benchmark.local",
+        "type": "finding_recorded",
+        "status": "recorded",
+        "counts": { "findings": 1 }
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:15:00.000Z",
+        "target_domain": "webapp-standard.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "VERIFY"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:20:00.000Z",
+        "target_domain": "webapp-standard.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "GRADE"
+      },
+      {
+        "version": 1,
+        "ts": "2025-01-15T10:22:00.000Z",
+        "target_domain": "webapp-standard.benchmark.local",
+        "type": "phase_transitioned",
+        "to_phase": "REPORT"
+      }
+    ]
+  }
+}
