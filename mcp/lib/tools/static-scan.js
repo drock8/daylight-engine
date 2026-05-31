@@ -35,6 +35,7 @@ module.exports = Object.freeze({
   },
   handler: staticScan,
   role_bundles: ["hunter-web"],
+  min_tier: 0,
   mutating: true,
   global_preapproval: true,
   network_access: false,

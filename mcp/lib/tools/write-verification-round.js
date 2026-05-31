@@ -157,6 +157,7 @@ module.exports = Object.freeze({
   },
   handler: writeVerificationRound,
   role_bundles: ["verifier"],
+  min_tier: 1,
   mutating: true,
   global_preapproval: true,
   network_access: false,

@@ -130,6 +130,7 @@ module.exports = Object.freeze({
   },
   handler: recordFinding,
   role_bundles: ["hunter-shared", "orchestrator"],
+  min_tier: 0,
   mutating: true,
   global_preapproval: true,
   network_access: false,

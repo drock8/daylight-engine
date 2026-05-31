@@ -94,9 +94,12 @@ const CIRCUIT_BREAKER_THRESHOLD = 3;
 
 const SESSION_LOCK_NAME = ".session.lock";
 const SESSION_LOCK_STALE_MS = 300_000;
+const TIER_LEVEL_VALUES = Object.freeze([0, 1, 2, 3]);
+
 const SESSION_PUBLIC_STATE_FIELDS = [
   "target",
   "target_url",
+  "tier_level",
   "deep_mode",
   "checkpoint_mode",
   "block_internal_hosts",
@@ -176,6 +179,7 @@ module.exports = {
   TECHNIQUE_ATTEMPT_LOG_MAX_RECORDS,
   TECHNIQUE_ATTEMPT_STATUS_VALUES,
   TECHNIQUE_PACK_READ_LOG_MAX_RECORDS,
+  TIER_LEVEL_VALUES,
   SUBSTRATE_NETWORK_VALUES,
   SUI_NETWORK_VALUES,
   SURFACE_TYPE_VALUES,

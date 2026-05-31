@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0] - 2026-05-31
+
+### Tier configuration system (Milestone 1)
+
+- Added `min_tier` field (integer 0-3) to all 104 tool definitions per the Phase 2 tier mapping in SEGMENTATION-PLAN.md. Tier 0 (73 tools): shared infrastructure, session state, observational queries, blockchain reads. Tier 1 (8 tools): active scanning, verification pipeline. Tier 2 (14 tools): auth testing, differential analysis, chain state, foundry PoC replay. Tier 3 (9 tools): symbolic execution, invariant fuzzing, blockchain test runners.
+- Added `tier_level` parameter (integer 0-3) to `bounty_init_session` input schema. Persisted in state.json. Defaults to 3 (full access) for backward compatibility.
+- Added tier enforcement in `dispatch.js`: before executing a tool, checks `tool.min_tier <= session.tier_level`. Blocked tools return `TIER_BLOCKED` error code. Legacy sessions without `tier_level` are treated as tier 3.
+- Added `mcp/lib/tier-config.js` module with tier-level pipeline configuration: available phases per tier, wave limits (0/1/unlimited/unlimited), and verification round counts (0/1/1/3).
+- Updated `tool-registry.js` validation to require `min_tier` field on every tool definition.
+- Added `TIER_BLOCKED` error code to `envelope.js`.
+- Added `tier_level` to session state contracts: `buildInitialSessionState`, `normalizeSessionStateDocument`, `compactSessionState`, and `SESSION_PUBLIC_STATE_FIELDS`.
+- Added 24 tests covering tier config, registry validation, init-session tier persistence, state normalization, and dispatch tier enforcement.
+
 ## [0.2.0] - 2026-05-31
 
 ### Tier segmentation plan

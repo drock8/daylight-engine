@@ -53,6 +53,7 @@ module.exports = Object.freeze({
   },
   handler: writeChainAttempt,
   role_bundles: ["chain"],
+  min_tier: 2,
   mutating: true,
   global_preapproval: true,
   network_access: false,

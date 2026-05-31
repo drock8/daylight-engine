@@ -53,6 +53,7 @@ module.exports = Object.freeze({
   },
   handler: autoSignup,
   role_bundles: ["auth"],
+  min_tier: 2,
   mutating: true,
   global_preapproval: true,
   network_access: true,

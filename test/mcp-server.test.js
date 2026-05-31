@@ -1618,6 +1618,7 @@ test("MCP tool registry validation rejects incomplete or inconsistent entries", 
     inputSchema: { type: "object", properties: {} },
     handler: () => ({}),
     role_bundles: ["hunter-shared"],
+    min_tier: 0,
     mutating: false,
     global_preapproval: true,
     network_access: false,
@@ -3630,6 +3631,7 @@ test("bounty_init_session creates the initial state and bounty_read_session_stat
     const expectedState = {
       target: domain,
       target_url: targetUrl,
+      tier_level: 3,
       deep_mode: false,
       checkpoint_mode: "normal",
       block_internal_hosts: false,
@@ -3864,6 +3866,7 @@ test("legacy state normalization is applied while unknown fields remain on disk 
       state: {
         target: domain,
         target_url: "https://example.com",
+        tier_level: 3,
         deep_mode: false,
         checkpoint_mode: "normal",
         block_internal_hosts: false,
@@ -4817,6 +4820,7 @@ test("bounty_start_wave validates inputs, writes assignments, and updates pendin
     seedAttackSurface(domain, ["surface-a", "surface-b"]);
     const expectedState = {
       target: domain,
+      tier_level: 3,
       deep_mode: false,
       checkpoint_mode: "normal",
       block_internal_hosts: false,

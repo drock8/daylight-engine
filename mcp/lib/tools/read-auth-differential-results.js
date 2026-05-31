@@ -50,6 +50,7 @@ module.exports = Object.freeze({
   },
   handler: readAuthDifferentialResultsHandler,
   role_bundles: ["orchestrator"],
+  min_tier: 2,
   mutating: false,
   global_preapproval: false,
   network_access: false,

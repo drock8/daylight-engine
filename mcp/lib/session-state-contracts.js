@@ -311,6 +311,7 @@ function terminallyBlockedSurfaceIds(state) {
 }
 
 function buildInitialSessionState(domain, targetUrl, {
+  tierLevel = 3,
   deepMode = false,
   egressProfile = null,
   checkpointMode = "normal",
@@ -330,6 +331,7 @@ function buildInitialSessionState(domain, targetUrl, {
   return {
     target: domain,
     target_url: targetUrl,
+    tier_level: tierLevel,
     deep_mode: deepMode,
     ...internalHostPolicy,
     phase: "RECON",
@@ -486,6 +488,7 @@ function publicSessionState(state) {
 function compactSessionState(state) {
   return {
     target: state.target,
+    tier_level: state.tier_level != null ? state.tier_level : 3,
     deep_mode: state.deep_mode === true,
     checkpoint_mode: state.checkpoint_mode,
     block_internal_hosts: state.block_internal_hosts === true,
@@ -531,6 +534,9 @@ function normalizeSessionStateDocument(document, requestedDomain) {
   const normalized = {
     target: requestedDomain,
     target_url: assertNonEmptyString(document.target_url, "target_url"),
+    tier_level: document.tier_level == null
+      ? 3
+      : assertInteger(document.tier_level, "tier_level", { min: 0, max: 3 }),
     deep_mode: document.deep_mode == null
       ? false
       : assertBoolean(document.deep_mode, "deep_mode"),

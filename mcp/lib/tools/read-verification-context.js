@@ -15,6 +15,7 @@ module.exports = Object.freeze({
   },
   handler: readVerificationContext,
   role_bundles: ["orchestrator", "verifier", "evidence", "grader", "reporter"],
+  min_tier: 1,
   mutating: false,
   global_preapproval: true,
   network_access: false,

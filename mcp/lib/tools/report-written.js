@@ -18,6 +18,7 @@ module.exports = Object.freeze({
   // Appends a row to pipeline-events.jsonl; mutating: true reflects the
   // side effect honestly and surfaces the artifact in
   // session_artifacts_written for audit.
+  min_tier: 0,
   mutating: true,
   global_preapproval: false,
   network_access: false,

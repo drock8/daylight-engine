@@ -15,6 +15,12 @@ module.exports = Object.freeze({
       "target_url": {
         "type": "string"
       },
+      "tier_level": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 3,
+        "description": "Session tier level (0-3). Controls which tools and phases are available. Defaults to 3 (full access) for backward compatibility."
+      },
       "deep_mode": {
         "type": "boolean"
       },
@@ -44,6 +50,7 @@ module.exports = Object.freeze({
   },
   handler: initSession,
   role_bundles: ["orchestrator"],
+  min_tier: 0,
   mutating: true,
   global_preapproval: false,
   network_access: false,

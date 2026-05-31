@@ -28,6 +28,7 @@ module.exports = Object.freeze({
   },
   handler: diffVerificationAttemptsHandler,
   role_bundles: ["orchestrator"],
+  min_tier: 1,
   mutating: false,
   global_preapproval: false,
   network_access: false,

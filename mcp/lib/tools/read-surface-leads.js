@@ -16,6 +16,7 @@ module.exports = Object.freeze({
   },
   handler: readSurfaceLeads,
   role_bundles: ["hunter-web", "orchestrator"],
+  min_tier: 0,
   mutating: false,
   global_preapproval: true,
   network_access: false,

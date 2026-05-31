@@ -180,6 +180,10 @@ function initSession(args) {
   } catch (error) {
     throw new ToolError(ERROR_CODES.SCOPE_BLOCKED, error.message || String(error), error.details);
   }
+  const tierLevel = args.tier_level == null ? 3 : args.tier_level;
+  if (!Number.isInteger(tierLevel) || tierLevel < 0 || tierLevel > 3) {
+    throw new ToolError(ERROR_CODES.INVALID_ARGUMENTS, "tier_level must be an integer 0-3");
+  }
   const deepMode = args.deep_mode == null ? false : assertBoolean(args.deep_mode, "deep_mode");
   let internalHostPolicy;
   try {
@@ -211,6 +215,7 @@ function initSession(args) {
     assertBlockInternalHostsCompatibleWithEgress(internalHostPolicy, egressProfile);
     const egressFields = egressProfileStateFields(egressProfile);
     const state = buildInitialSessionState(domain, targetUrl, {
+      tierLevel,
       deepMode,
       egressProfile,
       blockInternalHostsPolicy: internalHostPolicy,

@@ -19,6 +19,7 @@ module.exports = Object.freeze({
   },
   handler: listAuthProfiles,
   role_bundles: ["auth","hunter-web","verifier","orchestrator","chain","evidence"],
+  min_tier: 2,
   mutating: false,
   global_preapproval: true,
   network_access: false,

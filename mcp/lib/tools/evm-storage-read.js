@@ -41,6 +41,7 @@ module.exports = Object.freeze({
   },
   handler,
   role_bundles: ["hunter-evm", "verifier", "evidence"],
+  min_tier: 0,
   mutating: false,
   global_preapproval: true,
   network_access: true,

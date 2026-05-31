@@ -26,6 +26,7 @@ module.exports = Object.freeze({
   },
   handler: startWave,
   role_bundles: ["orchestrator"],
+  min_tier: 0,
   mutating: true,
   global_preapproval: false,
   network_access: false,

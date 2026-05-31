@@ -30,6 +30,7 @@ module.exports = Object.freeze({
   },
   handler: suggestInvariantsHandler,
   role_bundles: ["orchestrator"],
+  min_tier: 3,
   mutating: false,
   global_preapproval: false,
   network_access: false,

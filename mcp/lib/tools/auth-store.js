@@ -52,6 +52,7 @@ module.exports = Object.freeze({
   },
   handler: authStore,
   role_bundles: ["auth"],
+  min_tier: 2,
   mutating: true,
   global_preapproval: true,
   network_access: false,

@@ -38,5 +38,6 @@
   "test/unified-diff-parser.test.js",
   "test/cve-feed-parser.test.js",
   "test/cve-scope-matcher.test.js",
-  "test/mcp-test-discovery.test.js"
+  "test/mcp-test-discovery.test.js",
+  "test/tier-config.test.js"
 ]

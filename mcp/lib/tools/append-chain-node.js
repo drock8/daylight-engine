@@ -53,6 +53,7 @@ module.exports = Object.freeze({
   },
   handler: appendChainNodeHandler,
   role_bundles: ["orchestrator"],
+  min_tier: 2,
   mutating: true,
   global_preapproval: false,
   network_access: false,

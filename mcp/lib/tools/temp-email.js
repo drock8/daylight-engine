@@ -40,6 +40,7 @@ module.exports = Object.freeze({
   },
   handler: tempEmail,
   role_bundles: ["auth"],
+  min_tier: 1,
   mutating: true,
   global_preapproval: true,
   network_access: true,

@@ -15,6 +15,7 @@ module.exports = Object.freeze({
   },
   handler: readChainAttempts,
   role_bundles: ["chain", "verifier", "grader", "reporter", "orchestrator"],
+  min_tier: 2,
   mutating: false,
   global_preapproval: true,
   network_access: false,

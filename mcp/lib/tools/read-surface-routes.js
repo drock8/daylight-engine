@@ -38,6 +38,7 @@ module.exports = Object.freeze({
   // writes. Downstream consumers (orchestrator + verifier/chain/evidence/
   // reporter) read via this tool.
   role_bundles: ["orchestrator", "verifier", "chain", "evidence", "reporter"],
+  min_tier: 0,
   mutating: false,
   global_preapproval: true,
   network_access: false,

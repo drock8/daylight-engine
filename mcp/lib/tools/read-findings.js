@@ -19,6 +19,7 @@ module.exports = Object.freeze({
   },
   handler: readFindings,
   role_bundles: ["chain","verifier","grader","reporter","evidence"],
+  min_tier: 0,
   mutating: false,
   global_preapproval: true,
   network_access: false,

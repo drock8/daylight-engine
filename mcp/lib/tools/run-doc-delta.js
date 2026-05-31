@@ -78,6 +78,7 @@ module.exports = Object.freeze({
   },
   handler: runDocDeltaToolHandler,
   role_bundles: ["orchestrator"],
+  min_tier: 2,
   mutating: true,
   global_preapproval: false,
   network_access: true,

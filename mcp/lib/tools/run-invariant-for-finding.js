@@ -67,6 +67,7 @@ module.exports = Object.freeze({
   },
   handler: runInvariantForFindingHandler,
   role_bundles: ["orchestrator"],
+  min_tier: 3,
   mutating: true,
   global_preapproval: false,
   network_access: true,

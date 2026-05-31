@@ -14,6 +14,7 @@ module.exports = Object.freeze({
   },
   handler: routeSurfaces,
   role_bundles: ["orchestrator", "router"],
+  min_tier: 0,
   mutating: true,
   global_preapproval: false,
   network_access: false,

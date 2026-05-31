@@ -31,6 +31,7 @@ module.exports = Object.freeze({
   },
   handler: buildSymbolSurfaceIndexHandler,
   role_bundles: ["orchestrator"],
+  min_tier: 0,
   mutating: true,
   global_preapproval: false,
   network_access: false,

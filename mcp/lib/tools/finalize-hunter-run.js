@@ -33,6 +33,7 @@ module.exports = Object.freeze({
   },
   handler: finalizeHunterRun,
   role_bundles: ["hunter-shared"],
+  min_tier: 0,
   mutating: true,
   global_preapproval: true,
   network_access: false,

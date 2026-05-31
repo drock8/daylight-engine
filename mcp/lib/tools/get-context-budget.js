@@ -17,6 +17,7 @@ module.exports = Object.freeze({
   },
   handler: getContextBudget,
   role_bundles: ["hunter-shared", "orchestrator"],
+  min_tier: 0,
   mutating: false,
   global_preapproval: true,
   network_access: false,

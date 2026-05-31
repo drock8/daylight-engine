@@ -2,6 +2,7 @@
 
 const { TOOL_MODULES } = require("./tools/index.js");
 const { chainSpecificHunterBundles } = require("./capability-packs.js");
+const { TIER_LEVEL_VALUES } = require("./tier-config.js");
 
 // Cross-cutting role bundles: orchestration, auth, verifier, evidence, etc.
 // — not chain-specific. The per-chain hunter bundles are derived from
@@ -34,6 +35,7 @@ const REQUIRED_FIELDS = Object.freeze([
   "inputSchema",
   "handler",
   "role_bundles",
+  "min_tier",
   "mutating",
   "global_preapproval",
   "network_access",
@@ -144,6 +146,9 @@ function defineTool(entry) {
     throw new Error(`tool registry entry for ${entry.name} has no handler`);
   }
   assertStringArrayField(entry, "role_bundles", { allowEmpty: false, validValues: VALID_ROLE_BUNDLES });
+  if (!Number.isInteger(entry.min_tier) || !TIER_LEVEL_VALUES.includes(entry.min_tier)) {
+    throw new Error(`tool registry entry for ${entry.name} has invalid min_tier (must be integer 0-3)`);
+  }
   assertBooleanField(entry, "mutating");
   assertBooleanField(entry, "global_preapproval");
   assertBooleanField(entry, "network_access");

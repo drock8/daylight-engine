@@ -19,6 +19,7 @@ module.exports = Object.freeze({
   },
   handler: readGradeVerdict,
   role_bundles: ["grader","reporter","orchestrator"],
+  min_tier: 0,
   mutating: false,
   global_preapproval: true,
   network_access: false,

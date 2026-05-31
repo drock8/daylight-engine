@@ -62,6 +62,7 @@ module.exports = Object.freeze({
   },
   handler: writeEvidencePacks,
   role_bundles: ["evidence"],
+  min_tier: 0,
   mutating: true,
   global_preapproval: true,
   network_access: false,
