@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0] - 2026-05-31
+
+### Tier segmentation plan
+
+- Added SEGMENTATION-PLAN.md: full capability inventory (108 MCP tools + recon agents), interaction class analysis, four-tier mapping (tier_0 First Look through tier_3 Hypernova), architecture recommendation (Option C: First Look as separate standalone service, paid tiers runtime-gated in main engine), benchmark harness design, and 5-milestone implementation roadmap.
+- Confirmed Apache 2.0 license is fully compatible with free+paid tiering model.
+- All 7 open design questions resolved — no code changes yet, plan awaiting execution.
+
 ## [0.1.0] - 2026-05-31
 
 ### Daylight Engine — initial fork
