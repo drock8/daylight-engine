@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.0] - 2026-05-31
+
+### Daylight Engine — initial fork
+
+Forked from [Hacker Bob v1.3.5](https://github.com/vmihalis/hacker-bob) (Apache-2.0) by Michail Vasileiadis.
+
+- Renamed project to Daylight Engine for use as the scan engine powering Zer0Daylight
+- Updated NOTICE with Zer0Daylight / Derrick Siu attribution
+- Updated package.json identity (name, version, repository URLs)
+- Replaced README with Daylight Engine documentation and attribution
+- All original Hacker Bob capabilities retained (RECON, AUTH, HUNT, CHAIN, VERIFY, GRADE, REPORT)
+
+---
+
+## Hacker Bob upstream changelog
+
 ## [Unreleased]
 
 - v1.3.6 follow-up: complete removal of the `legacy_unverified` handoff path. v1.3.5 keeps the path behind the per-session `handoff_provenance_required` flag so sessions initialised on v1.3.5+ already fail-closed; v1.3.6 will drop the legacy branch entirely from `wave-handoff-contracts.js`, `phase-gates.js`, `pipeline-session-artifacts.js`, and `wave-handoff-store.js`.
